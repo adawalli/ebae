@@ -1,0 +1,25 @@
+services:
+  ebae:
+    build: .
+    # image: docker.io/adawalli/ebae:latest   # once published
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.local
+    # Neon or any external Postgres: set DATABASE_URL in .env and you're done.
+    # No external Postgres? Uncomment db below and use:
+    # DATABASE_URL=postgres://ebae:ebae@db:5432/ebae
+
+  # db:
+  #   image: postgres:17-alpine
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: ebae
+  #     POSTGRES_PASSWORD: ebae
+  #     POSTGRES_DB: ebae
+  #   volumes:
+  #     - ebae-pg:/var/lib/postgresql/data
+
+# volumes:
+#   ebae-pg:

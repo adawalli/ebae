@@ -1,0 +1,79 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: oklch(0.17 0.015 265);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@keyframes ebPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+@keyframes ebModalIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes ebFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong, #3a3a4a);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+/* hover states (the design's style-hover attributes) */
+.hv-row:hover {
+  border-color: var(--border-strong) !important;
+  background: var(--row-hover) !important;
+}
+.hv-card:hover {
+  border-color: var(--border-strong) !important;
+}
+.hv-nav:hover {
+  background: var(--row-hover) !important;
+}
+.hv-accent:hover {
+  filter: brightness(1.08);
+}
+.hv-ghost:hover {
+  color: var(--text) !important;
+  border-color: var(--accent) !important;
+}
+.hv-link:hover {
+  color: var(--accent-text) !important;
+  text-decoration: underline !important;
+}
+.hv-dim:hover {
+  color: var(--text) !important;
+}
+.eb-input:focus {
+  border-color: var(--accent) !important;
+  outline: none;
+}

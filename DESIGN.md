@@ -66,12 +66,12 @@ One Bun + Next.js app, one container image.
 
 **Data model** (small, boring):
 
-| table | purpose |
-|---|---|
-| `searches` | query terms, filters (BIN-only, price cap, category), poll interval, enabled flag |
-| `seen_items` | `(search_id, item_id)` - the dedupe set; prunable after N days |
-| `channels` | notification targets (MVP: Discord webhook URL, one or more) |
-| `alerts` | log of sent notifications (item snapshot: title, price, image, url) - powers the UI history view |
+| table        | purpose                                                                                          |
+| ------------ | ------------------------------------------------------------------------------------------------ |
+| `searches`   | query terms, filters (BIN-only, price cap, category), poll interval, enabled flag                |
+| `seen_items` | `(search_id, item_id)` - the dedupe set; prunable after N days                                   |
+| `channels`   | notification targets (MVP: Discord webhook URL, one or more)                                     |
+| `alerts`     | log of sent notifications (item snapshot: title, price, image, url) - powers the UI history view |
 
 **Failure behavior.** eBay/API errors back off exponentially per search and surface on a status page; Discord send failures retry a few times then log. Restart recovers state from Postgres (seen set persists), so crashes never re-alert old items.
 
@@ -94,13 +94,13 @@ One `notify(item, search)` function with Discord as the only implementation. Del
 
 **Config is env-only** - no config files to mount:
 
-| var | purpose |
-|---|---|
-| `DATABASE_URL` | Postgres connection string (Neon, local, anything) |
-| `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | eBay app credentials |
-| `EBAY_MARKETPLACE` | e.g. `EBAY_US` (default) |
-| `POLL_INTERVAL_DEFAULT` | fallback per-search interval (default 5 min) |
-| `CACHE_REFRESH_HOURS` | DB→cache refresh cadence (default 12) |
+| var                                     | purpose                                            |
+| --------------------------------------- | -------------------------------------------------- |
+| `DATABASE_URL`                          | Postgres connection string (Neon, local, anything) |
+| `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | eBay app credentials                               |
+| `EBAY_MARKETPLACE`                      | e.g. `EBAY_US` (default)                           |
+| `POLL_INTERVAL_DEFAULT`                 | fallback per-search interval (default 5 min)       |
+| `CACHE_REFRESH_HOURS`                   | DB→cache refresh cadence (default 12)              |
 
 Everything else (searches, webhooks) is managed in the UI and lives in Postgres.
 
@@ -115,6 +115,7 @@ Everything else (searches, webhooks) is managed in the UI and lives in Postgres.
 ## 7. Roadmap
 
 **Phase 1 - MVP**
+
 - eBay Browse polling with per-search intervals, BIN filter, newly-listed sort, itemId dedupe
 - Postgres persistence + in-memory cache (Neon-friendly)
 - Discord webhook notifications with rich embeds
@@ -122,12 +123,14 @@ Everything else (searches, webhooks) is managed in the UI and lives in Postgres.
 - Docker image on docker.io, compose example, k8s manifest
 
 **Phase 2 - More channels & filters**
+
 - Telegram bot notifications (outbound send; long-polling if commands are wanted)
 - Generic webhook channel (POST JSON → ntfy, Slack, Home Assistant, ...)
 - Richer per-search filters: price caps, condition, seller location, exclude-keywords
 - Quota dashboard + adaptive polling (slow down overnight, speed up on hot searches)
 
 **Phase 3 - Nice-to-haves**
+
 - PWA with web push notifications
 - Two-way Telegram commands (/pause, /list, /add)
 - Price-drop alerts on watched items

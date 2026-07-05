@@ -1,0 +1,22 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: check-json
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+  - repo: local
+    hooks:
+      - id: prettier
+        name: prettier
+        entry: bunx prettier --write --ignore-unknown
+        language: system
+        types_or: [ts, tsx, javascript, jsx, json, css, markdown, yaml]

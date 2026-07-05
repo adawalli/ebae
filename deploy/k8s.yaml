@@ -1,0 +1,48 @@
+# Single replica only: the poll timers and seen-item cache live in process memory.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ebae
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ebae
+  template:
+    metadata:
+      labels:
+        app: ebae
+    spec:
+      containers:
+        - name: ebae
+          image: docker.io/adawalli/ebae:latest
+          ports:
+            - containerPort: 3000
+          envFrom:
+            - secretRef:
+                name: ebae-env
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ebae
+spec:
+  selector:
+    app: ebae
+  ports:
+    - port: 80
+      targetPort: 3000
+---
+# kubectl create secret generic ebae-env \
+#   --from-literal=DATABASE_URL=postgres://... \
+#   --from-literal=EBAY_CLIENT_ID=... \
+#   --from-literal=EBAY_CLIENT_SECRET=... \
+#   --from-literal=DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...

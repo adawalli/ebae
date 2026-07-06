@@ -146,21 +146,39 @@ async function reload() {
       schedule(entry, 1000 + Math.random() * 5000);
     }
   }
+  // Save in-memory hit data before rebuild: a concurrent tick may have newer
+  // data than the snapshot just queried.
+  const savedHitTimes = new Map<number, number[]>();
+  const savedLastHitAt = new Map<number, number | null>();
+  for (const [id, e] of st.entries) {
+    savedHitTimes.set(id, e.hitTimes.slice());
+    savedLastHitAt.set(id, e.lastHitAt);
+  }
+
   for (const [id, e] of st.entries) {
     if (!fresh.has(id)) {
       if (e.timer) clearTimeout(e.timer);
       st.entries.delete(id);
       continue;
     }
-    // merge rather than replace: an in-flight tick may have seen items newer
-    // than this DB snapshot, and dropping them would re-alert
     e.hitTimes = [];
+    e.seen = new Set(); // rebuild from DB so the 90-day prune also reclaims memory
   }
   for (const r of seenRows) st.entries.get(r.search_id)?.seen.add(r.item_id);
   for (const r of hitRows) st.entries.get(r.search_id)?.hitTimes.push(new Date(r.created_at).getTime());
   for (const r of lastHitRows) {
     const e = r.search_id != null ? st.entries.get(r.search_id) : undefined;
     if (e) e.lastHitAt = new Date(r.last).getTime();
+  }
+  // Merge any in-memory hits newer than the DB snapshot (concurrent tick data)
+  const cutoff = Date.now() - 24 * 3600_000;
+  for (const [id, e] of st.entries) {
+    const dbMax = e.hitTimes.length ? Math.max(...e.hitTimes) : 0;
+    for (const t of savedHitTimes.get(id) ?? []) {
+      if (t > dbMax && t > cutoff) e.hitTimes.push(t);
+    }
+    const memLast = savedLastHitAt.get(id);
+    if (memLast != null && (e.lastHitAt == null || memLast > e.lastHitAt)) e.lastHitAt = memLast;
   }
   st.channels = channelRows.map((r) => r.webhook_url as string);
   if (process.env.DISCORD_WEBHOOK_URL) st.channels.push(process.env.DISCORD_WEBHOOK_URL);
@@ -215,25 +233,26 @@ async function pollOnce(e: Entry) {
       e.s.seeded = true;
     } else {
       for (const item of [...fresh].reverse()) {
-        // oldest first, seen row before alert row and before the in-memory add:
-        // a crash or DB error mid-loop means a missed alert at worst, never a
-        // re-alert, and never a phantom in-memory "seen" with no persisted row.
         if (e.seen.has(item.itemId)) continue; // reload() may have merged it in mid-loop
-        await db`INSERT INTO seen_items (search_id, item_id) VALUES (${e.s.id}, ${item.itemId}) ON CONFLICT DO NOTHING`;
+        // Transaction: if alerts insert fails, seen_items also rolls back so the
+        // item is retried next poll instead of being permanently dropped.
+        await db.begin(async (tx) => {
+          await tx`INSERT INTO seen_items (search_id, item_id) VALUES (${e.s.id}, ${item.itemId}) ON CONFLICT DO NOTHING`;
+          await tx`INSERT INTO alerts ${tx({
+            search_id: e.s.id,
+            search_q: e.s.q,
+            item_id: item.itemId,
+            title: item.title,
+            price: item.price,
+            currency: item.currency,
+            shipping_cost: item.shippingCost,
+            buying_option: item.buyingOption,
+            condition: item.condition,
+            image_url: item.imageUrl,
+            item_url: item.itemUrl,
+          })}`;
+        });
         e.seen.add(item.itemId);
-        await db`INSERT INTO alerts ${db({
-          search_id: e.s.id,
-          search_q: e.s.q,
-          item_id: item.itemId,
-          title: item.title,
-          price: item.price,
-          currency: item.currency,
-          shipping_cost: item.shippingCost,
-          buying_option: item.buyingOption,
-          condition: item.condition,
-          image_url: item.imageUrl,
-          item_url: item.itemUrl,
-        })}`;
         const now = Date.now();
         e.hitTimes.push(now);
         e.lastHitAt = now;
@@ -309,8 +328,6 @@ export async function updateSearch(
   id: number,
   patch: Partial<SearchInput> & { enabled?: boolean },
 ): Promise<SearchStats | null> {
-  const e = state().entries.get(id);
-  if (!e) return null;
   const row: Record<string, unknown> = {};
   if (patch.q !== undefined) row.q = patch.q;
   if (patch.categoryId !== undefined) row.category_id = patch.categoryId;
@@ -322,9 +339,19 @@ export async function updateSearch(
   if (Object.keys(row).length) {
     const db = sql();
     const [updated] = await db`UPDATE searches SET ${db(row)} WHERE id = ${id} RETURNING *`;
-    if (!updated) return null; // deleted concurrently: 404, not a rowToSearch(undefined) crash
-    e.s = rowToSearch(updated);
+    if (!updated) return null; // deleted concurrently
+    const e = state().entries.get(id);
+    if (e) {
+      const s = rowToSearch(updated);
+      if (e.s.seeded) s.seeded = true; // seeded only goes false→true; preserve concurrent tick
+      e.s = s;
+    } else {
+      // not in cache yet (boot window): DB was updated, return stub stats
+      return { ...rowToSearch(updated), seenCount: 0, hits24: 0, lastHitAt: null, lastPolledAt: null };
+    }
   }
+  const e = state().entries.get(id);
+  if (!e) return null;
   e.backoffMs = 0;
   if (e.s.enabled) schedule(e, 1000);
   else if (e.timer) {
@@ -335,10 +362,11 @@ export async function updateSearch(
 }
 
 export async function deleteSearch(id: number): Promise<boolean> {
+  const db = sql();
+  const [row] = await db`DELETE FROM searches WHERE id = ${id} RETURNING id`;
+  if (!row) return false;
   const e = state().entries.get(id);
-  if (!e) return false;
-  await sql()`DELETE FROM searches WHERE id = ${id}`;
-  if (e.timer) clearTimeout(e.timer);
+  if (e?.timer) clearTimeout(e.timer);
   state().entries.delete(id);
   return true;
 }

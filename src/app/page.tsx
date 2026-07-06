@@ -104,6 +104,7 @@ export default function Home() {
   const [view, setView] = useState<"searches" | "alerts" | "status">("searches");
   const [searches, setSearches] = useState<SearchStats[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [alertsBadge, setAlertsBadge] = useState(0);
   const [alertFilter, setAlertFilter] = useState<"all" | number>("all");
   const [status, setStatus] = useState<StatusInfo | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -128,7 +129,11 @@ export default function Home() {
     try {
       const [sRes, aRes, stRes] = await Promise.all([fetch("/api/searches"), fetch(alertsUrl), fetch("/api/status")]);
       if (sRes.ok) setSearches((await sRes.json()).searches);
-      if (aRes.ok) setAlerts((await aRes.json()).alerts);
+      if (aRes.ok) {
+        const list = (await aRes.json()).alerts;
+        setAlerts(list);
+        if (alertFilter === "all") setAlertsBadge(list.length);
+      }
       if (stRes.ok) setStatus(await stRes.json());
     } catch {
       // transient fetch failure (dev reload etc.) - keep showing last data
@@ -200,7 +205,7 @@ export default function Home() {
 
   const navItems = [
     { key: "searches" as const, label: "Searches", badge: null },
-    { key: "alerts" as const, label: "Alerts", badge: alerts.length || null },
+    { key: "alerts" as const, label: "Alerts", badge: alertsBadge || null },
     { key: "status" as const, label: "Status", badge: status?.errors.length || null },
   ];
 

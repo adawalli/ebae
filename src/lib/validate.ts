@@ -26,6 +26,11 @@ export function parseSearchBody(b: any, partial: boolean): string | Record<strin
   }
   if (!partial || b.binOnly !== undefined) out.binOnly = b.binOnly === undefined ? true : !!b.binOnly;
   if (!partial || b.includeAuctions !== undefined) out.includeAuctions = !!b.includeAuctions;
+  // Keep them mutually exclusive: includeAuctions is the source of truth (ebay.ts uses only it for filtering)
+  if (out.binOnly !== undefined || out.includeAuctions !== undefined) {
+    if (out.includeAuctions !== undefined) out.binOnly = !out.includeAuctions;
+    else out.includeAuctions = !(out.binOnly as boolean);
+  }
   if (partial && b.enabled !== undefined) out.enabled = !!b.enabled;
   return out;
 }

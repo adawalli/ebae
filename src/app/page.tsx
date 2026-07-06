@@ -108,6 +108,8 @@ export default function Home() {
   const [alertFilter, setAlertFilter] = useState<"all" | number>("all");
   const [status, setStatus] = useState<StatusInfo | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [failedImg, setFailedImg] = useState<Set<number>>(new Set());
+  const [editId, setEditId] = useState<number | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -176,12 +178,36 @@ export default function Home() {
     refresh();
   }
 
-  async function createSearch() {
+  function openCreate() {
+    setEditId(null);
+    setForm(emptyForm);
+    setFormError(null);
+    setShowForm(true);
+  }
+
+  function openEdit(s: SearchStats) {
+    setEditId(s.id);
+    setForm({
+      q: s.q,
+      priceFloor: s.priceFloor == null ? "" : String(s.priceFloor),
+      priceCap: s.priceCap == null ? "" : String(s.priceCap),
+      categoryId: s.categoryId ?? "",
+      bin: s.binOnly,
+      auctions: s.includeAuctions,
+      interval: s.intervalMin,
+    });
+    setFormError(null);
+    setShowForm(true);
+  }
+
+  // POST for new searches, PATCH for edits — same body either way (validate.ts
+  // accepts a full object on PATCH; changing match criteria re-seeds server-side)
+  async function submitSearch() {
     setSaving(true);
     setFormError(null);
     try {
-      const res = await fetch("/api/searches", {
-        method: "POST",
+      const res = await fetch(editId == null ? "/api/searches" : `/api/searches/${editId}`, {
+        method: editId == null ? "POST" : "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           q: form.q,
@@ -198,6 +224,7 @@ export default function Home() {
         return;
       }
       setShowForm(false);
+      setEditId(null);
       setForm(emptyForm);
       refresh();
     } catch (e) {
@@ -278,6 +305,19 @@ export default function Home() {
     fontSize: 14,
     color: "var(--text)",
     outline: "none",
+  };
+  // header row and data rows must share the same track sizes
+  const gridCols = "18px minmax(0,1fr) 150px 62px 76px 40px 132px";
+  const ghostBtn: CSSProperties = {
+    background: "transparent",
+    border: "1px solid var(--border-strong)",
+    color: "var(--muted)",
+    borderRadius: 7,
+    padding: "5px 9px",
+    fontFamily: "inherit",
+    fontSize: 11.5,
+    fontWeight: 500,
+    cursor: "pointer",
   };
 
   function searchSub(s: SearchStats) {
@@ -497,7 +537,7 @@ export default function Home() {
               </div>
               <button
                 className="hv-accent"
-                onClick={() => setShowForm(true)}
+                onClick={openCreate}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -555,7 +595,7 @@ export default function Home() {
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "18px minmax(0,1fr) 150px 62px 76px 40px 100px",
+                  gridTemplateColumns: gridCols,
                   gap: 8,
                   alignItems: "center",
                   padding: "0 14px 10px",
@@ -588,7 +628,7 @@ export default function Home() {
                       className="hv-row"
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "18px minmax(0,1fr) 150px 62px 76px 40px 100px",
+                        gridTemplateColumns: gridCols,
                         gap: 8,
                         alignItems: "center",
                         background: "var(--panel)",
@@ -699,19 +739,13 @@ export default function Home() {
                       <span style={{ display: "flex", gap: 5, justifySelf: "end" }}>
                         <button
                           className="hv-ghost"
-                          onClick={() => togglePause(s)}
-                          style={{
-                            background: "transparent",
-                            border: "1px solid var(--border-strong)",
-                            color: "var(--muted)",
-                            borderRadius: 7,
-                            padding: "5px 9px",
-                            fontFamily: "inherit",
-                            fontSize: 11.5,
-                            fontWeight: 500,
-                            cursor: "pointer",
-                          }}
+                          onClick={() => openEdit(s)}
+                          title="Edit search"
+                          style={{ ...ghostBtn, color: "var(--faint)", padding: "5px 8px" }}
                         >
+                          ✎
+                        </button>
+                        <button className="hv-ghost" onClick={() => togglePause(s)} style={ghostBtn}>
                           {s.enabled ? "Pause" : "Resume"}
                         </button>
                         <button
@@ -836,11 +870,17 @@ export default function Home() {
                           padding: "14px 16px",
                         }}
                       >
-                        {a.imageUrl ? (
+                        {a.imageUrl && !failedImg.has(a.id) ? (
                           // eslint-disable-next-line @next/next/no-img-element
                           <img
                             src={a.imageUrl}
                             alt=""
+                            loading="lazy"
+                            // match how Discord fetches (no referer) — eBay's CDN can
+                            // 403 a hotlink referer; on any load failure fall back to
+                            // the placeholder below instead of the broken-image glyph
+                            referrerPolicy="no-referrer"
+                            onError={() => setFailedImg((prev) => new Set(prev).add(a.id))}
                             style={{
                               width: 66,
                               height: 66,
@@ -1161,7 +1201,9 @@ export default function Home() {
                 borderBottom: "1px solid var(--border)",
               }}
             >
-              <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>New saved search</h3>
+              <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>
+                {editId == null ? "New saved search" : "Edit search"}
+              </h3>
               <div
                 className="hv-dim"
                 onClick={() => setShowForm(false)}
@@ -1369,7 +1411,7 @@ export default function Home() {
               </button>
               <button
                 className="hv-accent"
-                onClick={createSearch}
+                onClick={submitSearch}
                 disabled={saving}
                 style={{
                   background: "var(--accent)",
@@ -1384,7 +1426,13 @@ export default function Home() {
                   opacity: saving ? 0.7 : 1,
                 }}
               >
-                {saving ? "Creating…" : "Create search"}
+                {saving
+                  ? editId == null
+                    ? "Creating…"
+                    : "Saving…"
+                  : editId == null
+                    ? "Create search"
+                    : "Save changes"}
               </button>
             </div>
           </div>

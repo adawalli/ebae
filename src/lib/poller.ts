@@ -1,8 +1,13 @@
+import { eq, gt, lt, max, sql } from "drizzle-orm";
 import pkg from "../../package.json";
-import { initSchema, sql } from "./db";
+import { db, migrateToLatest } from "./db";
+import { alerts, channels, searches, seenItems } from "./schema";
 import { MARKETPLACE, MOCK, searchNewlyListed, tokenExpiresAt } from "./ebay";
 import { notify } from "./discord";
+import { log } from "./log";
 import type { PollError, Search, SearchStats, StatusInfo } from "./types";
+
+const plog = log.child({ component: "poller" });
 
 const QUOTA_CEILING = Number(process.env.EBAY_DAILY_QUOTA ?? 5000);
 export const DEFAULT_INTERVAL = Number(process.env.POLL_INTERVAL_DEFAULT ?? 5);
@@ -48,28 +53,30 @@ function message(e: unknown) {
   return e instanceof Error ? e.message : String(e);
 }
 
-function recordError(searchQ: string | null, msg: string) {
+// Single chokepoint for poll-loop failures: keeps the Status-page ring buffer
+// and stdout in sync. level defaults to warn (transient/self-healing); pass
+// "error" for terminal failures (e.g. a webhook dead after all retries).
+function recordError(searchQ: string | null, msg: string, level: "warn" | "error" = "warn") {
   const st = state();
   st.errors.push({ time: new Date().toISOString(), searchQ, message: msg });
   if (st.errors.length > 100) st.errors.shift();
+  plog[level]({ searchQ }, msg);
 }
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-function rowToSearch(r: any): Search {
+function rowToSearch(r: typeof searches.$inferSelect): Search {
   return {
     id: r.id,
     q: r.q,
-    categoryId: r.category_id,
-    priceCap: r.price_cap == null ? null : Number(r.price_cap),
-    binOnly: r.bin_only,
-    includeAuctions: r.include_auctions,
-    intervalMin: r.interval_min,
+    categoryId: r.categoryId,
+    priceCap: r.priceCap, // numeric mode:"number" -> already number | null
+    binOnly: r.binOnly,
+    includeAuctions: r.includeAuctions,
+    intervalMin: r.intervalMin,
     enabled: r.enabled,
     seeded: r.seeded,
-    createdAt: new Date(r.created_at).toISOString(),
+    createdAt: r.createdAt.toISOString(),
   };
 }
-/* eslint-enable @typescript-eslint/no-explicit-any */
 
 const BOOT_RETRY_MS = 15_000;
 
@@ -81,20 +88,27 @@ export async function boot() {
   await tryBoot();
 }
 
-// initSchema/reload can throw if Postgres isn't up yet (compose start order,
+// migrate/reload can throw if Postgres isn't up yet (compose start order,
 // Neon cold-wake). Retry until it succeeds instead of leaving the poller dead
 // for the life of the process.
 async function tryBoot() {
   const st = state();
   try {
-    await initSchema();
+    await migrateToLatest();
     await reload();
     st.ready = true;
     st.bootError = null;
+    plog.info(
+      { searches: st.entries.size, channels: st.channels.length, mode: MOCK ? "mock" : "live" },
+      "poller ready",
+    );
     // jitter the first ticks so N searches don't hit eBay in the same second
     for (const e of st.entries.values()) schedule(e, 1000 + Math.random() * 5000);
     setInterval(
-      () => reload().catch((err) => recordError(null, `cache refresh: ${message(err)}`)),
+      () =>
+        reload()
+          .then(() => plog.info({ searches: st.entries.size, channels: st.channels.length }, "cache refreshed"))
+          .catch((err) => recordError(null, `cache refresh: ${message(err)}`)),
       REFRESH_HOURS * 3600_000,
     );
   } catch (err) {
@@ -107,14 +121,21 @@ async function tryBoot() {
 // Full DB → cache load. Runs at boot and every CACHE_REFRESH_HOURS; between
 // those, the poller works purely from memory so serverless Postgres can sleep.
 async function reload() {
-  const db = sql();
-  await db`DELETE FROM seen_items WHERE seen_at < now() - interval '90 days'`; // ponytail: fixed 90d retention, revisit if listings outlive it
+  const database = db();
+  // ponytail: fixed 90d retention, revisit if listings outlive it
+  await database.delete(seenItems).where(lt(seenItems.seenAt, sql`now() - interval '90 days'`));
   const [searchRows, seenRows, hitRows, lastHitRows, channelRows] = await Promise.all([
-    db`SELECT * FROM searches`,
-    db`SELECT search_id, item_id FROM seen_items`,
-    db`SELECT search_id, created_at FROM alerts WHERE created_at > now() - interval '24 hours'`,
-    db`SELECT search_id, max(created_at) AS last FROM alerts GROUP BY search_id`,
-    db`SELECT webhook_url FROM channels WHERE enabled`,
+    database.select().from(searches),
+    database.select({ searchId: seenItems.searchId, itemId: seenItems.itemId }).from(seenItems),
+    database
+      .select({ searchId: alerts.searchId, createdAt: alerts.createdAt })
+      .from(alerts)
+      .where(gt(alerts.createdAt, sql`now() - interval '24 hours'`)),
+    database
+      .select({ searchId: alerts.searchId, last: max(alerts.createdAt) })
+      .from(alerts)
+      .groupBy(alerts.searchId),
+    database.select({ webhookUrl: channels.webhookUrl }).from(channels).where(eq(channels.enabled, true)),
   ]);
 
   const st = state();
@@ -164,11 +185,13 @@ async function reload() {
     e.hitTimes = [];
     e.seen = new Set(); // rebuild from DB so the 90-day prune also reclaims memory
   }
-  for (const r of seenRows) st.entries.get(r.search_id)?.seen.add(r.item_id);
-  for (const r of hitRows) st.entries.get(r.search_id)?.hitTimes.push(new Date(r.created_at).getTime());
+  for (const r of seenRows) st.entries.get(r.searchId)?.seen.add(r.itemId);
+  for (const r of hitRows) {
+    if (r.searchId != null) st.entries.get(r.searchId)?.hitTimes.push(r.createdAt.getTime());
+  }
   for (const r of lastHitRows) {
-    const e = r.search_id != null ? st.entries.get(r.search_id) : undefined;
-    if (e) e.lastHitAt = new Date(r.last).getTime();
+    const e = r.searchId != null ? st.entries.get(r.searchId) : undefined;
+    if (e && r.last) e.lastHitAt = r.last.getTime();
   }
   // Merge any in-memory hits newer than the DB snapshot (concurrent tick data)
   const cutoff = Date.now() - 24 * 3600_000;
@@ -180,7 +203,7 @@ async function reload() {
     const memLast = savedLastHitAt.get(id);
     if (memLast != null && (e.lastHitAt == null || memLast > e.lastHitAt)) e.lastHitAt = memLast;
   }
-  st.channels = channelRows.map((r) => r.webhook_url as string);
+  st.channels = channelRows.map((r) => r.webhookUrl);
   if (process.env.DISCORD_WEBHOOK_URL) st.channels.push(process.env.DISCORD_WEBHOOK_URL);
 }
 
@@ -190,6 +213,7 @@ function schedule(e: Entry, delayMs: number) {
   e.timer = null;
   if (!e.s.enabled || !state().ready) return;
   e.timer = setTimeout(() => void tick(e), delayMs);
+  plog.debug({ searchId: e.s.id, q: e.s.q, delayMs }, "scheduled");
 }
 
 async function tick(e: Entry) {
@@ -215,50 +239,55 @@ async function pollOnce(e: Entry) {
     return;
   }
 
+  plog.debug({ searchId: e.s.id, q: e.s.q }, "polling");
   try {
     st.calls.used++;
     const items = await searchNewlyListed(e.s);
     e.lastPolledAt = Date.now();
-    const db = sql();
+    plog.info({ q: e.s.q, count: items.length, quotaUsed: st.calls.used }, "eBay poll");
+    const database = db();
     const fresh = items.filter((i) => !e.seen.has(i.itemId));
+    plog.debug({ searchId: e.s.id, fresh: fresh.length, of: items.length }, "dedup");
 
     if (!e.s.seeded) {
       // first poll seeds the seen set silently - no alert spam (DESIGN.md §3)
       if (fresh.length) {
-        const rows = fresh.map((i) => ({ search_id: e.s.id, item_id: i.itemId }));
-        await db`INSERT INTO seen_items ${db(rows)} ON CONFLICT DO NOTHING`;
+        const rows = fresh.map((i) => ({ searchId: e.s.id, itemId: i.itemId }));
+        await database.insert(seenItems).values(rows).onConflictDoNothing();
         for (const i of fresh) e.seen.add(i.itemId);
       }
-      await db`UPDATE searches SET seeded = true WHERE id = ${e.s.id}`;
+      await database.update(searches).set({ seeded: true }).where(eq(searches.id, e.s.id));
       e.s.seeded = true;
+      plog.info({ searchId: e.s.id, q: e.s.q, count: fresh.length }, "seeded");
     } else {
       for (const item of [...fresh].reverse()) {
         if (e.seen.has(item.itemId)) continue; // reload() may have merged it in mid-loop
         // Transaction: if alerts insert fails, seen_items also rolls back so the
         // item is retried next poll instead of being permanently dropped.
-        await db.begin(async (tx) => {
-          await tx`INSERT INTO seen_items (search_id, item_id) VALUES (${e.s.id}, ${item.itemId}) ON CONFLICT DO NOTHING`;
-          await tx`INSERT INTO alerts ${tx({
-            search_id: e.s.id,
-            search_q: e.s.q,
-            item_id: item.itemId,
+        await database.transaction(async (tx) => {
+          await tx.insert(seenItems).values({ searchId: e.s.id, itemId: item.itemId }).onConflictDoNothing();
+          await tx.insert(alerts).values({
+            searchId: e.s.id,
+            searchQ: e.s.q,
+            itemId: item.itemId,
             title: item.title,
             price: item.price,
             currency: item.currency,
-            shipping_cost: item.shippingCost,
-            buying_option: item.buyingOption,
+            shippingCost: item.shippingCost,
+            buyingOption: item.buyingOption,
             condition: item.condition,
-            image_url: item.imageUrl,
-            item_url: item.itemUrl,
-          })}`;
+            imageUrl: item.imageUrl,
+            itemUrl: item.itemUrl,
+          });
         });
         e.seen.add(item.itemId);
         const now = Date.now();
         e.hitTimes.push(now);
         e.lastHitAt = now;
+        plog.info({ searchId: e.s.id, itemId: item.itemId, price: item.price }, "alert sent");
         if (st.channels.length) {
           const err = await notify(item, e.s, st.channels);
-          if (err) recordError(e.s.q, err);
+          if (err) recordError(e.s.q, err, "error");
         }
       }
     }
@@ -300,15 +329,17 @@ export type SearchInput = {
 };
 
 export async function createSearch(input: SearchInput): Promise<SearchStats> {
-  const db = sql();
-  const [row] = await db`INSERT INTO searches ${db({
-    q: input.q,
-    category_id: input.categoryId,
-    price_cap: input.priceCap,
-    bin_only: input.binOnly,
-    include_auctions: input.includeAuctions,
-    interval_min: input.intervalMin,
-  })} RETURNING *`;
+  const [row] = await db()
+    .insert(searches)
+    .values({
+      q: input.q,
+      categoryId: input.categoryId,
+      priceCap: input.priceCap,
+      binOnly: input.binOnly,
+      includeAuctions: input.includeAuctions,
+      intervalMin: input.intervalMin,
+    })
+    .returning();
   const e: Entry = {
     s: rowToSearch(row),
     seen: new Set(),
@@ -321,6 +352,7 @@ export async function createSearch(input: SearchInput): Promise<SearchStats> {
   };
   state().entries.set(e.s.id, e);
   schedule(e, 0); // seed immediately
+  plog.info({ searchId: e.s.id, q: e.s.q }, "search created");
   return { ...e.s, seenCount: 0, hits24: 0, lastHitAt: null, lastPolledAt: null };
 }
 
@@ -328,17 +360,16 @@ export async function updateSearch(
   id: number,
   patch: Partial<SearchInput> & { enabled?: boolean },
 ): Promise<SearchStats | null> {
-  const row: Record<string, unknown> = {};
+  const row: Partial<typeof searches.$inferInsert> = {};
   if (patch.q !== undefined) row.q = patch.q;
-  if (patch.categoryId !== undefined) row.category_id = patch.categoryId;
-  if (patch.priceCap !== undefined) row.price_cap = patch.priceCap;
-  if (patch.binOnly !== undefined) row.bin_only = patch.binOnly;
-  if (patch.includeAuctions !== undefined) row.include_auctions = patch.includeAuctions;
-  if (patch.intervalMin !== undefined) row.interval_min = patch.intervalMin;
+  if (patch.categoryId !== undefined) row.categoryId = patch.categoryId;
+  if (patch.priceCap !== undefined) row.priceCap = patch.priceCap;
+  if (patch.binOnly !== undefined) row.binOnly = patch.binOnly;
+  if (patch.includeAuctions !== undefined) row.includeAuctions = patch.includeAuctions;
+  if (patch.intervalMin !== undefined) row.intervalMin = patch.intervalMin;
   if (patch.enabled !== undefined) row.enabled = patch.enabled;
   if (Object.keys(row).length) {
-    const db = sql();
-    const [updated] = await db`UPDATE searches SET ${db(row)} WHERE id = ${id} RETURNING *`;
+    const [updated] = await db().update(searches).set(row).where(eq(searches.id, id)).returning();
     if (!updated) return null; // deleted concurrently
     const e = state().entries.get(id);
     if (e) {
@@ -358,16 +389,17 @@ export async function updateSearch(
     clearTimeout(e.timer);
     e.timer = null;
   }
+  plog.info({ searchId: id, enabled: e.s.enabled }, "search updated");
   return listSearches().find((s) => s.id === id) ?? null;
 }
 
 export async function deleteSearch(id: number): Promise<boolean> {
-  const db = sql();
-  const [row] = await db`DELETE FROM searches WHERE id = ${id} RETURNING id`;
+  const [row] = await db().delete(searches).where(eq(searches.id, id)).returning({ id: searches.id });
   if (!row) return false;
   const e = state().entries.get(id);
   if (e?.timer) clearTimeout(e.timer);
   state().entries.delete(id);
+  plog.info({ searchId: id }, "search deleted");
   return true;
 }
 

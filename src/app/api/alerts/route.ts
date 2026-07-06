@@ -1,6 +1,11 @@
+import { desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { sql } from "@/lib/db";
+import { db } from "@/lib/db";
+import { log } from "@/lib/log";
+import { alerts as alertsTable } from "@/lib/schema";
 import type { Alert } from "@/lib/types";
+
+const alog = log.child({ component: "api" });
 
 export const dynamic = "force-dynamic";
 
@@ -11,28 +16,26 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "invalid searchId" }, { status: 400 });
   const limit = Math.min(Math.max(Number(sp.get("limit")) || 100, 1), 500);
   try {
-    const db = sql();
-    const rows =
-      searchId != null && Number.isFinite(searchId)
-        ? await db`SELECT * FROM alerts WHERE search_id = ${searchId} ORDER BY created_at DESC LIMIT ${limit}`
-        : await db`SELECT * FROM alerts ORDER BY created_at DESC LIMIT ${limit}`;
+    const where = searchId != null && Number.isFinite(searchId) ? eq(alertsTable.searchId, searchId) : undefined;
+    const rows = await db().select().from(alertsTable).where(where).orderBy(desc(alertsTable.createdAt)).limit(limit);
     const alerts: Alert[] = rows.map((r) => ({
       id: r.id,
-      searchId: r.search_id,
-      searchQ: r.search_q,
-      itemId: r.item_id,
+      searchId: r.searchId,
+      searchQ: r.searchQ,
+      itemId: r.itemId,
       title: r.title,
-      price: r.price == null ? null : Number(r.price),
+      price: r.price, // numeric mode:"number" -> number | null
       currency: r.currency,
-      shippingCost: r.shipping_cost == null ? null : Number(r.shipping_cost),
-      buyingOption: r.buying_option,
+      shippingCost: r.shippingCost,
+      buyingOption: r.buyingOption as "FIXED_PRICE" | "AUCTION",
       condition: r.condition,
-      imageUrl: r.image_url,
-      itemUrl: r.item_url,
-      createdAt: new Date(r.created_at).toISOString(),
+      imageUrl: r.imageUrl,
+      itemUrl: r.itemUrl,
+      createdAt: r.createdAt.toISOString(),
     }));
     return NextResponse.json({ alerts });
-  } catch {
+  } catch (e) {
+    alog.error({ err: e, method: "GET", path: "/api/alerts" }, "route error");
     return NextResponse.json({ error: "Service unavailable" }, { status: 503 });
   }
 }

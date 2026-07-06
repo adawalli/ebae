@@ -68,7 +68,8 @@ function rowToSearch(r: typeof searches.$inferSelect): Search {
     id: r.id,
     q: r.q,
     categoryId: r.categoryId,
-    priceCap: r.priceCap, // numeric mode:"number" -> already number | null
+    priceFloor: r.priceFloor, // numeric mode:"number" -> already number | null
+    priceCap: r.priceCap,
     binOnly: r.binOnly,
     includeAuctions: r.includeAuctions,
     intervalMin: r.intervalMin,
@@ -322,6 +323,7 @@ export function listSearches(): SearchStats[] {
 export type SearchInput = {
   q: string;
   categoryId: string | null;
+  priceFloor: number | null;
   priceCap: number | null;
   binOnly: boolean;
   includeAuctions: boolean;
@@ -334,6 +336,7 @@ export async function createSearch(input: SearchInput): Promise<SearchStats> {
     .values({
       q: input.q,
       categoryId: input.categoryId,
+      priceFloor: input.priceFloor,
       priceCap: input.priceCap,
       binOnly: input.binOnly,
       includeAuctions: input.includeAuctions,
@@ -363,6 +366,7 @@ export async function updateSearch(
   const row: Partial<typeof searches.$inferInsert> = {};
   if (patch.q !== undefined) row.q = patch.q;
   if (patch.categoryId !== undefined) row.categoryId = patch.categoryId;
+  if (patch.priceFloor !== undefined) row.priceFloor = patch.priceFloor;
   if (patch.priceCap !== undefined) row.priceCap = patch.priceCap;
   if (patch.binOnly !== undefined) row.binOnly = patch.binOnly;
   if (patch.includeAuctions !== undefined) row.includeAuctions = patch.includeAuctions;

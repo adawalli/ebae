@@ -39,3 +39,20 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Service unavailable" }, { status: 503 });
   }
 }
+
+// Clears alert history (the display log only). Leaves seen_items untouched so the
+// poller does NOT re-alert on those listings. searchId scopes the clear; omit for all.
+export async function DELETE(req: Request) {
+  const sp = new URL(req.url).searchParams;
+  const searchId = sp.get("searchId") ? Number(sp.get("searchId")) : null;
+  if (searchId !== null && !Number.isFinite(searchId))
+    return NextResponse.json({ error: "invalid searchId" }, { status: 400 });
+  try {
+    const where = searchId != null ? eq(alertsTable.searchId, searchId) : undefined;
+    await db().delete(alertsTable).where(where);
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    alog.error({ err: e, method: "DELETE", path: "/api/alerts" }, "route error");
+    return NextResponse.json({ error: "Service unavailable" }, { status: 503 });
+  }
+}

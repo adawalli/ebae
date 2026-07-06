@@ -97,7 +97,7 @@ function dayLabel(iso: string) {
   return d.toLocaleDateString("en-US", { weekday: "short", day: "numeric", month: "short" });
 }
 
-const emptyForm = { q: "", priceCap: "", categoryId: "", bin: true, auctions: false, interval: 2 };
+const emptyForm = { q: "", priceFloor: "", priceCap: "", categoryId: "", bin: true, auctions: false, interval: 2 };
 
 export default function Home() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -164,6 +164,18 @@ export default function Home() {
     refresh();
   }
 
+  async function clearAlerts() {
+    const scope =
+      alertFilter === "all"
+        ? "all alerts"
+        : `alerts for "${searches.find((s) => s.id === alertFilter)?.q ?? "this search"}"`;
+    // clears the display log only — won't re-alert on those listings (seen_items is kept)
+    if (!confirm(`Clear ${scope}? This only clears the history shown here.`)) return;
+    const url = alertFilter === "all" ? "/api/alerts" : `/api/alerts?searchId=${alertFilter}`;
+    await fetch(url, { method: "DELETE" });
+    refresh();
+  }
+
   async function createSearch() {
     setSaving(true);
     setFormError(null);
@@ -173,6 +185,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           q: form.q,
+          priceFloor: form.priceFloor || null,
           priceCap: form.priceCap || null,
           categoryId: form.categoryId || null,
           binOnly: form.bin,
@@ -247,6 +260,24 @@ export default function Home() {
     fontWeight: 600,
     color: "var(--muted)",
     marginBottom: 7,
+  };
+  const dollarWrap: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    background: "var(--input-bg)",
+    border: "1px solid var(--border-strong)",
+    borderRadius: 9,
+    padding: "0 13px",
+  };
+  const dollarInput: CSSProperties = {
+    width: "100%",
+    background: "transparent",
+    border: "none",
+    padding: "11px 8px",
+    fontFamily: MONO,
+    fontSize: 14,
+    color: "var(--text)",
+    outline: "none",
   };
 
   function searchSub(s: SearchStats) {
@@ -612,6 +643,11 @@ export default function Home() {
                             BIN
                           </span>
                         )}
+                        {s.priceFloor != null && (
+                          <span style={{ ...chip, background: "var(--chip-bg)", color: "var(--chip-text)" }}>
+                            ≥ {money(s.priceFloor).replace(/\.00$/, "")}
+                          </span>
+                        )}
                         {s.priceCap != null && (
                           <span style={{ ...chip, background: "var(--chip-bg)", color: "var(--chip-text)" }}>
                             ≤ {money(s.priceCap).replace(/\.00$/, "")}
@@ -722,27 +758,48 @@ export default function Home() {
                   {visibleAlerts.length} item{visibleAlerts.length === 1 ? "" : "s"} matched · newest first
                 </div>
               </div>
-              <select
-                value={String(alertFilter)}
-                onChange={(e) => setAlertFilter(e.target.value === "all" ? "all" : Number(e.target.value))}
-                style={{
-                  fontFamily: MONO,
-                  fontSize: 12,
-                  color: "var(--faint)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 8,
-                  padding: "8px 12px",
-                  background: "transparent",
-                  cursor: "pointer",
-                }}
-              >
-                <option value="all">All searches</option>
-                {searches.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.q}
-                  </option>
-                ))}
-              </select>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {visibleAlerts.length > 0 && (
+                  <button
+                    className="hv-ghost"
+                    onClick={clearAlerts}
+                    style={{
+                      background: "transparent",
+                      border: "1px solid var(--border-strong)",
+                      color: "var(--muted)",
+                      borderRadius: 8,
+                      padding: "8px 13px",
+                      fontFamily: "inherit",
+                      fontSize: 12.5,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {alertFilter === "all" ? "Clear all" : "Clear"}
+                  </button>
+                )}
+                <select
+                  value={String(alertFilter)}
+                  onChange={(e) => setAlertFilter(e.target.value === "all" ? "all" : Number(e.target.value))}
+                  style={{
+                    fontFamily: MONO,
+                    fontSize: 12,
+                    color: "var(--faint)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    padding: "8px 12px",
+                    background: "transparent",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="all">All searches</option>
+                  {searches.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.q}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div style={{ flex: 1, overflowY: "auto", padding: "18px 30px 28px" }}>
               {visibleAlerts.length === 0 && (
@@ -1136,34 +1193,29 @@ export default function Home() {
                     style={inputBox}
                   />
                 </div>
-                <div style={{ width: 150 }}>
+                <div style={{ width: 116 }}>
+                  <label style={fieldLabel}>Min price</label>
+                  <div style={dollarWrap}>
+                    <span style={{ color: "var(--faint)", fontFamily: MONO, fontSize: 14 }}>$</span>
+                    <input
+                      value={form.priceFloor}
+                      onChange={(e) => setForm({ ...form, priceFloor: e.target.value })}
+                      placeholder="any"
+                      inputMode="decimal"
+                      style={dollarInput}
+                    />
+                  </div>
+                </div>
+                <div style={{ width: 116 }}>
                   <label style={fieldLabel}>Max price</label>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      background: "var(--input-bg)",
-                      border: "1px solid var(--border-strong)",
-                      borderRadius: 9,
-                      padding: "0 13px",
-                    }}
-                  >
+                  <div style={dollarWrap}>
                     <span style={{ color: "var(--faint)", fontFamily: MONO, fontSize: 14 }}>$</span>
                     <input
                       value={form.priceCap}
                       onChange={(e) => setForm({ ...form, priceCap: e.target.value })}
                       placeholder="2500"
                       inputMode="decimal"
-                      style={{
-                        width: "100%",
-                        background: "transparent",
-                        border: "none",
-                        padding: "11px 8px",
-                        fontFamily: MONO,
-                        fontSize: 14,
-                        color: "var(--text)",
-                        outline: "none",
-                      }}
+                      style={dollarInput}
                     />
                   </div>
                 </div>

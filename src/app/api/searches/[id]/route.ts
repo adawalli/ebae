@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { log, redact } from "@/lib/log";
-import { deleteSearch, updateSearch } from "@/lib/poller";
+import { deleteSearch, listSearches, updateSearch } from "@/lib/poller";
 import { parseSearchBody } from "@/lib/validate";
 
 const alog = log.child({ component: "api" });
@@ -13,6 +13,15 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (!body) return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
   const parsed = parseSearchBody(body, true);
   if (typeof parsed === "string") return NextResponse.json({ error: parsed }, { status: 400 });
+  // A partial PATCH sees only the bound(s) in this body; validate can't cross-check the one it
+  // isn't touching. Merge with the stored search so a lone priceFloor can't invert an existing cap.
+  if (parsed.priceFloor !== undefined || parsed.priceCap !== undefined) {
+    const cur = listSearches().find((s) => s.id === id);
+    const floor = parsed.priceFloor !== undefined ? (parsed.priceFloor as number | null) : (cur?.priceFloor ?? null);
+    const cap = parsed.priceCap !== undefined ? (parsed.priceCap as number | null) : (cur?.priceCap ?? null);
+    if (floor != null && cap != null && floor >= cap)
+      return NextResponse.json({ error: "priceFloor must be less than priceCap" }, { status: 400 });
+  }
   try {
     const search = await updateSearch(id, parsed);
     if (!search) return NextResponse.json({ error: "not found" }, { status: 404 });

@@ -8,6 +8,7 @@ export const searches = pgTable("searches", {
   id: serial("id").primaryKey(),
   q: text("q").notNull(),
   categoryId: text("category_id"),
+  priceFloor: numeric("price_floor", { mode: "number" }),
   priceCap: numeric("price_cap", { mode: "number" }),
   binOnly: boolean("bin_only").notNull().default(true),
   includeAuctions: boolean("include_auctions").notNull().default(false),

@@ -2,6 +2,7 @@ export type Search = {
   id: number;
   q: string;
   categoryId: string | null;
+  priceFloor: number | null;
   priceCap: number | null;
   binOnly: boolean;
   includeAuctions: boolean;

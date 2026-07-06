@@ -21,6 +21,16 @@ export function parseSearchBody(b: any, partial: boolean): string | Record<strin
     if (priceCap != null && (!Number.isFinite(priceCap) || priceCap <= 0)) return "priceCap must be a positive number";
     out.priceCap = priceCap;
   }
+  if (!partial || b.priceFloor !== undefined) {
+    const raw = b.priceFloor;
+    const priceFloor = raw == null || raw === "" ? null : Number(raw);
+    if (priceFloor != null && (!Number.isFinite(priceFloor) || priceFloor <= 0))
+      return "priceFloor must be a positive number";
+    out.priceFloor = priceFloor;
+  }
+  // Only cross-check when both bounds arrive together; a PATCH touching one leaves the other unknown.
+  if (out.priceFloor != null && out.priceCap != null && (out.priceFloor as number) >= (out.priceCap as number))
+    return "priceFloor must be less than priceCap";
   if (!partial || b.categoryId !== undefined) {
     out.categoryId = typeof b.categoryId === "string" && b.categoryId.trim() ? b.categoryId.trim() : null;
   }

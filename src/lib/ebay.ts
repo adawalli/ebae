@@ -59,8 +59,12 @@ export async function searchNewlyListed(s: Search): Promise<Item[]> {
     // includeAuctions is the source of truth (binOnly is its UI inverse); default is BIN-only.
     s.includeAuctions ? "buyingOptions:{FIXED_PRICE|AUCTION}" : "buyingOptions:{FIXED_PRICE}",
   ];
-  if (s.priceCap != null)
-    filters.push(`price:[..${s.priceCap}]`, `priceCurrency:${MARKETPLACE_CURRENCY[MARKETPLACE] ?? "USD"}`);
+  // eBay accepts [min..max], [min..], or [..max] — build whichever bounds are set.
+  if (s.priceFloor != null || s.priceCap != null) {
+    const lo = s.priceFloor ?? "";
+    const hi = s.priceCap ?? "";
+    filters.push(`price:[${lo}..${hi}]`, `priceCurrency:${MARKETPLACE_CURRENCY[MARKETPLACE] ?? "USD"}`);
+  }
 
   const params = new URLSearchParams({ q: s.q, sort: "newlyListed", limit: "50" });
   if (s.categoryId) params.set("category_ids", s.categoryId);
@@ -126,8 +130,10 @@ const CONDITIONS = ["New", "Open box", "Excellent", "Used", "Pre-owned", "For pa
 
 function mockItem(s: Search, n: number): Item {
   const id = `v1|mock-${s.id}-${n}|0`;
-  const cap = s.priceCap ?? 500;
-  const price = Math.round(cap * (0.35 + ((n * 7919) % 66) / 100) * 100) / 100; // stays under the cap, like the real filter
+  // mirror the live price:[floor..cap] filter so mock alerts respect both bounds
+  const lo = s.priceFloor ?? 0;
+  const hi = Math.max(s.priceCap ?? 500, lo + 50);
+  const price = Math.round((lo + (hi - lo) * (0.15 + ((n * 7919) % 60) / 100)) * 100) / 100;
   const auction = s.includeAuctions && n % 3 === 0;
   return {
     itemId: id,

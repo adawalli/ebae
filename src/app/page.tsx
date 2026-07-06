@@ -122,19 +122,18 @@ export default function Home() {
   };
 
   const refresh = useCallback(async () => {
+    // filter alerts server-side: a global top-N fetch can push a low-volume
+    // search's alerts out of the window, hiding them from its filtered view
+    const alertsUrl = alertFilter === "all" ? "/api/alerts" : `/api/alerts?searchId=${alertFilter}`;
     try {
-      const [sRes, aRes, stRes] = await Promise.all([
-        fetch("/api/searches"),
-        fetch("/api/alerts"),
-        fetch("/api/status"),
-      ]);
+      const [sRes, aRes, stRes] = await Promise.all([fetch("/api/searches"), fetch(alertsUrl), fetch("/api/status")]);
       if (sRes.ok) setSearches((await sRes.json()).searches);
       if (aRes.ok) setAlerts((await aRes.json()).alerts);
       if (stRes.ok) setStatus(await stRes.json());
     } catch {
       // transient fetch failure (dev reload etc.) - keep showing last data
     }
-  }, []);
+  }, [alertFilter]);
 
   useEffect(() => {
     // initial fetch + poll; setState only fires after the network round-trip
@@ -156,6 +155,7 @@ export default function Home() {
   async function removeSearch(s: SearchStats) {
     if (!confirm(`Delete saved search "${s.q}"?`)) return;
     await fetch(`/api/searches/${s.id}`, { method: "DELETE" });
+    if (alertFilter === s.id) setAlertFilter("all"); // its option is gone; don't strand the filter
     refresh();
   }
 
@@ -189,8 +189,8 @@ export default function Home() {
     }
   }
 
-  // filter client-side so the sidebar badge always shows the total
-  const visibleAlerts = alertFilter === "all" ? alerts : alerts.filter((a) => a.searchId === alertFilter);
+  // alerts is already filtered server-side (see refresh); the sidebar badge shows the loaded count
+  const visibleAlerts = alerts;
   const active = searches.filter((s) => s.enabled);
   const projected = active.reduce((n, s) => n + callsFor(s.intervalMin), 0);
   const ceiling = status?.quota.ceiling ?? 5000;
@@ -1202,10 +1202,13 @@ export default function Home() {
                   ] as const
                 ).map(([text, key]) => {
                   const on = form[key];
+                  // BIN-only and include-auctions are the same axis: keep them
+                  // mutually exclusive so the saved search can't claim both
+                  const other = key === "bin" ? "auctions" : "bin";
                   return (
                     <div
                       key={key}
-                      onClick={() => setForm({ ...form, [key]: !on })}
+                      onClick={() => setForm({ ...form, [key]: !on, [other]: on })}
                       style={{
                         flex: 1,
                         display: "flex",

@@ -71,15 +71,26 @@ function rowToSearch(r: any): Search {
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
+const BOOT_RETRY_MS = 15_000;
+
 // Called once per server boot from instrumentation.ts
 export async function boot() {
   const st = state();
   if (st.bootedAt) return;
   st.bootedAt = Date.now();
+  await tryBoot();
+}
+
+// initSchema/reload can throw if Postgres isn't up yet (compose start order,
+// Neon cold-wake). Retry until it succeeds instead of leaving the poller dead
+// for the life of the process.
+async function tryBoot() {
+  const st = state();
   try {
     await initSchema();
     await reload();
     st.ready = true;
+    st.bootError = null;
     // jitter the first ticks so N searches don't hit eBay in the same second
     for (const e of st.entries.values()) schedule(e, 1000 + Math.random() * 5000);
     setInterval(
@@ -88,7 +99,8 @@ export async function boot() {
     );
   } catch (err) {
     st.bootError = message(err);
-    recordError(null, `boot failed: ${st.bootError}`);
+    recordError(null, `boot failed, retrying: ${st.bootError}`);
+    setTimeout(() => void tryBoot(), BOOT_RETRY_MS);
   }
 }
 
@@ -112,6 +124,10 @@ async function reload() {
     fresh.add(s.id);
     const existing = st.entries.get(s.id);
     if (existing) {
+      // seeded only ever goes false->true; a stale DB snapshot must not revert a
+      // concurrent tick that just finished seeding, or its search re-seeds and
+      // swallows the next batch of real listings without alerting.
+      if (existing.s.seeded) s.seeded = true;
       existing.s = s;
     } else {
       const entry: Entry = {
@@ -199,11 +215,12 @@ async function pollOnce(e: Entry) {
       e.s.seeded = true;
     } else {
       for (const item of [...fresh].reverse()) {
-        // oldest first, seen row before alert row: a crash mid-loop means a
-        // missed alert at worst, never a re-alert after restart
+        // oldest first, seen row before alert row and before the in-memory add:
+        // a crash or DB error mid-loop means a missed alert at worst, never a
+        // re-alert, and never a phantom in-memory "seen" with no persisted row.
         if (e.seen.has(item.itemId)) continue; // reload() may have merged it in mid-loop
-        e.seen.add(item.itemId);
         await db`INSERT INTO seen_items (search_id, item_id) VALUES (${e.s.id}, ${item.itemId}) ON CONFLICT DO NOTHING`;
+        e.seen.add(item.itemId);
         await db`INSERT INTO alerts ${db({
           search_id: e.s.id,
           search_q: e.s.q,
@@ -305,6 +322,7 @@ export async function updateSearch(
   if (Object.keys(row).length) {
     const db = sql();
     const [updated] = await db`UPDATE searches SET ${db(row)} WHERE id = ${id} RETURNING *`;
+    if (!updated) return null; // deleted concurrently: 404, not a rowToSearch(undefined) crash
     e.s = rowToSearch(updated);
   }
   e.backoffMs = 0;

@@ -37,8 +37,9 @@ export async function searchNewlyListed(s: Search): Promise<Item[]> {
   if (MOCK) return mockSearch(s);
 
   const filters = [
-    // always constrain buying options: without a filter eBay returns auctions too
-    !s.binOnly && s.includeAuctions ? "buyingOptions:{FIXED_PRICE|AUCTION}" : "buyingOptions:{FIXED_PRICE}",
+    // always constrain buying options: without a filter eBay returns auctions too.
+    // includeAuctions is the source of truth (binOnly is its UI inverse); default is BIN-only.
+    s.includeAuctions ? "buyingOptions:{FIXED_PRICE|AUCTION}" : "buyingOptions:{FIXED_PRICE}",
   ];
   if (s.priceCap != null) filters.push(`price:[..${s.priceCap}]`, "priceCurrency:USD");
 
@@ -107,7 +108,7 @@ function mockItem(s: Search, n: number): Item {
   const id = `v1|mock-${s.id}-${n}|0`;
   const cap = s.priceCap ?? 500;
   const price = Math.round(cap * (0.35 + ((n * 7919) % 66) / 100) * 100) / 100; // stays under the cap, like the real filter
-  const auction = !s.binOnly && s.includeAuctions && n % 3 === 0;
+  const auction = s.includeAuctions && n % 3 === 0;
   return {
     itemId: id,
     title: `${s.q} - ${VARIANTS[n % VARIANTS.length]}`,

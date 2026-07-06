@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
+import { log, redact } from "@/lib/log";
 import { deleteSearch, updateSearch } from "@/lib/poller";
 import { parseSearchBody } from "@/lib/validate";
+
+const alog = log.child({ component: "api" });
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +18,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     if (!search) return NextResponse.json({ error: "not found" }, { status: 404 });
     return NextResponse.json({ search });
   } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+    alog.error({ err: e, method: "PATCH", path: `/api/searches/${id}` }, "route error");
+    return NextResponse.json({ error: redact(e instanceof Error ? e.message : String(e)) }, { status: 500 });
   }
 }
 
@@ -26,6 +30,7 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     if (!ok) return NextResponse.json({ error: "not found" }, { status: 404 });
     return NextResponse.json({ ok: true });
   } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+    alog.error({ err: e, method: "DELETE", path: `/api/searches/${id}` }, "route error");
+    return NextResponse.json({ error: redact(e instanceof Error ? e.message : String(e)) }, { status: 500 });
   }
 }

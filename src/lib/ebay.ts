@@ -1,4 +1,7 @@
+import { log } from "./log";
 import type { Item, Search } from "./types";
+
+const elog = log.child({ component: "ebay" });
 
 export const MOCK = !process.env.EBAY_CLIENT_ID;
 export const MARKETPLACE = process.env.EBAY_MARKETPLACE ?? "EBAY_US";
@@ -40,12 +43,16 @@ async function token(): Promise<string> {
   if (!res.ok) throw new Error(`eBay token request failed: ${res.status} ${await res.text()}`);
   const data = (await res.json()) as { access_token: string; expires_in: number };
   g.__ebaeToken = { value: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 };
+  elog.info({ expiresIn: data.expires_in }, "token acquired"); // never log the token value
   return data.access_token;
 }
 
 // Newest-first page 1 of the Browse API for one saved search
 export async function searchNewlyListed(s: Search): Promise<Item[]> {
-  if (MOCK) return mockSearch(s);
+  if (MOCK) {
+    elog.debug({ q: s.q }, "mock search");
+    return mockSearch(s);
+  }
 
   const filters = [
     // always constrain buying options: without a filter eBay returns auctions too.
@@ -59,6 +66,7 @@ export async function searchNewlyListed(s: Search): Promise<Item[]> {
   if (s.categoryId) params.set("category_ids", s.categoryId);
   if (filters.length) params.set("filter", filters.join(","));
 
+  elog.debug({ q: s.q, filters: filters.join(","), marketplace: MARKETPLACE }, "eBay request");
   const res = await fetch(`${API_HOST}/buy/browse/v1/item_summary/search?${params}`, {
     headers: {
       Authorization: `Bearer ${await token()}`,

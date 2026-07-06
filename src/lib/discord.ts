@@ -1,4 +1,7 @@
+import { log } from "./log";
 import type { Item, Search } from "./types";
+
+const dlog = log.child({ component: "discord" });
 
 function money(n: number | null, currency: string) {
   if (n == null) return "—";
@@ -37,13 +40,17 @@ function embed(item: Item, search: Search) {
 export async function notify(item: Item, search: Search, webhookUrls: string[]): Promise<string | null> {
   const body = JSON.stringify(embed(item, search));
   let lastError: string | null = null;
-  for (const url of webhookUrls) {
+  // index-based: logs identify a webhook by position, never its URL (secret token)
+  for (let i = 0; i < webhookUrls.length; i++) {
+    const url = webhookUrls[i];
     let err: string | null = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
+      dlog.debug({ webhook: i, attempt }, "attempt");
       try {
         const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body });
         if (res.ok) {
           err = null;
+          dlog.debug({ webhook: i, attempt }, "delivered");
           break;
         }
         err = `Discord webhook ${res.status}`;
@@ -51,8 +58,13 @@ export async function notify(item: Item, search: Search, webhookUrls: string[]):
         // e.name only: fetch error messages can echo the webhook URL (its secret token)
         err = `Discord webhook send failed (${e instanceof Error ? e.name : "error"})`;
       }
-      if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 2000));
+      if (err && attempt < 3) {
+        dlog.warn({ webhook: i, attempt, err }, "webhook retry");
+        await new Promise((r) => setTimeout(r, attempt * 2000));
+      }
     }
+    // terminal failure is not logged here: notify() returns it and the poller
+    // logs it once at error level (recordError(..., "error")).
     if (err) lastError = err;
   }
   return lastError;

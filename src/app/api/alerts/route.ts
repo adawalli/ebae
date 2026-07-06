@@ -7,6 +7,8 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   const sp = new URL(req.url).searchParams;
   const searchId = sp.get("searchId") ? Number(sp.get("searchId")) : null;
+  if (searchId !== null && !Number.isFinite(searchId))
+    return NextResponse.json({ error: "invalid searchId" }, { status: 400 });
   const limit = Math.min(Math.max(Number(sp.get("limit")) || 100, 1), 500);
   try {
     const db = sql();
@@ -31,7 +33,6 @@ export async function GET(req: Request) {
     }));
     return NextResponse.json({ alerts });
   } catch {
-    // DB unreachable/unconfigured: the status endpoint carries the error
-    return NextResponse.json({ alerts: [] });
+    return NextResponse.json({ error: "Service unavailable" }, { status: 503 });
   }
 }

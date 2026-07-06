@@ -3,6 +3,17 @@ import type { Item, Search } from "./types";
 export const MOCK = !process.env.EBAY_CLIENT_ID;
 export const MARKETPLACE = process.env.EBAY_MARKETPLACE ?? "EBAY_US";
 
+const MARKETPLACE_CURRENCY: Record<string, string> = {
+  EBAY_US: "USD",
+  EBAY_CA: "CAD",
+  EBAY_GB: "GBP",
+  EBAY_AU: "AUD",
+  EBAY_DE: "EUR",
+  EBAY_FR: "EUR",
+  EBAY_IT: "EUR",
+  EBAY_ES: "EUR",
+};
+
 const SANDBOX = process.env.EBAY_ENV === "sandbox";
 const AUTH_HOST = SANDBOX ? "https://api.sandbox.ebay.com" : "https://api.ebay.com";
 const API_HOST = AUTH_HOST;
@@ -41,7 +52,8 @@ export async function searchNewlyListed(s: Search): Promise<Item[]> {
     // includeAuctions is the source of truth (binOnly is its UI inverse); default is BIN-only.
     s.includeAuctions ? "buyingOptions:{FIXED_PRICE|AUCTION}" : "buyingOptions:{FIXED_PRICE}",
   ];
-  if (s.priceCap != null) filters.push(`price:[..${s.priceCap}]`, "priceCurrency:USD");
+  if (s.priceCap != null)
+    filters.push(`price:[..${s.priceCap}]`, `priceCurrency:${MARKETPLACE_CURRENCY[MARKETPLACE] ?? "USD"}`);
 
   const params = new URLSearchParams({ q: s.q, sort: "newlyListed", limit: "50" });
   if (s.categoryId) params.set("category_ids", s.categoryId);

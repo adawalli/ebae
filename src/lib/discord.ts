@@ -16,7 +16,7 @@ function embed(item: Item, search: Search) {
   return {
     embeds: [
       {
-        title: item.title.slice(0, 256),
+        title: (item.title ?? "Untitled listing").slice(0, 256),
         url: item.itemUrl,
         color: 0x21a2c4,
         thumbnail: item.imageUrl ? { url: item.imageUrl } : undefined,

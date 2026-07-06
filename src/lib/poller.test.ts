@@ -1,0 +1,31 @@
+import { expect, test } from "bun:test";
+import { matchCriteriaChanged } from "./poller";
+
+// The re-seed guard in updateSearch: editing what a search matches must reset the
+// seeded baseline, but touching only interval/enabled (or a no-op edit) must not.
+const cur = {
+  q: "Leica M6",
+  categoryId: null,
+  priceFloor: null,
+  priceCap: 2500,
+  binOnly: true,
+  includeAuctions: false,
+};
+
+test("changing a match field re-seeds", () => {
+  expect(matchCriteriaChanged(cur, { q: "Leica M3" })).toBe(true);
+  expect(matchCriteriaChanged(cur, { priceCap: 3000 })).toBe(true);
+  expect(matchCriteriaChanged(cur, { priceFloor: 100 })).toBe(true); // null -> value
+  expect(matchCriteriaChanged(cur, { categoryId: "625" })).toBe(true);
+  expect(matchCriteriaChanged(cur, { includeAuctions: true })).toBe(true);
+});
+
+test("no-op or non-match edits do not re-seed", () => {
+  expect(matchCriteriaChanged(cur, { q: "Leica M6", priceCap: 2500 })).toBe(false); // same values
+  expect(matchCriteriaChanged(cur, { intervalMin: 10, enabled: false })).toBe(false); // not match fields
+  expect(matchCriteriaChanged(cur, {})).toBe(false);
+});
+
+test("undefined current (boot window) treats any provided field as changed", () => {
+  expect(matchCriteriaChanged(undefined, { q: "anything" })).toBe(true);
+});

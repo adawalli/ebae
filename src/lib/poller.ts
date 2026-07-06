@@ -359,10 +359,24 @@ export async function createSearch(input: SearchInput): Promise<SearchStats> {
   return { ...e.s, seenCount: 0, hits24: 0, lastHitAt: null, lastPolledAt: null };
 }
 
+// Fields that decide what a search matches. Changing any of them makes the seeded
+// baseline stale (the new criteria surface listings never in `seen`), so an edit
+// touching them must re-seed. Pure + exported so the decision is unit-testable.
+// undefined in the patch = field untouched.
+const MATCH_FIELDS = ["q", "categoryId", "priceFloor", "priceCap", "binOnly", "includeAuctions"] as const;
+
+export function matchCriteriaChanged(
+  cur: Record<string, unknown> | undefined,
+  patch: Record<string, unknown>,
+): boolean {
+  return MATCH_FIELDS.some((k) => patch[k] !== undefined && patch[k] !== cur?.[k]);
+}
+
 export async function updateSearch(
   id: number,
   patch: Partial<SearchInput> & { enabled?: boolean },
 ): Promise<SearchStats | null> {
+  const cur = state().entries.get(id)?.s;
   const row: Partial<typeof searches.$inferInsert> = {};
   if (patch.q !== undefined) row.q = patch.q;
   if (patch.categoryId !== undefined) row.categoryId = patch.categoryId;
@@ -372,13 +386,21 @@ export async function updateSearch(
   if (patch.includeAuctions !== undefined) row.includeAuctions = patch.includeAuctions;
   if (patch.intervalMin !== undefined) row.intervalMin = patch.intervalMin;
   if (patch.enabled !== undefined) row.enabled = patch.enabled;
+  // Editing what a search matches (query/category/price/buying-option) invalidates
+  // the seeded baseline: the new criteria surface listings never in `seen`, which a
+  // seeded search would alert on all at once. Re-seed so that backlog stays silent -
+  // the same guarantee the first poll gives a brand-new search (DESIGN.md §3).
+  const criteriaChanged = matchCriteriaChanged(cur, row);
+  if (criteriaChanged) row.seeded = false;
   if (Object.keys(row).length) {
     const [updated] = await db().update(searches).set(row).where(eq(searches.id, id)).returning();
     if (!updated) return null; // deleted concurrently
     const e = state().entries.get(id);
     if (e) {
       const s = rowToSearch(updated);
-      if (e.s.seeded) s.seeded = true; // seeded only goes false→true; preserve concurrent tick
+      // seeded only goes false→true on its own (a concurrent tick); preserve that,
+      // unless this edit intentionally reset it to re-seed the new criteria.
+      if (e.s.seeded && !criteriaChanged) s.seeded = true;
       e.s = s;
     } else {
       // not in cache yet (boot window): DB was updated, return stub stats

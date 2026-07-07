@@ -13,6 +13,12 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  {
+    // shadcn-generated primitives: don't hold vendored source to the app's
+    // stricter effect rules (regenerating a component would drop inline disables).
+    files: ["src/components/ui/**", "src/hooks/**"],
+    rules: { "react-hooks/set-state-in-effect": "off" },
+  },
 ]);
 
 export default eslintConfig;

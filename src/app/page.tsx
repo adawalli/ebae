@@ -1,56 +1,29 @@
 "use client";
 
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useTheme } from "next-themes";
+import { Moon, Sun } from "lucide-react";
 import type { Alert, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
+import { Button } from "@/components/ui/button";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuBadge,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+  useSidebar,
+} from "@/components/ui/sidebar";
 
 const MONO = "var(--font-mono), ui-monospace, monospace";
-const HUE = 232; // "Cyan" accent from the design
-
-function tokens(theme: "dark" | "light"): Record<string, string> {
-  if (theme === "light") {
-    return {
-      "--bg": "oklch(0.955 0.006 265)",
-      "--panel": "oklch(0.995 0.003 265)",
-      "--panel2": "oklch(0.975 0.005 265)",
-      "--sidebar": "oklch(0.982 0.004 265)",
-      "--border": "oklch(0.9 0.008 265)",
-      "--border-strong": "oklch(0.85 0.012 265)",
-      "--text": "oklch(0.24 0.02 265)",
-      "--muted": "oklch(0.46 0.02 265)",
-      "--faint": "oklch(0.6 0.015 265)",
-      "--accent": `oklch(0.52 0.2 ${HUE})`,
-      "--accent-soft": `oklch(0.52 0.2 ${HUE} / 0.12)`,
-      "--accent-text": `oklch(0.46 0.19 ${HUE})`,
-      "--chip-bg": "oklch(0.93 0.008 265)",
-      "--chip-text": "oklch(0.42 0.02 265)",
-      "--green": "oklch(0.58 0.15 150)",
-      "--amber": "oklch(0.6 0.14 60)",
-      "--input-bg": "oklch(0.98 0.004 265)",
-      "--row-hover": "oklch(0.965 0.006 265)",
-    };
-  }
-  return {
-    "--bg": "oklch(0.17 0.015 265)",
-    "--panel": "oklch(0.2 0.018 265)",
-    "--panel2": "oklch(0.185 0.012 265)",
-    "--sidebar": "oklch(0.2 0.018 265)",
-    "--border": "oklch(0.28 0.02 265)",
-    "--border-strong": "oklch(0.33 0.02 265)",
-    "--text": "oklch(0.94 0.008 265)",
-    "--muted": "oklch(0.66 0.02 265)",
-    "--faint": "oklch(0.54 0.02 265)",
-    "--accent": `oklch(0.55 0.19 ${HUE})`,
-    "--accent-soft": `oklch(0.6 0.19 ${HUE} / 0.16)`,
-    "--accent-text": `oklch(0.8 0.12 ${HUE})`,
-    "--chip-bg": "oklch(0.28 0.02 265)",
-    "--chip-text": "oklch(0.72 0.02 265)",
-    "--green": "oklch(0.7 0.17 150)",
-    "--amber": "oklch(0.82 0.13 65)",
-    "--input-bg": "oklch(0.16 0.012 265)",
-    "--row-hover": "oklch(0.225 0.02 265)",
-  };
-}
-
 const fmt = (n: number) => n.toLocaleString("en-US");
 const callsFor = (interval: number) => Math.round(1440 / interval);
 
@@ -113,8 +86,99 @@ function useMediaQuery(query: string) {
   return matches;
 }
 
+type NavItem = { key: "searches" | "alerts" | "status"; label: string; badge: number | null };
+
+function ThemeToggle() {
+  const { resolvedTheme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+  // one-shot post-hydration flag so the icon reflects the resolved theme without a mismatch
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => setMounted(true), []);
+  const isDark = resolvedTheme === "dark";
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="w-full justify-start gap-2"
+      onClick={() => setTheme(isDark ? "light" : "dark")}
+    >
+      {mounted ? isDark ? <Sun className="size-4" /> : <Moon className="size-4" /> : <span className="size-4" />}
+      {mounted ? (isDark ? "Light mode" : "Dark mode") : "Theme"}
+    </Button>
+  );
+}
+
+function AppSidebar({
+  view,
+  setView,
+  navItems,
+  running,
+  status,
+}: {
+  view: "searches" | "alerts" | "status";
+  setView: (v: "searches" | "alerts" | "status") => void;
+  navItems: NavItem[];
+  running: boolean;
+  status: StatusInfo | null;
+}) {
+  const { setOpenMobile, isMobile } = useSidebar();
+  const pick = (k: NavItem["key"]) => {
+    setView(k);
+    if (isMobile) setOpenMobile(false);
+  };
+  return (
+    <Sidebar>
+      <SidebarHeader>
+        <div className="flex items-center gap-2.5 px-1 py-1.5">
+          <div
+            className="flex size-7 items-center justify-center rounded-lg bg-primary text-[15px] font-semibold text-white"
+            style={{ fontFamily: MONO }}
+          >
+            e
+          </div>
+          <div className="flex flex-col leading-none">
+            <span className="text-[17px] font-bold tracking-tight">ebae</span>
+            <span className="mt-1 text-[11px] text-muted-foreground">eBay, before anyone else</span>
+          </div>
+        </div>
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel className="font-mono tracking-[0.14em] uppercase">Monitor</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {navItems.map((n) => (
+                <SidebarMenuItem key={n.key}>
+                  <SidebarMenuButton isActive={view === n.key} onClick={() => pick(n.key)}>
+                    <span>{n.label}</span>
+                  </SidebarMenuButton>
+                  {n.badge != null && <SidebarMenuBadge>{n.badge}</SidebarMenuBadge>}
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+      <SidebarFooter className="gap-3">
+        <ThemeToggle />
+        <div className="flex items-center gap-2 px-1 font-mono text-[10.5px] text-muted-foreground">
+          <span
+            className="size-1.5 shrink-0 rounded-full"
+            style={{
+              background: running ? "var(--eb-green)" : "var(--eb-amber)",
+              animation: running ? "ebPulse 2.4s ease-in-out infinite" : undefined,
+            }}
+          />
+          {running && status?.poller.bootedAt
+            ? `poller up ${duration(status.poller.bootedAt)} · v${status.version}`
+            : `poller down${status ? ` · v${status.version}` : ""}`}
+        </div>
+      </SidebarFooter>
+    </Sidebar>
+  );
+}
+
 export default function Home() {
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [view, setView] = useState<"searches" | "alerts" | "status">("searches");
   const [searches, setSearches] = useState<SearchStats[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -131,16 +195,6 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const isMobile = useMediaQuery("(max-width: 767px)");
-
-  useEffect(() => {
-    // one-time sync from localStorage after hydration (SSR always renders dark)
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (localStorage.getItem("ebae-theme") === "light") setTheme("light");
-  }, []);
-  const pickTheme = (t: "dark" | "light") => {
-    setTheme(t);
-    localStorage.setItem("ebae-theme", t);
-  };
 
   const refresh = useCallback(async () => {
     // filter alerts server-side: a global top-N fetch can push a low-volume
@@ -311,43 +365,43 @@ export default function Home() {
     borderRadius: 5,
   };
   const statCard: CSSProperties = {
-    background: "var(--panel)",
-    border: "1px solid var(--border)",
+    background: "var(--eb-panel)",
+    border: "1px solid var(--eb-border)",
     borderRadius: 12,
     padding: "18px 20px",
   };
   const emptyCard: CSSProperties = {
-    background: "var(--panel)",
-    border: "1px solid var(--border)",
+    background: "var(--eb-panel)",
+    border: "1px solid var(--eb-border)",
     borderRadius: 12,
     padding: "40px 20px",
     textAlign: "center",
-    color: "var(--muted)",
+    color: "var(--eb-muted)",
     fontSize: 13.5,
   };
   const inputBox: CSSProperties = {
     width: "100%",
-    background: "var(--input-bg)",
-    border: "1px solid var(--border-strong)",
+    background: "var(--eb-input-bg)",
+    border: "1px solid var(--eb-border-strong)",
     borderRadius: 9,
     padding: "11px 13px",
     fontFamily: "inherit",
     fontSize: 14,
-    color: "var(--text)",
+    color: "var(--eb-text)",
     outline: "none",
   };
   const fieldLabel: CSSProperties = {
     display: "block",
     fontSize: 12.5,
     fontWeight: 600,
-    color: "var(--muted)",
+    color: "var(--eb-muted)",
     marginBottom: 7,
   };
   const dollarWrap: CSSProperties = {
     display: "flex",
     alignItems: "center",
-    background: "var(--input-bg)",
-    border: "1px solid var(--border-strong)",
+    background: "var(--eb-input-bg)",
+    border: "1px solid var(--eb-border-strong)",
     borderRadius: 9,
     padding: "0 13px",
   };
@@ -358,15 +412,15 @@ export default function Home() {
     padding: "11px 8px",
     fontFamily: MONO,
     fontSize: 14,
-    color: "var(--text)",
+    color: "var(--eb-text)",
     outline: "none",
   };
   // header row and data rows must share the same track sizes
   const gridCols = "18px minmax(0,1fr) 150px 62px 76px 40px 132px";
   const ghostBtn: CSSProperties = {
     background: "transparent",
-    border: "1px solid var(--border-strong)",
-    color: "var(--muted)",
+    border: "1px solid var(--eb-border-strong)",
+    color: "var(--eb-muted)",
     borderRadius: 7,
     padding: "5px 9px",
     fontFamily: "inherit",
@@ -383,1308 +437,1033 @@ export default function Home() {
   }
 
   return (
-    <div
-      style={{
-        ...(tokens(theme) as CSSProperties),
-        minHeight: "100dvh",
-        height: isMobile ? "auto" : "100vh",
-        display: "flex",
-        flexDirection: isMobile ? "column" : "row",
-        overflow: isMobile ? "visible" : "hidden",
-        background: "var(--bg)",
-        color: "var(--text)",
-        fontFamily: "var(--font-sans), system-ui, sans-serif",
-      }}
-    >
-      {/* ================= MOBILE TOP BAR ================= */}
-      {isMobile && (
-        <div
-          style={{
-            position: "sticky",
-            top: 0,
-            zIndex: 30,
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            padding: "11px 16px",
-            background: "var(--sidebar)",
-            borderBottom: "1px solid var(--border)",
-          }}
-        >
-          <div
-            style={{
-              width: 26,
-              height: 26,
-              borderRadius: 7,
-              background: "var(--accent)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontFamily: MONO,
-              fontWeight: 600,
-              fontSize: 15,
-              color: "white",
-              flex: "0 0 auto",
-            }}
-          >
-            e
-          </div>
-          <span style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.01em" }}>ebae</span>
+    <SidebarProvider className="md:h-svh">
+      <AppSidebar view={view} setView={setView} navItems={navItems} running={running} status={status} />
+      <SidebarInset className="min-h-0">
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4 md:hidden">
+          <SidebarTrigger className="-ml-1" />
+          <span className="text-[15px] font-bold tracking-tight">ebae</span>
           <span
+            className="size-1.5 rounded-full"
             style={{
-              width: 6,
-              height: 6,
-              borderRadius: "50%",
-              background: running ? "var(--green)" : "var(--amber)",
-              animation: running ? "ebPulse 2.4s ease-in-out infinite" : "none",
+              background: running ? "var(--eb-green)" : "var(--eb-amber)",
+              animation: running ? "ebPulse 2.4s ease-in-out infinite" : undefined,
             }}
             title={running ? "poller running" : "poller down"}
           />
-          <div
-            style={{
-              marginLeft: "auto",
-              display: "flex",
-              background: "var(--panel2)",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              padding: 3,
-            }}
-          >
-            {(["dark", "light"] as const).map((t) => (
+        </header>
+        <div className="flex min-h-0 flex-1 flex-col">
+          {/* ---------- SEARCHES VIEW ---------- */}
+          {view === "searches" && (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
               <div
-                key={t}
-                onClick={() => pickTheme(t)}
-                style={{
-                  padding: "4px 11px",
-                  borderRadius: 6,
-                  fontSize: 12,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  background: theme === t ? "var(--accent)" : "transparent",
-                  color: theme === t ? "white" : "var(--muted)",
-                }}
-              >
-                {t === "dark" ? "Dark" : "Light"}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ================= SIDEBAR (desktop) ================= */}
-      {!isMobile && (
-        <div
-          style={{
-            width: 224,
-            flex: "0 0 224px",
-            background: "var(--sidebar)",
-            borderRight: "1px solid var(--border)",
-            display: "flex",
-            flexDirection: "column",
-            padding: "22px 16px 18px",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 6px 4px" }}>
-            <div
-              style={{
-                width: 28,
-                height: 28,
-                borderRadius: 8,
-                background: "var(--accent)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontFamily: MONO,
-                fontWeight: 600,
-                fontSize: 16,
-                color: "white",
-              }}
-            >
-              e
-            </div>
-            <span style={{ fontWeight: 700, fontSize: 18, letterSpacing: "-0.01em" }}>ebae</span>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--faint)", padding: "2px 6px 22px", letterSpacing: ".01em" }}>
-            eBay, before anyone else
-          </div>
-
-          <div
-            style={{
-              fontFamily: MONO,
-              fontSize: 10.5,
-              letterSpacing: ".14em",
-              textTransform: "uppercase",
-              color: "var(--faint)",
-              padding: "0 8px 9px",
-            }}
-          >
-            Monitor
-          </div>
-          {navItems.map((n) => {
-            const isActive = view === n.key;
-            return (
-              <div
-                key={n.key}
-                className="hv-nav"
-                onClick={() => setView(n.key)}
                 style={{
                   display: "flex",
-                  alignItems: "center",
-                  gap: 11,
-                  padding: "9px 10px",
-                  borderRadius: 8,
-                  cursor: "pointer",
-                  fontSize: 14,
-                  marginBottom: 2,
-                  fontWeight: isActive ? 600 : 500,
-                  background: isActive ? "var(--accent-soft)" : "transparent",
-                  color: isActive ? "var(--accent-text)" : "var(--muted)",
+                  alignItems: isMobile ? "stretch" : "center",
+                  flexDirection: isMobile ? "column" : "row",
+                  justifyContent: "space-between",
+                  gap: isMobile ? 14 : 0,
+                  padding: isMobile ? "16px" : "24px 30px",
+                  borderBottom: "1px solid var(--eb-border)",
                 }}
               >
-                <span
-                  style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: 2,
-                    background: isActive ? "var(--accent)" : "transparent",
-                    border: isActive ? "none" : "1.5px solid var(--faint)",
-                  }}
-                />
-                {n.label}
-                {n.badge != null && (
-                  <span
+                <div>
+                  <h2 style={{ margin: 0, fontSize: 21, fontWeight: 700, letterSpacing: "-0.01em" }}>Saved searches</h2>
+                  <div
                     style={{
-                      marginLeft: "auto",
-                      fontFamily: MONO,
-                      fontSize: 11,
-                      background: "var(--accent-soft)",
-                      color: "var(--accent-text)",
-                      padding: "1px 8px",
-                      borderRadius: 20,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      fontSize: 13,
+                      color: "var(--eb-muted)",
+                      marginTop: 4,
                     }}
                   >
-                    {n.badge}
-                  </span>
-                )}
-              </div>
-            );
-          })}
-
-          <div style={{ marginTop: "auto" }}>
-            <div
-              style={{
-                display: "flex",
-                background: "var(--panel2)",
-                border: "1px solid var(--border)",
-                borderRadius: 9,
-                padding: 4,
-                marginBottom: 12,
-              }}
-            >
-              {(["dark", "light"] as const).map((t) => (
-                <div
-                  key={t}
-                  onClick={() => pickTheme(t)}
-                  style={{
-                    flex: 1,
-                    textAlign: "center",
-                    fontSize: 12.5,
-                    fontWeight: 600,
-                    padding: 6,
-                    borderRadius: 6,
-                    cursor: "pointer",
-                    background: theme === t ? "var(--accent)" : "transparent",
-                    color: theme === t ? "white" : "var(--muted)",
-                  }}
-                >
-                  {t === "dark" ? "Dark" : "Light"}
+                    <span
+                      style={{
+                        width: 6,
+                        height: 6,
+                        borderRadius: "50%",
+                        background: running ? "var(--eb-green)" : "var(--eb-amber)",
+                        animation: running ? "ebPulse 2.4s ease-in-out infinite" : "none",
+                      }}
+                    />
+                    {searches.length} searches · {active.length} active ·{" "}
+                    {running ? (mock ? "polling (mock mode)" : "polling live") : "poller down"}
+                  </div>
                 </div>
-              ))}
-            </div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 7,
-                fontFamily: MONO,
-                fontSize: 10.5,
-                color: "var(--faint)",
-                padding: "0 6px",
-              }}
-            >
-              <span
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: "50%",
-                  background: running ? "var(--green)" : "var(--amber)",
-                  animation: running ? "ebPulse 2.4s ease-in-out infinite" : "none",
-                  flex: "0 0 auto",
-                }}
-              />
-              {running && status?.poller.bootedAt
-                ? `poller up ${duration(status.poller.bootedAt)} · v${status.version}`
-                : `poller down${status ? ` · v${status.version}` : ""}`}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ================= MAIN ================= */}
-      <div
-        style={{
-          flex: 1,
-          minWidth: 0,
-          display: "flex",
-          flexDirection: "column",
-          paddingBottom: isMobile ? "calc(60px + env(safe-area-inset-bottom))" : 0,
-        }}
-      >
-        {/* ---------- SEARCHES VIEW ---------- */}
-        {view === "searches" && (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: isMobile ? "stretch" : "center",
-                flexDirection: isMobile ? "column" : "row",
-                justifyContent: "space-between",
-                gap: isMobile ? 14 : 0,
-                padding: isMobile ? "16px" : "24px 30px",
-                borderBottom: "1px solid var(--border)",
-              }}
-            >
-              <div>
-                <h2 style={{ margin: 0, fontSize: 21, fontWeight: 700, letterSpacing: "-0.01em" }}>Saved searches</h2>
-                <div
+                <button
+                  className="hv-accent"
+                  onClick={openCreate}
                   style={{
                     display: "flex",
                     alignItems: "center",
-                    gap: 8,
-                    fontSize: 13,
-                    color: "var(--muted)",
-                    marginTop: 4,
+                    justifyContent: isMobile ? "center" : "flex-start",
+                    gap: 7,
+                    background: "var(--eb-accent)",
+                    color: "white",
+                    border: "none",
+                    borderRadius: 9,
+                    padding: "10px 17px",
+                    fontFamily: "inherit",
+                    fontSize: 14,
+                    fontWeight: 600,
+                    cursor: "pointer",
                   }}
                 >
-                  <span
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: "50%",
-                      background: running ? "var(--green)" : "var(--amber)",
-                      animation: running ? "ebPulse 2.4s ease-in-out infinite" : "none",
-                    }}
-                  />
-                  {searches.length} searches · {active.length} active ·{" "}
-                  {running ? (mock ? "polling (mock mode)" : "polling live") : "poller down"}
-                </div>
+                  <span style={{ fontSize: 17, lineHeight: 0, marginTop: -1 }}>+</span> New search
+                </button>
               </div>
-              <button
-                className="hv-accent"
-                onClick={openCreate}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: isMobile ? "center" : "flex-start",
-                  gap: 7,
-                  background: "var(--accent)",
-                  color: "white",
-                  border: "none",
-                  borderRadius: 9,
-                  padding: "10px 17px",
-                  fontFamily: "inherit",
-                  fontSize: 14,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
-                <span style={{ fontSize: 17, lineHeight: 0, marginTop: -1 }}>+</span> New search
-              </button>
-            </div>
 
-            {/* quota strip */}
-            <div
-              style={{
-                margin: isMobile ? "16px 16px 6px" : "20px 30px 6px",
-                background: "var(--panel)",
-                border: "1px solid var(--border)",
-                borderRadius: 12,
-                padding: "15px 20px",
-              }}
-            >
+              {/* quota strip */}
               <div
                 style={{
-                  display: "flex",
-                  alignItems: "baseline",
-                  justifyContent: "space-between",
-                  flexWrap: "wrap",
-                  gap: 6,
-                  marginBottom: 10,
+                  margin: isMobile ? "16px 16px 6px" : "20px 30px 6px",
+                  background: "var(--eb-panel)",
+                  border: "1px solid var(--eb-border)",
+                  borderRadius: 12,
+                  padding: "15px 20px",
                 }}
               >
-                <span style={{ fontSize: 13, color: "var(--muted)" }}>
-                  Projected API usage <span style={{ color: "var(--faint)" }}>· enforced global budget</span>
-                </span>
-                <span style={{ fontFamily: MONO, fontSize: 13, color: "var(--text)" }}>
-                  <b style={{ color: "var(--accent-text)" }}>{fmt(projected)}</b> / {fmt(ceiling)} calls·day{" "}
-                  <span style={{ color: "var(--faint)" }}>· {quotaPct}%</span>
-                </span>
-              </div>
-              <div style={{ height: 8, borderRadius: 5, background: "var(--chip-bg)", overflow: "hidden" }}>
                 <div
                   style={{
-                    width: `${quotaPct}%`,
-                    height: "100%",
-                    borderRadius: 5,
-                    background: "linear-gradient(90deg,var(--accent),var(--accent-text))",
-                  }}
-                />
-              </div>
-            </div>
-
-            {/* table */}
-            <div
-              style={{
-                flex: 1,
-                overflowY: isMobile ? "visible" : "auto",
-                padding: isMobile ? "14px 16px 20px" : "14px 30px 26px",
-              }}
-            >
-              {!isMobile && (
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: gridCols,
-                    gap: 8,
-                    alignItems: "center",
-                    padding: "0 14px 10px",
-                    fontFamily: MONO,
-                    fontSize: 10.5,
-                    letterSpacing: ".1em",
-                    textTransform: "uppercase",
-                    color: "var(--faint)",
+                    display: "flex",
+                    alignItems: "baseline",
+                    justifyContent: "space-between",
+                    flexWrap: "wrap",
+                    gap: 6,
+                    marginBottom: 10,
                   }}
                 >
-                  <span />
-                  <span>Search</span>
-                  <span>Filters</span>
-                  <span style={{ textAlign: "right" }}>Every</span>
-                  <span style={{ textAlign: "right" }}>Calls·day</span>
-                  <span style={{ textAlign: "right" }}>24h</span>
-                  <span />
+                  <span style={{ fontSize: 13, color: "var(--eb-muted)" }}>
+                    Projected API usage <span style={{ color: "var(--eb-faint)" }}>· enforced global budget</span>
+                  </span>
+                  <span style={{ fontFamily: MONO, fontSize: 13, color: "var(--eb-text)" }}>
+                    <b style={{ color: "var(--eb-accent-text)" }}>{fmt(projected)}</b> / {fmt(ceiling)} calls·day{" "}
+                    <span style={{ color: "var(--eb-faint)" }}>· {quotaPct}%</span>
+                  </span>
                 </div>
-              )}
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {searches.length === 0 && (
-                  <div style={emptyCard}>
-                    No saved searches yet — create one and ebae starts watching within seconds.
+                <div style={{ height: 8, borderRadius: 5, background: "var(--eb-chip-bg)", overflow: "hidden" }}>
+                  <div
+                    style={{
+                      width: `${quotaPct}%`,
+                      height: "100%",
+                      borderRadius: 5,
+                      background: "linear-gradient(90deg,var(--eb-accent),var(--eb-accent-text))",
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* table */}
+              <div
+                style={{
+                  flex: 1,
+                  overflowY: isMobile ? "visible" : "auto",
+                  padding: isMobile ? "14px 16px 20px" : "14px 30px 26px",
+                }}
+              >
+                {!isMobile && (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: gridCols,
+                      gap: 8,
+                      alignItems: "center",
+                      padding: "0 14px 10px",
+                      fontFamily: MONO,
+                      fontSize: 10.5,
+                      letterSpacing: ".1em",
+                      textTransform: "uppercase",
+                      color: "var(--eb-faint)",
+                    }}
+                  >
+                    <span />
+                    <span>Search</span>
+                    <span>Filters</span>
+                    <span style={{ textAlign: "right" }}>Every</span>
+                    <span style={{ textAlign: "right" }}>Calls·day</span>
+                    <span style={{ textAlign: "right" }}>24h</span>
+                    <span />
                   </div>
                 )}
-                {searches.map((s) => {
-                  const seeding = s.enabled && !s.seeded;
-                  const hasChips = s.binOnly || s.priceFloor != null || s.priceCap != null || s.includeAuctions;
-                  if (isMobile) {
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {searches.length === 0 && (
+                    <div style={emptyCard}>
+                      No saved searches yet — create one and ebae starts watching within seconds.
+                    </div>
+                  )}
+                  {searches.map((s) => {
+                    const seeding = s.enabled && !s.seeded;
+                    const hasChips = s.binOnly || s.priceFloor != null || s.priceCap != null || s.includeAuctions;
+                    if (isMobile) {
+                      return (
+                        <div
+                          key={s.id}
+                          className="hv-card"
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 10,
+                            background: "var(--eb-panel)",
+                            border: "1px solid var(--eb-border)",
+                            borderRadius: 12,
+                            padding: "14px 15px",
+                            opacity: s.enabled ? 1 : 0.62,
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+                            <span
+                              style={{
+                                width: 8,
+                                height: 8,
+                                flex: "0 0 auto",
+                                borderRadius: s.enabled ? "50%" : 2,
+                                background: s.enabled ? "var(--eb-green)" : "var(--eb-faint)",
+                                boxShadow: s.enabled
+                                  ? "0 0 0 3px color-mix(in oklab, var(--eb-green) 18%, transparent)"
+                                  : "none",
+                                animation:
+                                  s.enabled && s.intervalMin <= 2 ? "ebPulse 2.4s ease-in-out infinite" : "none",
+                              }}
+                            />
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                              <div
+                                style={{
+                                  fontWeight: 600,
+                                  fontSize: 15,
+                                  whiteSpace: "nowrap",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                }}
+                              >
+                                {s.q}
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: 11.5,
+                                  color: "var(--eb-faint)",
+                                  fontFamily: MONO,
+                                  marginTop: 2,
+                                  whiteSpace: "nowrap",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                }}
+                              >
+                                {searchSub(s)}
+                              </div>
+                            </div>
+                          </div>
+                          {hasChips && (
+                            <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                              {s.binOnly && (
+                                <span
+                                  style={{
+                                    ...chip,
+                                    background: "var(--eb-accent-soft)",
+                                    color: "var(--eb-accent-text)",
+                                  }}
+                                >
+                                  BIN
+                                </span>
+                              )}
+                              {s.priceFloor != null && (
+                                <span
+                                  style={{ ...chip, background: "var(--eb-chip-bg)", color: "var(--eb-chip-text)" }}
+                                >
+                                  ≥ {money(s.priceFloor).replace(/\.00$/, "")}
+                                </span>
+                              )}
+                              {s.priceCap != null && (
+                                <span
+                                  style={{ ...chip, background: "var(--eb-chip-bg)", color: "var(--eb-chip-text)" }}
+                                >
+                                  ≤ {money(s.priceCap).replace(/\.00$/, "")}
+                                </span>
+                              )}
+                              {s.includeAuctions && (
+                                <span
+                                  style={{ ...chip, background: "var(--eb-chip-bg)", color: "var(--eb-chip-text)" }}
+                                >
+                                  Auctions ok
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              flexWrap: "wrap",
+                              fontFamily: MONO,
+                              fontSize: 12,
+                              color: "var(--eb-muted)",
+                            }}
+                          >
+                            <span
+                              style={{
+                                color: s.enabled
+                                  ? s.intervalMin <= 1
+                                    ? "var(--eb-amber)"
+                                    : "var(--eb-text)"
+                                  : "var(--eb-faint)",
+                              }}
+                            >
+                              every {s.intervalMin}m
+                            </span>
+                            <span style={{ color: "var(--eb-faint)" }}>·</span>
+                            <span>{s.enabled ? `${fmt(callsFor(s.intervalMin))} calls·day` : "paused"}</span>
+                            <span style={{ color: "var(--eb-faint)" }}>·</span>
+                            <span style={{ color: s.hits24 > 0 ? "var(--eb-accent-text)" : "var(--eb-muted)" }}>
+                              {seeding ? "seeding" : `${s.hits24} in 24h`}
+                            </span>
+                          </div>
+                          <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
+                            <button
+                              className="hv-ghost"
+                              onClick={() => openEdit(s)}
+                              style={{
+                                ...ghostBtn,
+                                flex: "0 0 auto",
+                                padding: "9px 13px",
+                                fontSize: 13,
+                                color: "var(--eb-faint)",
+                              }}
+                            >
+                              ✎ Edit
+                            </button>
+                            <button
+                              className="hv-ghost"
+                              onClick={() => togglePause(s)}
+                              style={{ ...ghostBtn, flex: 1, padding: "9px 13px", fontSize: 13 }}
+                            >
+                              {s.enabled ? "Pause" : "Resume"}
+                            </button>
+                            <button
+                              className="hv-ghost"
+                              onClick={() => removeSearch(s)}
+                              style={{
+                                ...ghostBtn,
+                                flex: "0 0 auto",
+                                padding: "9px 13px",
+                                fontSize: 13,
+                                color: "var(--eb-faint)",
+                              }}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }
                     return (
                       <div
                         key={s.id}
-                        className="hv-card"
+                        className="hv-row"
                         style={{
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 10,
-                          background: "var(--panel)",
-                          border: "1px solid var(--border)",
-                          borderRadius: 12,
-                          padding: "14px 15px",
+                          display: "grid",
+                          gridTemplateColumns: gridCols,
+                          gap: 8,
+                          alignItems: "center",
+                          background: "var(--eb-panel)",
+                          border: "1px solid var(--eb-border)",
+                          borderRadius: 10,
+                          padding: "13px 14px",
                           opacity: s.enabled ? 1 : 0.62,
                         }}
                       >
-                        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
-                          <span
-                            style={{
-                              width: 8,
-                              height: 8,
-                              flex: "0 0 auto",
-                              borderRadius: s.enabled ? "50%" : 2,
-                              background: s.enabled ? "var(--green)" : "var(--faint)",
-                              boxShadow: s.enabled
-                                ? "0 0 0 3px color-mix(in oklab, var(--green) 18%, transparent)"
-                                : "none",
-                              animation: s.enabled && s.intervalMin <= 2 ? "ebPulse 2.4s ease-in-out infinite" : "none",
-                            }}
-                          />
-                          <div style={{ minWidth: 0, flex: 1 }}>
-                            <div
-                              style={{
-                                fontWeight: 600,
-                                fontSize: 15,
-                                whiteSpace: "nowrap",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                              }}
-                            >
-                              {s.q}
-                            </div>
-                            <div
-                              style={{
-                                fontSize: 11.5,
-                                color: "var(--faint)",
-                                fontFamily: MONO,
-                                marginTop: 2,
-                                whiteSpace: "nowrap",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                              }}
-                            >
-                              {searchSub(s)}
-                            </div>
-                          </div>
-                        </div>
-                        {hasChips && (
-                          <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                            {s.binOnly && (
-                              <span style={{ ...chip, background: "var(--accent-soft)", color: "var(--accent-text)" }}>
-                                BIN
-                              </span>
-                            )}
-                            {s.priceFloor != null && (
-                              <span style={{ ...chip, background: "var(--chip-bg)", color: "var(--chip-text)" }}>
-                                ≥ {money(s.priceFloor).replace(/\.00$/, "")}
-                              </span>
-                            )}
-                            {s.priceCap != null && (
-                              <span style={{ ...chip, background: "var(--chip-bg)", color: "var(--chip-text)" }}>
-                                ≤ {money(s.priceCap).replace(/\.00$/, "")}
-                              </span>
-                            )}
-                            {s.includeAuctions && (
-                              <span style={{ ...chip, background: "var(--chip-bg)", color: "var(--chip-text)" }}>
-                                Auctions ok
-                              </span>
-                            )}
-                          </div>
-                        )}
-                        <div
+                        <span
                           style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            flexWrap: "wrap",
-                            fontFamily: MONO,
-                            fontSize: 12,
-                            color: "var(--muted)",
+                            width: 8,
+                            height: 8,
+                            justifySelf: "start",
+                            borderRadius: s.enabled ? "50%" : 2,
+                            background: s.enabled ? "var(--eb-green)" : "var(--eb-faint)",
+                            boxShadow: s.enabled
+                              ? "0 0 0 3px color-mix(in oklab, var(--eb-green) 18%, transparent)"
+                              : "none",
+                            animation: s.enabled && s.intervalMin <= 2 ? "ebPulse 2.4s ease-in-out infinite" : "none",
                           }}
-                        >
-                          <span
+                        />
+                        <div style={{ minWidth: 0 }}>
+                          <div
                             style={{
-                              color: s.enabled ? (s.intervalMin <= 1 ? "var(--amber)" : "var(--text)") : "var(--faint)",
+                              fontWeight: 600,
+                              fontSize: 14.5,
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
                             }}
                           >
-                            every {s.intervalMin}m
-                          </span>
-                          <span style={{ color: "var(--faint)" }}>·</span>
-                          <span>{s.enabled ? `${fmt(callsFor(s.intervalMin))} calls·day` : "paused"}</span>
-                          <span style={{ color: "var(--faint)" }}>·</span>
-                          <span style={{ color: s.hits24 > 0 ? "var(--accent-text)" : "var(--muted)" }}>
-                            {seeding ? "seeding" : `${s.hits24} in 24h`}
-                          </span>
+                            {s.q}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 11.5,
+                              color: "var(--eb-faint)",
+                              fontFamily: MONO,
+                              marginTop: 2,
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
+                            {searchSub(s)}
+                          </div>
                         </div>
-                        <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
+                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                          {s.binOnly && (
+                            <span
+                              style={{ ...chip, background: "var(--eb-accent-soft)", color: "var(--eb-accent-text)" }}
+                            >
+                              BIN
+                            </span>
+                          )}
+                          {s.priceFloor != null && (
+                            <span style={{ ...chip, background: "var(--eb-chip-bg)", color: "var(--eb-chip-text)" }}>
+                              ≥ {money(s.priceFloor).replace(/\.00$/, "")}
+                            </span>
+                          )}
+                          {s.priceCap != null && (
+                            <span style={{ ...chip, background: "var(--eb-chip-bg)", color: "var(--eb-chip-text)" }}>
+                              ≤ {money(s.priceCap).replace(/\.00$/, "")}
+                            </span>
+                          )}
+                          {s.includeAuctions && (
+                            <span style={{ ...chip, background: "var(--eb-chip-bg)", color: "var(--eb-chip-text)" }}>
+                              Auctions ok
+                            </span>
+                          )}
+                        </div>
+                        <span
+                          style={{
+                            textAlign: "right",
+                            fontFamily: MONO,
+                            fontSize: 13,
+                            color: s.enabled
+                              ? s.intervalMin <= 1
+                                ? "var(--eb-amber)"
+                                : "var(--eb-text)"
+                              : "var(--eb-faint)",
+                          }}
+                        >
+                          {s.intervalMin} min
+                        </span>
+                        <span style={{ textAlign: "right", fontFamily: MONO, fontSize: 13, color: "var(--eb-muted)" }}>
+                          {s.enabled ? fmt(callsFor(s.intervalMin)) : "—"}
+                        </span>
+                        <span style={{ textAlign: "right", fontFamily: MONO, fontSize: 13 }}>
+                          {seeding ? (
+                            <span
+                              style={{
+                                fontSize: 9,
+                                background: "color-mix(in oklab, var(--eb-amber) 18%, transparent)",
+                                color: "var(--eb-amber)",
+                                padding: "2px 6px",
+                                borderRadius: 5,
+                              }}
+                            >
+                              seed
+                            </span>
+                          ) : (
+                            <span
+                              style={{
+                                color: s.hits24 > 0 ? "var(--eb-accent-text)" : "var(--eb-faint)",
+                                fontWeight: s.hits24 > 0 ? 600 : 400,
+                              }}
+                            >
+                              {s.hits24}
+                            </span>
+                          )}
+                        </span>
+                        <span style={{ display: "flex", gap: 5, justifySelf: "end" }}>
                           <button
                             className="hv-ghost"
                             onClick={() => openEdit(s)}
-                            style={{
-                              ...ghostBtn,
-                              flex: "0 0 auto",
-                              padding: "9px 13px",
-                              fontSize: 13,
-                              color: "var(--faint)",
-                            }}
+                            title="Edit search"
+                            style={{ ...ghostBtn, color: "var(--eb-faint)", padding: "5px 8px" }}
                           >
-                            ✎ Edit
+                            ✎
                           </button>
-                          <button
-                            className="hv-ghost"
-                            onClick={() => togglePause(s)}
-                            style={{ ...ghostBtn, flex: 1, padding: "9px 13px", fontSize: 13 }}
-                          >
+                          <button className="hv-ghost" onClick={() => togglePause(s)} style={ghostBtn}>
                             {s.enabled ? "Pause" : "Resume"}
                           </button>
                           <button
                             className="hv-ghost"
                             onClick={() => removeSearch(s)}
+                            title="Delete search"
                             style={{
-                              ...ghostBtn,
-                              flex: "0 0 auto",
-                              padding: "9px 13px",
-                              fontSize: 13,
-                              color: "var(--faint)",
+                              background: "transparent",
+                              border: "1px solid var(--eb-border-strong)",
+                              color: "var(--eb-faint)",
+                              borderRadius: 7,
+                              padding: "5px 8px",
+                              fontFamily: "inherit",
+                              fontSize: 11.5,
+                              cursor: "pointer",
                             }}
                           >
                             ✕
                           </button>
-                        </div>
+                        </span>
                       </div>
                     );
-                  }
-                  return (
-                    <div
-                      key={s.id}
-                      className="hv-row"
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: gridCols,
-                        gap: 8,
-                        alignItems: "center",
-                        background: "var(--panel)",
-                        border: "1px solid var(--border)",
-                        borderRadius: 10,
-                        padding: "13px 14px",
-                        opacity: s.enabled ? 1 : 0.62,
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: 8,
-                          height: 8,
-                          justifySelf: "start",
-                          borderRadius: s.enabled ? "50%" : 2,
-                          background: s.enabled ? "var(--green)" : "var(--faint)",
-                          boxShadow: s.enabled
-                            ? "0 0 0 3px color-mix(in oklab, var(--green) 18%, transparent)"
-                            : "none",
-                          animation: s.enabled && s.intervalMin <= 2 ? "ebPulse 2.4s ease-in-out infinite" : "none",
-                        }}
-                      />
-                      <div style={{ minWidth: 0 }}>
-                        <div
-                          style={{
-                            fontWeight: 600,
-                            fontSize: 14.5,
-                            whiteSpace: "nowrap",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                          }}
-                        >
-                          {s.q}
-                        </div>
-                        <div
-                          style={{
-                            fontSize: 11.5,
-                            color: "var(--faint)",
-                            fontFamily: MONO,
-                            marginTop: 2,
-                            whiteSpace: "nowrap",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                          }}
-                        >
-                          {searchSub(s)}
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                        {s.binOnly && (
-                          <span style={{ ...chip, background: "var(--accent-soft)", color: "var(--accent-text)" }}>
-                            BIN
-                          </span>
-                        )}
-                        {s.priceFloor != null && (
-                          <span style={{ ...chip, background: "var(--chip-bg)", color: "var(--chip-text)" }}>
-                            ≥ {money(s.priceFloor).replace(/\.00$/, "")}
-                          </span>
-                        )}
-                        {s.priceCap != null && (
-                          <span style={{ ...chip, background: "var(--chip-bg)", color: "var(--chip-text)" }}>
-                            ≤ {money(s.priceCap).replace(/\.00$/, "")}
-                          </span>
-                        )}
-                        {s.includeAuctions && (
-                          <span style={{ ...chip, background: "var(--chip-bg)", color: "var(--chip-text)" }}>
-                            Auctions ok
-                          </span>
-                        )}
-                      </div>
-                      <span
-                        style={{
-                          textAlign: "right",
-                          fontFamily: MONO,
-                          fontSize: 13,
-                          color: s.enabled ? (s.intervalMin <= 1 ? "var(--amber)" : "var(--text)") : "var(--faint)",
-                        }}
-                      >
-                        {s.intervalMin} min
-                      </span>
-                      <span style={{ textAlign: "right", fontFamily: MONO, fontSize: 13, color: "var(--muted)" }}>
-                        {s.enabled ? fmt(callsFor(s.intervalMin)) : "—"}
-                      </span>
-                      <span style={{ textAlign: "right", fontFamily: MONO, fontSize: 13 }}>
-                        {seeding ? (
-                          <span
-                            style={{
-                              fontSize: 9,
-                              background: "color-mix(in oklab, var(--amber) 18%, transparent)",
-                              color: "var(--amber)",
-                              padding: "2px 6px",
-                              borderRadius: 5,
-                            }}
-                          >
-                            seed
-                          </span>
-                        ) : (
-                          <span
-                            style={{
-                              color: s.hits24 > 0 ? "var(--accent-text)" : "var(--faint)",
-                              fontWeight: s.hits24 > 0 ? 600 : 400,
-                            }}
-                          >
-                            {s.hits24}
-                          </span>
-                        )}
-                      </span>
-                      <span style={{ display: "flex", gap: 5, justifySelf: "end" }}>
-                        <button
-                          className="hv-ghost"
-                          onClick={() => openEdit(s)}
-                          title="Edit search"
-                          style={{ ...ghostBtn, color: "var(--faint)", padding: "5px 8px" }}
-                        >
-                          ✎
-                        </button>
-                        <button className="hv-ghost" onClick={() => togglePause(s)} style={ghostBtn}>
-                          {s.enabled ? "Pause" : "Resume"}
-                        </button>
-                        <button
-                          className="hv-ghost"
-                          onClick={() => removeSearch(s)}
-                          title="Delete search"
-                          style={{
-                            background: "transparent",
-                            border: "1px solid var(--border-strong)",
-                            color: "var(--faint)",
-                            borderRadius: 7,
-                            padding: "5px 8px",
-                            fontFamily: "inherit",
-                            fontSize: 11.5,
-                            cursor: "pointer",
-                          }}
-                        >
-                          ✕
-                        </button>
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ---------- ALERTS VIEW ---------- */}
-        {view === "alerts" && (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                flexWrap: "wrap",
-                gap: isMobile ? 12 : 10,
-                padding: isMobile ? "16px" : "24px 30px",
-                borderBottom: "1px solid var(--border)",
-              }}
-            >
-              <div>
-                <h2 style={{ margin: 0, fontSize: 21, fontWeight: 700, letterSpacing: "-0.01em" }}>Alert history</h2>
-                <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>
-                  {visibleAlerts.length} item{visibleAlerts.length === 1 ? "" : "s"} matched · newest first
+                  })}
                 </div>
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                {visibleAlerts.length > 0 && (
-                  <button
-                    className="hv-ghost"
-                    onClick={clearAlerts}
+            </div>
+          )}
+
+          {/* ---------- ALERTS VIEW ---------- */}
+          {view === "alerts" && (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  flexWrap: "wrap",
+                  gap: isMobile ? 12 : 10,
+                  padding: isMobile ? "16px" : "24px 30px",
+                  borderBottom: "1px solid var(--eb-border)",
+                }}
+              >
+                <div>
+                  <h2 style={{ margin: 0, fontSize: 21, fontWeight: 700, letterSpacing: "-0.01em" }}>Alert history</h2>
+                  <div style={{ fontSize: 13, color: "var(--eb-muted)", marginTop: 4 }}>
+                    {visibleAlerts.length} item{visibleAlerts.length === 1 ? "" : "s"} matched · newest first
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  {visibleAlerts.length > 0 && (
+                    <button
+                      className="hv-ghost"
+                      onClick={clearAlerts}
+                      style={{
+                        background: "transparent",
+                        border: "1px solid var(--eb-border-strong)",
+                        color: "var(--eb-muted)",
+                        borderRadius: 8,
+                        padding: "8px 13px",
+                        fontFamily: "inherit",
+                        fontSize: 12.5,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {alertFilter === "all" ? "Clear all" : "Clear"}
+                    </button>
+                  )}
+                  <select
+                    value={String(alertFilter)}
+                    onChange={(e) => setAlertFilter(e.target.value === "all" ? "all" : Number(e.target.value))}
                     style={{
-                      background: "transparent",
-                      border: "1px solid var(--border-strong)",
-                      color: "var(--muted)",
+                      fontFamily: MONO,
+                      fontSize: 12,
+                      color: "var(--eb-faint)",
+                      border: "1px solid var(--eb-border)",
                       borderRadius: 8,
-                      padding: "8px 13px",
-                      fontFamily: "inherit",
-                      fontSize: 12.5,
-                      fontWeight: 600,
+                      padding: "8px 12px",
+                      background: "transparent",
                       cursor: "pointer",
                     }}
                   >
-                    {alertFilter === "all" ? "Clear all" : "Clear"}
-                  </button>
-                )}
-                <select
-                  value={String(alertFilter)}
-                  onChange={(e) => setAlertFilter(e.target.value === "all" ? "all" : Number(e.target.value))}
-                  style={{
-                    fontFamily: MONO,
-                    fontSize: 12,
-                    color: "var(--faint)",
-                    border: "1px solid var(--border)",
-                    borderRadius: 8,
-                    padding: "8px 12px",
-                    background: "transparent",
-                    cursor: "pointer",
-                  }}
-                >
-                  <option value="all">All searches</option>
-                  {searches.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.q}
-                    </option>
-                  ))}
-                </select>
+                    <option value="all">All searches</option>
+                    {searches.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.q}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
-            </div>
-            <div
-              style={{
-                flex: 1,
-                overflowY: isMobile ? "visible" : "auto",
-                padding: isMobile ? "16px 16px 20px" : "18px 30px 28px",
-              }}
-            >
-              {visibleAlerts.length === 0 && (
-                <div style={emptyCard}>No alerts yet — new listings show up here the moment the poller finds them.</div>
-              )}
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {visibleAlerts.map((a, i) => {
-                  const day = dayLabel(a.createdAt);
-                  const header = i === 0 || dayLabel(visibleAlerts[i - 1].createdAt) !== day;
-                  return (
-                    <div key={a.id}>
-                      {header && (
-                        <div
-                          style={{
-                            fontFamily: MONO,
-                            fontSize: 10.5,
-                            letterSpacing: ".12em",
-                            textTransform: "uppercase",
-                            color: "var(--faint)",
-                            padding: "8px 2px 12px",
-                          }}
-                        >
-                          {day}
-                        </div>
-                      )}
-                      <div
-                        className="hv-card"
-                        style={{
-                          display: "flex",
-                          gap: isMobile ? 12 : 15,
-                          background: "var(--panel)",
-                          border: "1px solid var(--border)",
-                          borderRadius: 12,
-                          padding: isMobile ? "12px 13px" : "14px 16px",
-                        }}
-                      >
-                        {a.imageUrl && !failedImg.has(a.id) ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={a.imageUrl}
-                            alt=""
-                            loading="lazy"
-                            // match how Discord fetches (no referer) — eBay's CDN can
-                            // 403 a hotlink referer; on any load failure fall back to
-                            // the placeholder below instead of the broken-image glyph
-                            referrerPolicy="no-referrer"
-                            onError={() => setFailedImg((prev) => new Set(prev).add(a.id))}
-                            style={{
-                              width: isMobile ? 56 : 66,
-                              height: isMobile ? 56 : 66,
-                              flex: "0 0 auto",
-                              borderRadius: 10,
-                              border: "1px solid var(--border)",
-                              objectFit: "cover",
-                            }}
-                          />
-                        ) : (
+              <div
+                style={{
+                  flex: 1,
+                  overflowY: isMobile ? "visible" : "auto",
+                  padding: isMobile ? "16px 16px 20px" : "18px 30px 28px",
+                }}
+              >
+                {visibleAlerts.length === 0 && (
+                  <div style={emptyCard}>
+                    No alerts yet — new listings show up here the moment the poller finds them.
+                  </div>
+                )}
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {visibleAlerts.map((a, i) => {
+                    const day = dayLabel(a.createdAt);
+                    const header = i === 0 || dayLabel(visibleAlerts[i - 1].createdAt) !== day;
+                    return (
+                      <div key={a.id}>
+                        {header && (
                           <div
                             style={{
-                              width: isMobile ? 56 : 66,
-                              height: isMobile ? 56 : 66,
-                              flex: "0 0 auto",
-                              borderRadius: 10,
-                              border: "1px solid var(--border)",
-                              background:
-                                "repeating-linear-gradient(45deg,var(--chip-bg) 0 5px,transparent 5px 10px),var(--panel2)",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
+                              fontFamily: MONO,
+                              fontSize: 10.5,
+                              letterSpacing: ".12em",
+                              textTransform: "uppercase",
+                              color: "var(--eb-faint)",
+                              padding: "8px 2px 12px",
                             }}
                           >
-                            <span style={{ fontFamily: MONO, fontSize: 8, color: "var(--faint)" }}>photo</span>
+                            {day}
                           </div>
                         )}
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "flex-start",
-                              justifyContent: "space-between",
-                              gap: 12,
-                            }}
-                          >
-                            <a
-                              className="hv-link"
-                              href={a.itemUrl}
-                              target="_blank"
-                              rel="noreferrer"
+                        <div
+                          className="hv-card"
+                          style={{
+                            display: "flex",
+                            gap: isMobile ? 12 : 15,
+                            background: "var(--eb-panel)",
+                            border: "1px solid var(--eb-border)",
+                            borderRadius: 12,
+                            padding: isMobile ? "12px 13px" : "14px 16px",
+                          }}
+                        >
+                          {a.imageUrl && !failedImg.has(a.id) ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={a.imageUrl}
+                              alt=""
+                              loading="lazy"
+                              // match how Discord fetches (no referer) — eBay's CDN can
+                              // 403 a hotlink referer; on any load failure fall back to
+                              // the placeholder below instead of the broken-image glyph
+                              referrerPolicy="no-referrer"
+                              onError={() => setFailedImg((prev) => new Set(prev).add(a.id))}
                               style={{
-                                fontWeight: 600,
-                                fontSize: 14.5,
-                                color: "var(--text)",
-                                textDecoration: "none",
-                                lineHeight: 1.35,
-                              }}
-                            >
-                              {a.title}
-                            </a>
-                            <span
-                              style={{
+                                width: isMobile ? 56 : 66,
+                                height: isMobile ? 56 : 66,
                                 flex: "0 0 auto",
-                                fontFamily: MONO,
-                                fontSize: 11.5,
-                                color: "var(--faint)",
-                                whiteSpace: "nowrap",
-                                marginTop: 2,
+                                borderRadius: 10,
+                                border: "1px solid var(--eb-border)",
+                                objectFit: "cover",
                               }}
-                            >
-                              {ago(a.createdAt)}
-                            </span>
-                          </div>
-                          <div
-                            style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 9, flexWrap: "wrap" }}
-                          >
-                            <span style={{ fontFamily: MONO, fontSize: 15, fontWeight: 600, color: "var(--text)" }}>
-                              {money(a.price, a.currency)}
-                            </span>
-                            <span style={{ fontSize: 12, color: "var(--faint)" }}>
-                              {a.shippingCost == null
-                                ? ""
-                                : a.shippingCost === 0
-                                  ? "Free ship"
-                                  : `+ ${money(a.shippingCost, a.currency)} ship`}
-                            </span>
-                            <span
+                            />
+                          ) : (
+                            <div
                               style={{
-                                ...chip,
-                                padding: "2px 8px",
-                                fontWeight: 500,
+                                width: isMobile ? 56 : 66,
+                                height: isMobile ? 56 : 66,
+                                flex: "0 0 auto",
+                                borderRadius: 10,
+                                border: "1px solid var(--eb-border)",
                                 background:
-                                  a.buyingOption === "FIXED_PRICE"
-                                    ? "var(--accent-soft)"
-                                    : "color-mix(in oklab, var(--amber) 18%, transparent)",
-                                color: a.buyingOption === "FIXED_PRICE" ? "var(--accent-text)" : "var(--amber)",
+                                  "repeating-linear-gradient(45deg,var(--eb-chip-bg) 0 5px,transparent 5px 10px),var(--eb-panel2)",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
                               }}
                             >
-                              {a.buyingOption === "FIXED_PRICE" ? "Buy It Now" : "Auction"}
-                            </span>
-                            {a.condition && (
+                              <span style={{ fontFamily: MONO, fontSize: 8, color: "var(--eb-faint)" }}>photo</span>
+                            </div>
+                          )}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "flex-start",
+                                justifyContent: "space-between",
+                                gap: 12,
+                              }}
+                            >
+                              <a
+                                className="hv-link"
+                                href={a.itemUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                style={{
+                                  fontWeight: 600,
+                                  fontSize: 14.5,
+                                  color: "var(--eb-text)",
+                                  textDecoration: "none",
+                                  lineHeight: 1.35,
+                                }}
+                              >
+                                {a.title}
+                              </a>
+                              <span
+                                style={{
+                                  flex: "0 0 auto",
+                                  fontFamily: MONO,
+                                  fontSize: 11.5,
+                                  color: "var(--eb-faint)",
+                                  whiteSpace: "nowrap",
+                                  marginTop: 2,
+                                }}
+                              >
+                                {ago(a.createdAt)}
+                              </span>
+                            </div>
+                            <div
+                              style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 9, flexWrap: "wrap" }}
+                            >
+                              <span
+                                style={{ fontFamily: MONO, fontSize: 15, fontWeight: 600, color: "var(--eb-text)" }}
+                              >
+                                {money(a.price, a.currency)}
+                              </span>
+                              <span style={{ fontSize: 12, color: "var(--eb-faint)" }}>
+                                {a.shippingCost == null
+                                  ? ""
+                                  : a.shippingCost === 0
+                                    ? "Free ship"
+                                    : `+ ${money(a.shippingCost, a.currency)} ship`}
+                              </span>
                               <span
                                 style={{
                                   ...chip,
                                   padding: "2px 8px",
-                                  background: "var(--chip-bg)",
-                                  color: "var(--chip-text)",
+                                  fontWeight: 500,
+                                  background:
+                                    a.buyingOption === "FIXED_PRICE"
+                                      ? "var(--eb-accent-soft)"
+                                      : "color-mix(in oklab, var(--eb-amber) 18%, transparent)",
+                                  color: a.buyingOption === "FIXED_PRICE" ? "var(--eb-accent-text)" : "var(--eb-amber)",
                                 }}
                               >
-                                {a.condition}
+                                {a.buyingOption === "FIXED_PRICE" ? "Buy It Now" : "Auction"}
                               </span>
-                            )}
-                          </div>
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 7,
-                              marginTop: 11,
-                              paddingTop: 11,
-                              borderTop: "1px solid var(--border)",
-                              fontSize: 12,
-                              color: "var(--muted)",
-                            }}
-                          >
-                            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)" }} />
-                            matched <b style={{ color: "var(--text)", fontWeight: 600 }}>{a.searchQ}</b>
+                              {a.condition && (
+                                <span
+                                  style={{
+                                    ...chip,
+                                    padding: "2px 8px",
+                                    background: "var(--eb-chip-bg)",
+                                    color: "var(--eb-chip-text)",
+                                  }}
+                                >
+                                  {a.condition}
+                                </span>
+                              )}
+                            </div>
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 7,
+                                marginTop: 11,
+                                paddingTop: 11,
+                                borderTop: "1px solid var(--eb-border)",
+                                fontSize: 12,
+                                color: "var(--eb-muted)",
+                              }}
+                            >
+                              <span
+                                style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--eb-accent)" }}
+                              />
+                              matched <b style={{ color: "var(--eb-text)", fontWeight: 600 }}>{a.searchQ}</b>
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* ---------- STATUS VIEW ---------- */}
-        {view === "status" && (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-            <div style={{ padding: isMobile ? "16px" : "24px 30px", borderBottom: "1px solid var(--border)" }}>
-              <h2 style={{ margin: 0, fontSize: 21, fontWeight: 700, letterSpacing: "-0.01em" }}>Status</h2>
-              <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>Poller, quota and eBay API health</div>
-            </div>
-            <div
-              style={{
-                flex: 1,
-                overflowY: isMobile ? "visible" : "auto",
-                padding: isMobile ? "16px" : "24px 30px",
-              }}
-            >
+          {/* ---------- STATUS VIEW ---------- */}
+          {view === "status" && (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+              <div style={{ padding: isMobile ? "16px" : "24px 30px", borderBottom: "1px solid var(--eb-border)" }}>
+                <h2 style={{ margin: 0, fontSize: 21, fontWeight: 700, letterSpacing: "-0.01em" }}>Status</h2>
+                <div style={{ fontSize: 13, color: "var(--eb-muted)", marginTop: 4 }}>
+                  Poller, quota and eBay API health
+                </div>
+              </div>
               <div
                 style={{
-                  display: "grid",
-                  gridTemplateColumns: isMobile ? "1fr" : "repeat(3,1fr)",
-                  gap: isMobile ? 12 : 14,
-                  marginBottom: 20,
+                  flex: 1,
+                  overflowY: isMobile ? "visible" : "auto",
+                  padding: isMobile ? "16px" : "24px 30px",
                 }}
               >
-                <div style={statCard}>
-                  <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 10 }}>Poller</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                    <span
-                      style={{
-                        width: 9,
-                        height: 9,
-                        borderRadius: "50%",
-                        background: running ? (snoozed ? "var(--amber)" : "var(--green)") : "var(--amber)",
-                        animation: running && !snoozed ? "ebPulse 2.4s ease-in-out infinite" : "none",
-                      }}
-                    />
-                    <span style={{ fontSize: 19, fontWeight: 700 }}>
-                      {running ? (snoozed ? "Snoozing" : "Running") : "Stopped"}
-                    </span>
-                  </div>
-                  <div style={{ fontFamily: MONO, fontSize: 12, color: "var(--faint)", marginTop: 8 }}>
-                    {running && status?.poller.bootedAt
-                      ? `uptime ${duration(status.poller.bootedAt)} · ${status.poller.timers} timer${status.poller.timers === 1 ? "" : "s"}${status.snooze.window ? ` · ${snoozed ? "snoozing" : "snooze"} ${status.snooze.window}` : ""}`
-                      : (status?.bootError ?? "not started")}
-                  </div>
-                </div>
-                <div style={statCard}>
-                  <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 10 }}>eBay Browse token</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                    <span
-                      style={{
-                        width: 9,
-                        height: 9,
-                        borderRadius: "50%",
-                        background: mock ? "var(--amber)" : "var(--green)",
-                      }}
-                    />
-                    <span style={{ fontSize: 19, fontWeight: 700 }}>
-                      {mock ? "Mock mode" : status?.ebay.tokenExpiresAt ? "Valid" : "Not fetched"}
-                    </span>
-                  </div>
-                  <div style={{ fontFamily: MONO, fontSize: 12, color: "var(--faint)", marginTop: 8 }}>
-                    {mock
-                      ? `set EBAY_CLIENT_ID to go live · ${status?.ebay.marketplace ?? "EBAY_US"}`
-                      : status?.ebay.tokenExpiresAt
-                        ? `refreshes in ${until(status.ebay.tokenExpiresAt)} · ${status.ebay.marketplace}`
-                        : `fetched on first poll · ${status?.ebay.marketplace ?? "EBAY_US"}`}
-                  </div>
-                </div>
-                <div style={statCard}>
-                  <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 10 }}>Quota today</div>
-                  <div style={{ fontSize: 19, fontWeight: 700, fontFamily: MONO }}>
-                    {fmt(status?.quota.used ?? 0)}{" "}
-                    <span style={{ color: "var(--faint)", fontWeight: 400, fontSize: 14 }}>/ {fmt(ceiling)}</span>
-                  </div>
-                  <div style={{ fontFamily: MONO, fontSize: 12, color: "var(--faint)", marginTop: 8 }}>
-                    {Math.round(((status?.quota.used ?? 0) / ceiling) * 100)}% of daily budget
-                  </div>
-                </div>
-              </div>
-
-              {snooze && (
                 <div
                   style={{
-                    background: "var(--panel)",
-                    border: "1px solid var(--border)",
-                    borderRadius: 12,
-                    padding: isMobile ? "16px" : "18px 20px",
+                    display: "grid",
+                    gridTemplateColumns: isMobile ? "1fr" : "repeat(3,1fr)",
+                    gap: isMobile ? 12 : 14,
                     marginBottom: 20,
                   }}
                 >
-                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 600 }}>Overnight snooze</div>
-                      <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 3, maxWidth: 440 }}>
-                        Pause eBay polling during these hours to save quota while you sleep. Items listed in the window
-                        still alert on the first poll after it ends.
-                      </div>
+                  <div style={statCard}>
+                    <div style={{ fontSize: 12.5, color: "var(--eb-muted)", marginBottom: 10 }}>Poller</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                      <span
+                        style={{
+                          width: 9,
+                          height: 9,
+                          borderRadius: "50%",
+                          background: running ? (snoozed ? "var(--eb-amber)" : "var(--eb-green)") : "var(--eb-amber)",
+                          animation: running && !snoozed ? "ebPulse 2.4s ease-in-out infinite" : "none",
+                        }}
+                      />
+                      <span style={{ fontSize: 19, fontWeight: 700 }}>
+                        {running ? (snoozed ? "Snoozing" : "Running") : "Stopped"}
+                      </span>
                     </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={snooze.enabled}
-                      aria-label="Overnight snooze"
-                      onClick={() => setSnoozeState({ ...snooze, enabled: !snooze.enabled })}
+                    <div style={{ fontFamily: MONO, fontSize: 12, color: "var(--eb-faint)", marginTop: 8 }}>
+                      {running && status?.poller.bootedAt
+                        ? `uptime ${duration(status.poller.bootedAt)} · ${status.poller.timers} timer${status.poller.timers === 1 ? "" : "s"}${status.snooze.window ? ` · ${snoozed ? "snoozing" : "snooze"} ${status.snooze.window}` : ""}`
+                        : (status?.bootError ?? "not started")}
+                    </div>
+                  </div>
+                  <div style={statCard}>
+                    <div style={{ fontSize: 12.5, color: "var(--eb-muted)", marginBottom: 10 }}>eBay Browse token</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                      <span
+                        style={{
+                          width: 9,
+                          height: 9,
+                          borderRadius: "50%",
+                          background: mock ? "var(--eb-amber)" : "var(--eb-green)",
+                        }}
+                      />
+                      <span style={{ fontSize: 19, fontWeight: 700 }}>
+                        {mock ? "Mock mode" : status?.ebay.tokenExpiresAt ? "Valid" : "Not fetched"}
+                      </span>
+                    </div>
+                    <div style={{ fontFamily: MONO, fontSize: 12, color: "var(--eb-faint)", marginTop: 8 }}>
+                      {mock
+                        ? `set EBAY_CLIENT_ID to go live · ${status?.ebay.marketplace ?? "EBAY_US"}`
+                        : status?.ebay.tokenExpiresAt
+                          ? `refreshes in ${until(status.ebay.tokenExpiresAt)} · ${status.ebay.marketplace}`
+                          : `fetched on first poll · ${status?.ebay.marketplace ?? "EBAY_US"}`}
+                    </div>
+                  </div>
+                  <div style={statCard}>
+                    <div style={{ fontSize: 12.5, color: "var(--eb-muted)", marginBottom: 10 }}>Quota today</div>
+                    <div style={{ fontSize: 19, fontWeight: 700, fontFamily: MONO }}>
+                      {fmt(status?.quota.used ?? 0)}{" "}
+                      <span style={{ color: "var(--eb-faint)", fontWeight: 400, fontSize: 14 }}>/ {fmt(ceiling)}</span>
+                    </div>
+                    <div style={{ fontFamily: MONO, fontSize: 12, color: "var(--eb-faint)", marginTop: 8 }}>
+                      {Math.round(((status?.quota.used ?? 0) / ceiling) * 100)}% of daily budget
+                    </div>
+                  </div>
+                </div>
+
+                {snooze && (
+                  <div
+                    style={{
+                      background: "var(--eb-panel)",
+                      border: "1px solid var(--eb-border)",
+                      borderRadius: 12,
+                      padding: isMobile ? "16px" : "18px 20px",
+                      marginBottom: 20,
+                    }}
+                  >
+                    <div
+                      style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}
+                    >
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 600 }}>Overnight snooze</div>
+                        <div style={{ fontSize: 12.5, color: "var(--eb-muted)", marginTop: 3, maxWidth: 440 }}>
+                          Pause eBay polling during these hours to save quota while you sleep. Items listed in the
+                          window still alert on the first poll after it ends.
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={snooze.enabled}
+                        aria-label="Overnight snooze"
+                        onClick={() => setSnoozeState({ ...snooze, enabled: !snooze.enabled })}
+                        style={{
+                          width: 38,
+                          height: 22,
+                          borderRadius: 20,
+                          border: "none",
+                          padding: 0,
+                          background: snooze.enabled ? "var(--eb-accent)" : "var(--eb-border-strong)",
+                          position: "relative",
+                          flex: "0 0 auto",
+                          cursor: "pointer",
+                          transition: "background .15s",
+                        }}
+                      >
+                        <span
+                          style={{
+                            position: "absolute",
+                            top: 2,
+                            left: snooze.enabled ? 18 : 2,
+                            width: 18,
+                            height: 18,
+                            borderRadius: "50%",
+                            background: "white",
+                            transition: "left .15s",
+                          }}
+                        />
+                      </button>
+                    </div>
+
+                    {snooze.enabled && (
+                      <div
+                        style={{ display: "flex", alignItems: "flex-end", gap: 12, marginTop: 16, flexWrap: "wrap" }}
+                      >
+                        <label
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                            fontSize: 12,
+                            color: "var(--eb-muted)",
+                          }}
+                        >
+                          From
+                          <input
+                            type="time"
+                            value={snooze.start}
+                            onChange={(e) => setSnoozeState({ ...snooze, start: e.target.value })}
+                            style={{ ...inputBox, width: 130 }}
+                          />
+                        </label>
+                        <label
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                            fontSize: 12,
+                            color: "var(--eb-muted)",
+                          }}
+                        >
+                          To
+                          <input
+                            type="time"
+                            value={snooze.end}
+                            onChange={(e) => setSnoozeState({ ...snooze, end: e.target.value })}
+                            style={{ ...inputBox, width: 130 }}
+                          />
+                        </label>
+                        <span style={{ fontSize: 12, color: "var(--eb-faint)", fontFamily: MONO, paddingBottom: 12 }}>
+                          {snooze.tz ?? "server time"}
+                        </span>
+                      </div>
+                    )}
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
+                      <button
+                        className="hv-accent"
+                        onClick={() => saveSnooze(snooze)}
+                        disabled={snoozeSaving}
+                        style={{
+                          background: "var(--eb-accent)",
+                          color: "white",
+                          border: "none",
+                          borderRadius: 9,
+                          padding: "9px 18px",
+                          fontFamily: "inherit",
+                          fontSize: 13.5,
+                          fontWeight: 600,
+                          cursor: snoozeSaving ? "default" : "pointer",
+                          opacity: snoozeSaving ? 0.7 : 1,
+                        }}
+                      >
+                        {snoozeSaving ? "Saving…" : "Save"}
+                      </button>
+                      {snoozeError && (
+                        <span style={{ fontSize: 12.5, color: "var(--eb-amber)", fontFamily: MONO }}>
+                          {snoozeError}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {status?.errors.length ? (
+                  <div
+                    style={{
+                      background: "var(--eb-panel)",
+                      border: "1px solid var(--eb-border)",
+                      borderRadius: 12,
+                      overflow: "hidden",
+                    }}
+                  >
+                    <div
                       style={{
-                        width: 38,
-                        height: 22,
-                        borderRadius: 20,
-                        border: "none",
-                        padding: 0,
-                        background: snooze.enabled ? "var(--accent)" : "var(--border-strong)",
-                        position: "relative",
-                        flex: "0 0 auto",
-                        cursor: "pointer",
-                        transition: "background .15s",
+                        padding: "13px 18px",
+                        borderBottom: "1px solid var(--eb-border)",
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: "var(--eb-muted)",
+                      }}
+                    >
+                      Recent errors
+                    </div>
+                    {status.errors.map((err, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          display: "flex",
+                          gap: 12,
+                          padding: "10px 18px",
+                          borderBottom: i < status.errors.length - 1 ? "1px solid var(--eb-border)" : "none",
+                          fontFamily: MONO,
+                          fontSize: 12,
+                          alignItems: "baseline",
+                        }}
+                      >
+                        <span style={{ color: "var(--eb-faint)", whiteSpace: "nowrap" }}>{ago(err.time, true)}</span>
+                        {err.searchQ && (
+                          <span style={{ color: "var(--eb-accent-text)", whiteSpace: "nowrap" }}>{err.searchQ}</span>
+                        )}
+                        <span style={{ color: "var(--eb-muted)", overflowWrap: "anywhere" }}>{err.message}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      background: "var(--eb-panel)",
+                      border: "1px solid var(--eb-border)",
+                      borderRadius: 12,
+                      padding: "44px 20px",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      textAlign: "center",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 46,
+                        height: 46,
+                        borderRadius: 12,
+                        border: "1px solid var(--eb-border)",
+                        background: "var(--eb-panel2)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        marginBottom: 14,
                       }}
                     >
                       <span
                         style={{
-                          position: "absolute",
-                          top: 2,
-                          left: snooze.enabled ? 18 : 2,
-                          width: 18,
-                          height: 18,
+                          width: 16,
+                          height: 16,
                           borderRadius: "50%",
-                          background: "white",
-                          transition: "left .15s",
+                          border: "2px solid var(--eb-green)",
+                          borderRightColor: "transparent",
+                          transform: "rotate(45deg)",
                         }}
                       />
-                    </button>
-                  </div>
-
-                  {snooze.enabled && (
-                    <div style={{ display: "flex", alignItems: "flex-end", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
-                      <label
-                        style={{
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 6,
-                          fontSize: 12,
-                          color: "var(--muted)",
-                        }}
-                      >
-                        From
-                        <input
-                          type="time"
-                          value={snooze.start}
-                          onChange={(e) => setSnoozeState({ ...snooze, start: e.target.value })}
-                          style={{ ...inputBox, width: 130 }}
-                        />
-                      </label>
-                      <label
-                        style={{
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 6,
-                          fontSize: 12,
-                          color: "var(--muted)",
-                        }}
-                      >
-                        To
-                        <input
-                          type="time"
-                          value={snooze.end}
-                          onChange={(e) => setSnoozeState({ ...snooze, end: e.target.value })}
-                          style={{ ...inputBox, width: 130 }}
-                        />
-                      </label>
-                      <span style={{ fontSize: 12, color: "var(--faint)", fontFamily: MONO, paddingBottom: 12 }}>
-                        {snooze.tz ?? "server time"}
-                      </span>
                     </div>
-                  )}
-
-                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
-                    <button
-                      className="hv-accent"
-                      onClick={() => saveSnooze(snooze)}
-                      disabled={snoozeSaving}
-                      style={{
-                        background: "var(--accent)",
-                        color: "white",
-                        border: "none",
-                        borderRadius: 9,
-                        padding: "9px 18px",
-                        fontFamily: "inherit",
-                        fontSize: 13.5,
-                        fontWeight: 600,
-                        cursor: snoozeSaving ? "default" : "pointer",
-                        opacity: snoozeSaving ? 0.7 : 1,
-                      }}
-                    >
-                      {snoozeSaving ? "Saving…" : "Save"}
-                    </button>
-                    {snoozeError && (
-                      <span style={{ fontSize: 12.5, color: "var(--amber)", fontFamily: MONO }}>{snoozeError}</span>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {status?.errors.length ? (
-                <div
-                  style={{
-                    background: "var(--panel)",
-                    border: "1px solid var(--border)",
-                    borderRadius: 12,
-                    overflow: "hidden",
-                  }}
-                >
-                  <div
-                    style={{
-                      padding: "13px 18px",
-                      borderBottom: "1px solid var(--border)",
-                      fontSize: 13,
-                      fontWeight: 600,
-                      color: "var(--muted)",
-                    }}
-                  >
-                    Recent errors
-                  </div>
-                  {status.errors.map((err, i) => (
+                    <div style={{ fontSize: 15, fontWeight: 600 }}>No API errors in the last 24h</div>
                     <div
-                      key={i}
-                      style={{
-                        display: "flex",
-                        gap: 12,
-                        padding: "10px 18px",
-                        borderBottom: i < status.errors.length - 1 ? "1px solid var(--border)" : "none",
-                        fontFamily: MONO,
-                        fontSize: 12,
-                        alignItems: "baseline",
-                      }}
+                      style={{ fontSize: 13, color: "var(--eb-muted)", marginTop: 5, maxWidth: 360, lineHeight: 1.5 }}
                     >
-                      <span style={{ color: "var(--faint)", whiteSpace: "nowrap" }}>{ago(err.time, true)}</span>
-                      {err.searchQ && (
-                        <span style={{ color: "var(--accent-text)", whiteSpace: "nowrap" }}>{err.searchQ}</span>
-                      )}
-                      <span style={{ color: "var(--muted)", overflowWrap: "anywhere" }}>{err.message}</span>
+                      All searches are polling on schedule. Failed calls back off exponentially and surface here.
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <div
-                  style={{
-                    background: "var(--panel)",
-                    border: "1px solid var(--border)",
-                    borderRadius: 12,
-                    padding: "44px 20px",
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    textAlign: "center",
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 46,
-                      height: 46,
-                      borderRadius: 12,
-                      border: "1px solid var(--border)",
-                      background: "var(--panel2)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      marginBottom: 14,
-                    }}
-                  >
-                    <span
-                      style={{
-                        width: 16,
-                        height: 16,
-                        borderRadius: "50%",
-                        border: "2px solid var(--green)",
-                        borderRightColor: "transparent",
-                        transform: "rotate(45deg)",
-                      }}
-                    />
                   </div>
-                  <div style={{ fontSize: 15, fontWeight: 600 }}>No API errors in the last 24h</div>
-                  <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 5, maxWidth: 360, lineHeight: 1.5 }}>
-                    All searches are polling on schedule. Failed calls back off exponentially and surface here.
-                  </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
-          </div>
-        )}
-      </div>
-
-      {/* ================= MOBILE BOTTOM NAV ================= */}
-      {isMobile && (
-        <nav
-          aria-label="Main navigation"
-          style={{
-            position: "fixed",
-            left: 0,
-            right: 0,
-            bottom: 0,
-            zIndex: 30,
-            display: "flex",
-            background: "var(--sidebar)",
-            borderTop: "1px solid var(--border)",
-            paddingBottom: "env(safe-area-inset-bottom)",
-          }}
-        >
-          {navItems.map((n) => {
-            const isActive = view === n.key;
-            return (
-              <button
-                key={n.key}
-                onClick={() => setView(n.key)}
-                aria-current={isActive ? "page" : undefined}
-                style={{
-                  flex: 1,
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  gap: 4,
-                  padding: "10px 0 9px",
-                  cursor: "pointer",
-                  fontSize: 12,
-                  fontWeight: isActive ? 600 : 500,
-                  color: isActive ? "var(--accent-text)" : "var(--muted)",
-                  background: "transparent",
-                  border: "none",
-                  fontFamily: "inherit",
-                }}
-              >
-                <span style={{ position: "relative", display: "flex" }}>
-                  <span
-                    style={{
-                      width: 9,
-                      height: 9,
-                      borderRadius: 3,
-                      background: isActive ? "var(--accent)" : "transparent",
-                      border: isActive ? "none" : "1.5px solid var(--faint)",
-                    }}
-                  />
-                  {n.badge != null && (
-                    <span
-                      style={{
-                        position: "absolute",
-                        top: -7,
-                        left: 9,
-                        fontFamily: MONO,
-                        fontSize: 9,
-                        background: "var(--accent-soft)",
-                        color: "var(--accent-text)",
-                        padding: "0 5px",
-                        borderRadius: 20,
-                      }}
-                    >
-                      {n.badge}
-                    </span>
-                  )}
-                </span>
-                {n.label}
-              </button>
-            );
-          })}
-        </nav>
-      )}
+          )}
+        </div>
+      </SidebarInset>
 
       {/* ================= NEW SEARCH MODAL ================= */}
       {showForm && (
@@ -1708,8 +1487,8 @@ export default function Home() {
               width: 520,
               maxWidth: "calc(100vw - 32px)",
               maxHeight: isMobile ? "calc(100dvh - 24px)" : undefined,
-              background: "var(--panel)",
-              border: "1px solid var(--border-strong)",
+              background: "var(--eb-panel)",
+              border: "1px solid var(--eb-border-strong)",
               borderRadius: 16,
               boxShadow: "0 40px 90px -30px oklch(0.1 0.05 265 / .7)",
               overflow: isMobile ? "auto" : "hidden",
@@ -1722,7 +1501,7 @@ export default function Home() {
                 alignItems: "center",
                 justifyContent: "space-between",
                 padding: "20px 24px",
-                borderBottom: "1px solid var(--border)",
+                borderBottom: "1px solid var(--eb-border)",
               }}
             >
               <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>
@@ -1731,7 +1510,7 @@ export default function Home() {
               <div
                 className="hv-dim"
                 onClick={() => setShowForm(false)}
-                style={{ cursor: "pointer", color: "var(--faint)", fontSize: 18, lineHeight: 1, padding: 4 }}
+                style={{ cursor: "pointer", color: "var(--eb-faint)", fontSize: 18, lineHeight: 1, padding: 4 }}
               >
                 ✕
               </div>
@@ -1762,7 +1541,7 @@ export default function Home() {
                 <div style={{ width: isMobile ? "auto" : 116, flex: isMobile ? 1 : "0 0 auto" }}>
                   <label style={fieldLabel}>Min price</label>
                   <div style={dollarWrap}>
-                    <span style={{ color: "var(--faint)", fontFamily: MONO, fontSize: 14 }}>$</span>
+                    <span style={{ color: "var(--eb-faint)", fontFamily: MONO, fontSize: 14 }}>$</span>
                     <input
                       value={form.priceFloor}
                       onChange={(e) => setForm({ ...form, priceFloor: e.target.value })}
@@ -1775,7 +1554,7 @@ export default function Home() {
                 <div style={{ width: isMobile ? "auto" : 116, flex: isMobile ? 1 : "0 0 auto" }}>
                   <label style={fieldLabel}>Max price</label>
                   <div style={dollarWrap}>
-                    <span style={{ color: "var(--faint)", fontFamily: MONO, fontSize: 14 }}>$</span>
+                    <span style={{ color: "var(--eb-faint)", fontFamily: MONO, fontSize: 14 }}>$</span>
                     <input
                       value={form.priceCap}
                       onChange={(e) => setForm({ ...form, priceCap: e.target.value })}
@@ -1801,9 +1580,9 @@ export default function Home() {
                           textAlign: "center",
                           padding: "9px 0",
                           borderRadius: 8,
-                          border: `1px solid ${on ? "var(--accent)" : "var(--border-strong)"}`,
-                          background: on ? "var(--accent-soft)" : "var(--input-bg)",
-                          color: on ? "var(--accent-text)" : "var(--muted)",
+                          border: `1px solid ${on ? "var(--eb-accent)" : "var(--eb-border-strong)"}`,
+                          background: on ? "var(--eb-accent-soft)" : "var(--eb-input-bg)",
+                          color: on ? "var(--eb-accent-text)" : "var(--eb-muted)",
                           fontFamily: MONO,
                           fontSize: 13,
                           fontWeight: 600,
@@ -1837,8 +1616,8 @@ export default function Home() {
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "space-between",
-                        background: "var(--input-bg)",
-                        border: "1px solid var(--border-strong)",
+                        background: "var(--eb-input-bg)",
+                        border: "1px solid var(--eb-border-strong)",
                         borderRadius: 9,
                         padding: "11px 13px",
                         cursor: "pointer",
@@ -1850,7 +1629,7 @@ export default function Home() {
                           width: 38,
                           height: 22,
                           borderRadius: 20,
-                          background: on ? "var(--accent)" : "var(--border-strong)",
+                          background: on ? "var(--eb-accent)" : "var(--eb-border-strong)",
                           position: "relative",
                           transition: "background .15s",
                           flex: "0 0 auto",
@@ -1879,26 +1658,26 @@ export default function Home() {
                   display: "flex",
                   alignItems: "center",
                   gap: 9,
-                  background: "var(--accent-soft)",
+                  background: "var(--eb-accent-soft)",
                   borderRadius: 9,
                   padding: "11px 14px",
                   fontSize: 12.5,
-                  color: "var(--accent-text)",
+                  color: "var(--eb-accent-text)",
                 }}
               >
                 <span style={{ fontFamily: MONO, fontWeight: 600 }}>≈ {fmt(callsFor(form.interval))} calls·day</span>
-                <span style={{ color: "var(--muted)" }}>
+                <span style={{ color: "var(--eb-muted)" }}>
                   · first poll seeds silently — no alert spam from existing listings
                 </span>
               </div>
               {formError && (
                 <div
                   style={{
-                    background: "color-mix(in oklab, var(--amber) 14%, transparent)",
+                    background: "color-mix(in oklab, var(--eb-amber) 14%, transparent)",
                     borderRadius: 9,
                     padding: "10px 14px",
                     fontSize: 12.5,
-                    color: "var(--amber)",
+                    color: "var(--eb-amber)",
                     fontFamily: MONO,
                   }}
                 >
@@ -1912,8 +1691,8 @@ export default function Home() {
                 justifyContent: "flex-end",
                 gap: 10,
                 padding: "16px 24px",
-                borderTop: "1px solid var(--border)",
-                background: "var(--panel2)",
+                borderTop: "1px solid var(--eb-border)",
+                background: "var(--eb-panel2)",
               }}
             >
               <button
@@ -1921,8 +1700,8 @@ export default function Home() {
                 onClick={() => setShowForm(false)}
                 style={{
                   background: "transparent",
-                  border: "1px solid var(--border-strong)",
-                  color: "var(--text)",
+                  border: "1px solid var(--eb-border-strong)",
+                  color: "var(--eb-text)",
                   borderRadius: 9,
                   padding: "10px 16px",
                   fontFamily: "inherit",
@@ -1938,7 +1717,7 @@ export default function Home() {
                 onClick={submitSearch}
                 disabled={saving}
                 style={{
-                  background: "var(--accent)",
+                  background: "var(--eb-accent)",
                   color: "white",
                   border: "none",
                   borderRadius: 9,
@@ -1962,6 +1741,6 @@ export default function Home() {
           </div>
         </div>
       )}
-    </div>
+    </SidebarProvider>
   );
 }

@@ -1420,14 +1420,18 @@ export default function Home() {
                         still alert on the first poll after it ends.
                       </div>
                     </div>
-                    <span
+                    <button
+                      type="button"
                       role="switch"
                       aria-checked={snooze.enabled}
+                      aria-label="Overnight snooze"
                       onClick={() => setSnoozeState({ ...snooze, enabled: !snooze.enabled })}
                       style={{
                         width: 38,
                         height: 22,
                         borderRadius: 20,
+                        border: "none",
+                        padding: 0,
                         background: snooze.enabled ? "var(--accent)" : "var(--border-strong)",
                         position: "relative",
                         flex: "0 0 auto",
@@ -1447,7 +1451,7 @@ export default function Home() {
                           transition: "left .15s",
                         }}
                       />
-                    </span>
+                    </button>
                   </div>
 
                   {snooze.enabled && (

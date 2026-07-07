@@ -99,6 +99,20 @@ function dayLabel(iso: string) {
 
 const emptyForm = { q: "", priceFloor: "", priceCap: "", categoryId: "", bin: true, auctions: false, interval: 2 };
 
+// inline styles can't hold @media, so responsiveness is driven off matchMedia.
+// SSR + first paint assume desktop, then correct on mount (same as theme sync).
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(false);
+  useEffect(() => {
+    const mql = window.matchMedia(query);
+    const sync = () => setMatches(mql.matches);
+    sync();
+    mql.addEventListener("change", sync);
+    return () => mql.removeEventListener("change", sync);
+  }, [query]);
+  return matches;
+}
+
 export default function Home() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [view, setView] = useState<"searches" | "alerts" | "status">("searches");
@@ -113,6 +127,7 @@ export default function Home() {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const isMobile = useMediaQuery("(max-width: 767px)");
 
   useEffect(() => {
     // one-time sync from localStorage after hydration (SSR always renders dark)
@@ -331,121 +346,68 @@ export default function Home() {
     <div
       style={{
         ...(tokens(theme) as CSSProperties),
-        height: "100vh",
+        minHeight: "100dvh",
+        height: isMobile ? "auto" : "100vh",
         display: "flex",
-        overflow: "hidden",
+        flexDirection: isMobile ? "column" : "row",
+        overflow: isMobile ? "visible" : "hidden",
         background: "var(--bg)",
         color: "var(--text)",
         fontFamily: "var(--font-sans), system-ui, sans-serif",
       }}
     >
-      {/* ================= SIDEBAR ================= */}
-      <div
-        style={{
-          width: 224,
-          flex: "0 0 224px",
-          background: "var(--sidebar)",
-          borderRight: "1px solid var(--border)",
-          display: "flex",
-          flexDirection: "column",
-          padding: "22px 16px 18px",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 6px 4px" }}>
+      {/* ================= MOBILE TOP BAR ================= */}
+      {isMobile && (
+        <div
+          style={{
+            position: "sticky",
+            top: 0,
+            zIndex: 30,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "11px 16px",
+            background: "var(--sidebar)",
+            borderBottom: "1px solid var(--border)",
+          }}
+        >
           <div
             style={{
-              width: 28,
-              height: 28,
-              borderRadius: 8,
+              width: 26,
+              height: 26,
+              borderRadius: 7,
               background: "var(--accent)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               fontFamily: MONO,
               fontWeight: 600,
-              fontSize: 16,
+              fontSize: 15,
               color: "white",
+              flex: "0 0 auto",
             }}
           >
             e
           </div>
-          <span style={{ fontWeight: 700, fontSize: 18, letterSpacing: "-0.01em" }}>ebae</span>
-        </div>
-        <div style={{ fontSize: 11, color: "var(--faint)", padding: "2px 6px 22px", letterSpacing: ".01em" }}>
-          eBay, before anyone else
-        </div>
-
-        <div
-          style={{
-            fontFamily: MONO,
-            fontSize: 10.5,
-            letterSpacing: ".14em",
-            textTransform: "uppercase",
-            color: "var(--faint)",
-            padding: "0 8px 9px",
-          }}
-        >
-          Monitor
-        </div>
-        {navItems.map((n) => {
-          const isActive = view === n.key;
-          return (
-            <div
-              key={n.key}
-              className="hv-nav"
-              onClick={() => setView(n.key)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 11,
-                padding: "9px 10px",
-                borderRadius: 8,
-                cursor: "pointer",
-                fontSize: 14,
-                marginBottom: 2,
-                fontWeight: isActive ? 600 : 500,
-                background: isActive ? "var(--accent-soft)" : "transparent",
-                color: isActive ? "var(--accent-text)" : "var(--muted)",
-              }}
-            >
-              <span
-                style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: 2,
-                  background: isActive ? "var(--accent)" : "transparent",
-                  border: isActive ? "none" : "1.5px solid var(--faint)",
-                }}
-              />
-              {n.label}
-              {n.badge != null && (
-                <span
-                  style={{
-                    marginLeft: "auto",
-                    fontFamily: MONO,
-                    fontSize: 11,
-                    background: "var(--accent-soft)",
-                    color: "var(--accent-text)",
-                    padding: "1px 8px",
-                    borderRadius: 20,
-                  }}
-                >
-                  {n.badge}
-                </span>
-              )}
-            </div>
-          );
-        })}
-
-        <div style={{ marginTop: "auto" }}>
+          <span style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.01em" }}>ebae</span>
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: "50%",
+              background: running ? "var(--green)" : "var(--amber)",
+              animation: running ? "ebPulse 2.4s ease-in-out infinite" : "none",
+            }}
+            title={running ? "poller running" : "poller down"}
+          />
           <div
             style={{
+              marginLeft: "auto",
               display: "flex",
               background: "var(--panel2)",
               border: "1px solid var(--border)",
-              borderRadius: 9,
-              padding: 4,
-              marginBottom: 12,
+              borderRadius: 8,
+              padding: 3,
             }}
           >
             {(["dark", "light"] as const).map((t) => (
@@ -453,12 +415,10 @@ export default function Home() {
                 key={t}
                 onClick={() => pickTheme(t)}
                 style={{
-                  flex: 1,
-                  textAlign: "center",
-                  fontSize: 12.5,
-                  fontWeight: 600,
-                  padding: 6,
+                  padding: "4px 11px",
                   borderRadius: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
                   cursor: "pointer",
                   background: theme === t ? "var(--accent)" : "transparent",
                   color: theme === t ? "white" : "var(--muted)",
@@ -468,45 +428,189 @@ export default function Home() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* ================= SIDEBAR (desktop) ================= */}
+      {!isMobile && (
+        <div
+          style={{
+            width: 224,
+            flex: "0 0 224px",
+            background: "var(--sidebar)",
+            borderRight: "1px solid var(--border)",
+            display: "flex",
+            flexDirection: "column",
+            padding: "22px 16px 18px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 6px 4px" }}>
+            <div
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 8,
+                background: "var(--accent)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontFamily: MONO,
+                fontWeight: 600,
+                fontSize: 16,
+                color: "white",
+              }}
+            >
+              e
+            </div>
+            <span style={{ fontWeight: 700, fontSize: 18, letterSpacing: "-0.01em" }}>ebae</span>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--faint)", padding: "2px 6px 22px", letterSpacing: ".01em" }}>
+            eBay, before anyone else
+          </div>
+
           <div
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 7,
               fontFamily: MONO,
               fontSize: 10.5,
+              letterSpacing: ".14em",
+              textTransform: "uppercase",
               color: "var(--faint)",
-              padding: "0 6px",
+              padding: "0 8px 9px",
             }}
           >
-            <span
+            Monitor
+          </div>
+          {navItems.map((n) => {
+            const isActive = view === n.key;
+            return (
+              <div
+                key={n.key}
+                className="hv-nav"
+                onClick={() => setView(n.key)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 11,
+                  padding: "9px 10px",
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  fontSize: 14,
+                  marginBottom: 2,
+                  fontWeight: isActive ? 600 : 500,
+                  background: isActive ? "var(--accent-soft)" : "transparent",
+                  color: isActive ? "var(--accent-text)" : "var(--muted)",
+                }}
+              >
+                <span
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: 2,
+                    background: isActive ? "var(--accent)" : "transparent",
+                    border: isActive ? "none" : "1.5px solid var(--faint)",
+                  }}
+                />
+                {n.label}
+                {n.badge != null && (
+                  <span
+                    style={{
+                      marginLeft: "auto",
+                      fontFamily: MONO,
+                      fontSize: 11,
+                      background: "var(--accent-soft)",
+                      color: "var(--accent-text)",
+                      padding: "1px 8px",
+                      borderRadius: 20,
+                    }}
+                  >
+                    {n.badge}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+
+          <div style={{ marginTop: "auto" }}>
+            <div
               style={{
-                width: 6,
-                height: 6,
-                borderRadius: "50%",
-                background: running ? "var(--green)" : "var(--amber)",
-                animation: running ? "ebPulse 2.4s ease-in-out infinite" : "none",
-                flex: "0 0 auto",
+                display: "flex",
+                background: "var(--panel2)",
+                border: "1px solid var(--border)",
+                borderRadius: 9,
+                padding: 4,
+                marginBottom: 12,
               }}
-            />
-            {running && status?.poller.bootedAt
-              ? `poller up ${duration(status.poller.bootedAt)} · v${status.version}`
-              : `poller down${status ? ` · v${status.version}` : ""}`}
+            >
+              {(["dark", "light"] as const).map((t) => (
+                <div
+                  key={t}
+                  onClick={() => pickTheme(t)}
+                  style={{
+                    flex: 1,
+                    textAlign: "center",
+                    fontSize: 12.5,
+                    fontWeight: 600,
+                    padding: 6,
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    background: theme === t ? "var(--accent)" : "transparent",
+                    color: theme === t ? "white" : "var(--muted)",
+                  }}
+                >
+                  {t === "dark" ? "Dark" : "Light"}
+                </div>
+              ))}
+            </div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 7,
+                fontFamily: MONO,
+                fontSize: 10.5,
+                color: "var(--faint)",
+                padding: "0 6px",
+              }}
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background: running ? "var(--green)" : "var(--amber)",
+                  animation: running ? "ebPulse 2.4s ease-in-out infinite" : "none",
+                  flex: "0 0 auto",
+                }}
+              />
+              {running && status?.poller.bootedAt
+                ? `poller up ${duration(status.poller.bootedAt)} · v${status.version}`
+                : `poller down${status ? ` · v${status.version}` : ""}`}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* ================= MAIN ================= */}
-      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          paddingBottom: isMobile ? "calc(60px + env(safe-area-inset-bottom))" : 0,
+        }}
+      >
         {/* ---------- SEARCHES VIEW ---------- */}
         {view === "searches" && (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
             <div
               style={{
                 display: "flex",
-                alignItems: "center",
+                alignItems: isMobile ? "stretch" : "center",
+                flexDirection: isMobile ? "column" : "row",
                 justifyContent: "space-between",
-                padding: "24px 30px",
+                gap: isMobile ? 14 : 0,
+                padding: isMobile ? "16px" : "24px 30px",
                 borderBottom: "1px solid var(--border)",
               }}
             >
@@ -541,6 +645,7 @@ export default function Home() {
                 style={{
                   display: "flex",
                   alignItems: "center",
+                  justifyContent: isMobile ? "center" : "flex-start",
                   gap: 7,
                   background: "var(--accent)",
                   color: "white",
@@ -560,7 +665,7 @@ export default function Home() {
             {/* quota strip */}
             <div
               style={{
-                margin: "20px 30px 6px",
+                margin: isMobile ? "16px 16px 6px" : "20px 30px 6px",
                 background: "var(--panel)",
                 border: "1px solid var(--border)",
                 borderRadius: 12,
@@ -568,7 +673,14 @@ export default function Home() {
               }}
             >
               <div
-                style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10 }}
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  justifyContent: "space-between",
+                  flexWrap: "wrap",
+                  gap: 6,
+                  marginBottom: 10,
+                }}
               >
                 <span style={{ fontSize: 13, color: "var(--muted)" }}>
                   Projected API usage <span style={{ color: "var(--faint)" }}>· enforced global budget</span>
@@ -591,29 +703,37 @@ export default function Home() {
             </div>
 
             {/* table */}
-            <div style={{ flex: 1, overflowY: "auto", padding: "14px 30px 26px" }}>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: gridCols,
-                  gap: 8,
-                  alignItems: "center",
-                  padding: "0 14px 10px",
-                  fontFamily: MONO,
-                  fontSize: 10.5,
-                  letterSpacing: ".1em",
-                  textTransform: "uppercase",
-                  color: "var(--faint)",
-                }}
-              >
-                <span />
-                <span>Search</span>
-                <span>Filters</span>
-                <span style={{ textAlign: "right" }}>Every</span>
-                <span style={{ textAlign: "right" }}>Calls·day</span>
-                <span style={{ textAlign: "right" }}>24h</span>
-                <span />
-              </div>
+            <div
+              style={{
+                flex: 1,
+                overflowY: isMobile ? "visible" : "auto",
+                padding: isMobile ? "14px 16px 20px" : "14px 30px 26px",
+              }}
+            >
+              {!isMobile && (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: gridCols,
+                    gap: 8,
+                    alignItems: "center",
+                    padding: "0 14px 10px",
+                    fontFamily: MONO,
+                    fontSize: 10.5,
+                    letterSpacing: ".1em",
+                    textTransform: "uppercase",
+                    color: "var(--faint)",
+                  }}
+                >
+                  <span />
+                  <span>Search</span>
+                  <span>Filters</span>
+                  <span style={{ textAlign: "right" }}>Every</span>
+                  <span style={{ textAlign: "right" }}>Calls·day</span>
+                  <span style={{ textAlign: "right" }}>24h</span>
+                  <span />
+                </div>
+              )}
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {searches.length === 0 && (
                   <div style={emptyCard}>
@@ -622,6 +742,151 @@ export default function Home() {
                 )}
                 {searches.map((s) => {
                   const seeding = s.enabled && !s.seeded;
+                  const hasChips = s.binOnly || s.priceFloor != null || s.priceCap != null || s.includeAuctions;
+                  if (isMobile) {
+                    return (
+                      <div
+                        key={s.id}
+                        className="hv-card"
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 10,
+                          background: "var(--panel)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 12,
+                          padding: "14px 15px",
+                          opacity: s.enabled ? 1 : 0.62,
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+                          <span
+                            style={{
+                              width: 8,
+                              height: 8,
+                              flex: "0 0 auto",
+                              borderRadius: s.enabled ? "50%" : 2,
+                              background: s.enabled ? "var(--green)" : "var(--faint)",
+                              boxShadow: s.enabled
+                                ? "0 0 0 3px color-mix(in oklab, var(--green) 18%, transparent)"
+                                : "none",
+                              animation: s.enabled && s.intervalMin <= 2 ? "ebPulse 2.4s ease-in-out infinite" : "none",
+                            }}
+                          />
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div
+                              style={{
+                                fontWeight: 600,
+                                fontSize: 15,
+                                whiteSpace: "nowrap",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }}
+                            >
+                              {s.q}
+                            </div>
+                            <div
+                              style={{
+                                fontSize: 11.5,
+                                color: "var(--faint)",
+                                fontFamily: MONO,
+                                marginTop: 2,
+                                whiteSpace: "nowrap",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }}
+                            >
+                              {searchSub(s)}
+                            </div>
+                          </div>
+                        </div>
+                        {hasChips && (
+                          <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                            {s.binOnly && (
+                              <span style={{ ...chip, background: "var(--accent-soft)", color: "var(--accent-text)" }}>
+                                BIN
+                              </span>
+                            )}
+                            {s.priceFloor != null && (
+                              <span style={{ ...chip, background: "var(--chip-bg)", color: "var(--chip-text)" }}>
+                                ≥ {money(s.priceFloor).replace(/\.00$/, "")}
+                              </span>
+                            )}
+                            {s.priceCap != null && (
+                              <span style={{ ...chip, background: "var(--chip-bg)", color: "var(--chip-text)" }}>
+                                ≤ {money(s.priceCap).replace(/\.00$/, "")}
+                              </span>
+                            )}
+                            {s.includeAuctions && (
+                              <span style={{ ...chip, background: "var(--chip-bg)", color: "var(--chip-text)" }}>
+                                Auctions ok
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            flexWrap: "wrap",
+                            fontFamily: MONO,
+                            fontSize: 12,
+                            color: "var(--muted)",
+                          }}
+                        >
+                          <span
+                            style={{
+                              color: s.enabled ? (s.intervalMin <= 1 ? "var(--amber)" : "var(--text)") : "var(--faint)",
+                            }}
+                          >
+                            every {s.intervalMin}m
+                          </span>
+                          <span style={{ color: "var(--faint)" }}>·</span>
+                          <span>{s.enabled ? `${fmt(callsFor(s.intervalMin))} calls·day` : "paused"}</span>
+                          <span style={{ color: "var(--faint)" }}>·</span>
+                          <span style={{ color: s.hits24 > 0 ? "var(--accent-text)" : "var(--muted)" }}>
+                            {seeding ? "seeding" : `${s.hits24} in 24h`}
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
+                          <button
+                            className="hv-ghost"
+                            onClick={() => openEdit(s)}
+                            style={{
+                              ...ghostBtn,
+                              flex: "0 0 auto",
+                              padding: "9px 13px",
+                              fontSize: 13,
+                              color: "var(--faint)",
+                            }}
+                          >
+                            ✎ Edit
+                          </button>
+                          <button
+                            className="hv-ghost"
+                            onClick={() => togglePause(s)}
+                            style={{ ...ghostBtn, flex: 1, padding: "9px 13px", fontSize: 13 }}
+                          >
+                            {s.enabled ? "Pause" : "Resume"}
+                          </button>
+                          <button
+                            className="hv-ghost"
+                            onClick={() => removeSearch(s)}
+                            style={{
+                              ...ghostBtn,
+                              flex: "0 0 auto",
+                              padding: "9px 13px",
+                              fontSize: 13,
+                              color: "var(--faint)",
+                            }}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
                   return (
                     <div
                       key={s.id}
@@ -782,7 +1047,9 @@ export default function Home() {
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                padding: "24px 30px",
+                flexWrap: "wrap",
+                gap: isMobile ? 12 : 10,
+                padding: isMobile ? "16px" : "24px 30px",
                 borderBottom: "1px solid var(--border)",
               }}
             >
@@ -835,7 +1102,13 @@ export default function Home() {
                 </select>
               </div>
             </div>
-            <div style={{ flex: 1, overflowY: "auto", padding: "18px 30px 28px" }}>
+            <div
+              style={{
+                flex: 1,
+                overflowY: isMobile ? "visible" : "auto",
+                padding: isMobile ? "16px 16px 20px" : "18px 30px 28px",
+              }}
+            >
               {visibleAlerts.length === 0 && (
                 <div style={emptyCard}>No alerts yet — new listings show up here the moment the poller finds them.</div>
               )}
@@ -863,11 +1136,11 @@ export default function Home() {
                         className="hv-card"
                         style={{
                           display: "flex",
-                          gap: 15,
+                          gap: isMobile ? 12 : 15,
                           background: "var(--panel)",
                           border: "1px solid var(--border)",
                           borderRadius: 12,
-                          padding: "14px 16px",
+                          padding: isMobile ? "12px 13px" : "14px 16px",
                         }}
                       >
                         {a.imageUrl && !failedImg.has(a.id) ? (
@@ -882,8 +1155,8 @@ export default function Home() {
                             referrerPolicy="no-referrer"
                             onError={() => setFailedImg((prev) => new Set(prev).add(a.id))}
                             style={{
-                              width: 66,
-                              height: 66,
+                              width: isMobile ? 56 : 66,
+                              height: isMobile ? 56 : 66,
                               flex: "0 0 auto",
                               borderRadius: 10,
                               border: "1px solid var(--border)",
@@ -893,8 +1166,8 @@ export default function Home() {
                         ) : (
                           <div
                             style={{
-                              width: 66,
-                              height: 66,
+                              width: isMobile ? 56 : 66,
+                              height: isMobile ? 56 : 66,
                               flex: "0 0 auto",
                               borderRadius: 10,
                               border: "1px solid var(--border)",
@@ -1013,12 +1286,25 @@ export default function Home() {
         {/* ---------- STATUS VIEW ---------- */}
         {view === "status" && (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-            <div style={{ padding: "24px 30px", borderBottom: "1px solid var(--border)" }}>
+            <div style={{ padding: isMobile ? "16px" : "24px 30px", borderBottom: "1px solid var(--border)" }}>
               <h2 style={{ margin: 0, fontSize: 21, fontWeight: 700, letterSpacing: "-0.01em" }}>Status</h2>
               <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>Poller, quota and eBay API health</div>
             </div>
-            <div style={{ flex: 1, overflowY: "auto", padding: "24px 30px" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginBottom: 20 }}>
+            <div
+              style={{
+                flex: 1,
+                overflowY: isMobile ? "visible" : "auto",
+                padding: isMobile ? "16px" : "24px 30px",
+              }}
+            >
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: isMobile ? "1fr" : "repeat(3,1fr)",
+                  gap: isMobile ? 12 : 14,
+                  marginBottom: 20,
+                }}
+              >
                 <div style={statCard}>
                   <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 10 }}>Poller</div>
                   <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
@@ -1163,6 +1449,75 @@ export default function Home() {
         )}
       </div>
 
+      {/* ================= MOBILE BOTTOM NAV ================= */}
+      {isMobile && (
+        <div
+          style={{
+            position: "fixed",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 30,
+            display: "flex",
+            background: "var(--sidebar)",
+            borderTop: "1px solid var(--border)",
+            paddingBottom: "env(safe-area-inset-bottom)",
+          }}
+        >
+          {navItems.map((n) => {
+            const isActive = view === n.key;
+            return (
+              <div
+                key={n.key}
+                onClick={() => setView(n.key)}
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "10px 0 9px",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: isActive ? 600 : 500,
+                  color: isActive ? "var(--accent-text)" : "var(--muted)",
+                }}
+              >
+                <span style={{ position: "relative", display: "flex" }}>
+                  <span
+                    style={{
+                      width: 9,
+                      height: 9,
+                      borderRadius: 3,
+                      background: isActive ? "var(--accent)" : "transparent",
+                      border: isActive ? "none" : "1.5px solid var(--faint)",
+                    }}
+                  />
+                  {n.badge != null && (
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: -7,
+                        left: 9,
+                        fontFamily: MONO,
+                        fontSize: 9,
+                        background: "var(--accent-soft)",
+                        color: "var(--accent-text)",
+                        padding: "0 5px",
+                        borderRadius: 20,
+                      }}
+                    >
+                      {n.badge}
+                    </span>
+                  )}
+                </span>
+                {n.label}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* ================= NEW SEARCH MODAL ================= */}
       {showForm && (
         <div
@@ -1183,12 +1538,13 @@ export default function Home() {
             onClick={(e) => e.stopPropagation()}
             style={{
               width: 520,
-              maxWidth: "calc(100vw - 40px)",
+              maxWidth: "calc(100vw - 32px)",
+              maxHeight: isMobile ? "calc(100dvh - 24px)" : undefined,
               background: "var(--panel)",
               border: "1px solid var(--border-strong)",
               borderRadius: 16,
               boxShadow: "0 40px 90px -30px oklch(0.1 0.05 265 / .7)",
-              overflow: "hidden",
+              overflow: isMobile ? "auto" : "hidden",
               animation: "ebModalIn .18s cubic-bezier(.2,.7,.3,1)",
             }}
           >
@@ -1224,8 +1580,8 @@ export default function Home() {
                   style={inputBox}
                 />
               </div>
-              <div style={{ display: "flex", gap: 14 }}>
-                <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", gap: 14, flexWrap: isMobile ? "wrap" : "nowrap" }}>
+                <div style={{ flex: isMobile ? "1 1 100%" : 1 }}>
                   <label style={fieldLabel}>Category ID</label>
                   <input
                     className="eb-input"
@@ -1235,7 +1591,7 @@ export default function Home() {
                     style={inputBox}
                   />
                 </div>
-                <div style={{ width: 116 }}>
+                <div style={{ width: isMobile ? "auto" : 116, flex: isMobile ? 1 : "0 0 auto" }}>
                   <label style={fieldLabel}>Min price</label>
                   <div style={dollarWrap}>
                     <span style={{ color: "var(--faint)", fontFamily: MONO, fontSize: 14 }}>$</span>
@@ -1248,7 +1604,7 @@ export default function Home() {
                     />
                   </div>
                 </div>
-                <div style={{ width: 116 }}>
+                <div style={{ width: isMobile ? "auto" : 116, flex: isMobile ? 1 : "0 0 auto" }}>
                   <label style={fieldLabel}>Max price</label>
                   <div style={dollarWrap}>
                     <span style={{ color: "var(--faint)", fontFamily: MONO, fontSize: 14 }}>$</span>

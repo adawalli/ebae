@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { inWindow, matchCriteriaChanged, mergeCalls } from "./poller";
+import { inWindow, matchCriteriaChanged, mergeCalls, snoozeMinutes } from "./poller";
 import { hhmmToMin, parseSnoozeBody } from "./validate";
 
 // The re-seed guard in updateSearch: editing what a search matches must reset the
@@ -58,6 +58,11 @@ test("inWindow: window crossing midnight", () => {
   expect(inWindow(1320, 360, 359)).toBe(true); // @ 05:59
   expect(inWindow(1320, 360, 360)).toBe(false); // @ 06:00
   expect(inWindow(1320, 360, 720)).toBe(false); // @ 12:00
+});
+
+// Disabled snooze must not discount the UI projection (no window silenced).
+test("snoozeMinutes: 0 when snooze disabled", () => {
+  expect(snoozeMinutes()).toBe(0);
 });
 
 // Snooze settings validation (the API trust boundary): HH:MM parsing, tz check,

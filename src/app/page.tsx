@@ -37,7 +37,9 @@ import {
 
 const MONO = "var(--font-mono), ui-monospace, monospace";
 const fmt = (n: number) => n.toLocaleString("en-US");
-const callsFor = (interval: number) => Math.round(1440 / interval);
+// Projected polls/day. Snooze silences a daily window, so poll over active
+// minutes (1440 minus the snoozed span), not the whole day.
+const callsFor = (interval: number, activeMin = 1440) => Math.round(activeMin / interval);
 
 function money(n: number | null, currency = "USD") {
   if (n == null) return "—";
@@ -342,7 +344,8 @@ export default function Home() {
   // alerts is already filtered server-side (see refresh); the sidebar badge shows the loaded count
   const visibleAlerts = alerts;
   const active = searches.filter((s) => s.enabled);
-  const projected = active.reduce((n, s) => n + callsFor(s.intervalMin), 0);
+  const activeMin = 1440 - (status?.snooze.dailyMinutes ?? 0);
+  const projected = active.reduce((n, s) => n + callsFor(s.intervalMin, activeMin), 0);
   const ceiling = status?.quota.ceiling ?? 5000;
   const quotaPct = Math.min(100, Math.round((projected / ceiling) * 100));
   const running = status?.poller.running ?? false;
@@ -507,7 +510,7 @@ export default function Home() {
                             <span className="text-muted-foreground md:text-right md:text-[13px]">
                               {s.enabled ? (
                                 <>
-                                  {fmt(callsFor(s.intervalMin))}
+                                  {fmt(callsFor(s.intervalMin, activeMin))}
                                   <span className="md:hidden"> calls·day</span>
                                 </>
                               ) : (
@@ -980,7 +983,7 @@ export default function Home() {
               </div>
 
               <div className="flex items-center gap-2 rounded-lg bg-[var(--eb-accent-soft)] px-3.5 py-3 text-[12.5px] text-[var(--eb-accent-text)]">
-                <span className="font-mono font-semibold">≈ {fmt(callsFor(form.interval))} calls·day</span>
+                <span className="font-mono font-semibold">≈ {fmt(callsFor(form.interval, activeMin))} calls·day</span>
                 <span className="text-muted-foreground">
                   · first poll seeds silently — no alert spam from existing listings
                 </span>

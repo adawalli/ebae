@@ -52,6 +52,13 @@ function snoozeWindow(): string | null {
   return sn.enabled ? `${hhmm(sn.start)}–${hhmm(sn.end)}${sn.tz ? ` ${sn.tz}` : ""}` : null;
 }
 
+// Minutes silenced per day (0 when disabled). start !== end is enforced at
+// validation, so an enabled window is always 1..1439. Feeds the UI projection.
+export function snoozeMinutes(): number {
+  const sn = state().snooze;
+  return sn.enabled ? (sn.end - sn.start + 1440) % 1440 : 0;
+}
+
 type Entry = {
   s: Search;
   seen: Set<string>;
@@ -595,7 +602,7 @@ export function status(): StatusInfo {
       tokenExpiresAt: tokenExpiresAt(),
     },
     quota: { used: st.calls.date === today ? st.calls.used : 0, ceiling: QUOTA_CEILING },
-    snooze: { active: snoozing(), window: snoozeWindow() },
+    snooze: { active: snoozing(), window: snoozeWindow(), dailyMinutes: snoozeMinutes() },
     errors: [...st.errors].reverse().slice(0, 20),
     version: pkg.version,
   };

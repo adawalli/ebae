@@ -53,7 +53,7 @@ export type StatusInfo = {
   poller: { running: boolean; bootedAt: string | null; timers: number };
   ebay: { mode: "mock" | "live"; marketplace: string; tokenExpiresAt: string | null };
   quota: { used: number; ceiling: number };
-  snooze: { active: boolean; window: string | null };
+  snooze: { active: boolean; window: string | null; dailyMinutes: number };
   errors: PollError[];
   version: string;
 };

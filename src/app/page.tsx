@@ -1451,7 +1451,8 @@ export default function Home() {
 
       {/* ================= MOBILE BOTTOM NAV ================= */}
       {isMobile && (
-        <div
+        <nav
+          aria-label="Main navigation"
           style={{
             position: "fixed",
             left: 0,
@@ -1467,9 +1468,10 @@ export default function Home() {
           {navItems.map((n) => {
             const isActive = view === n.key;
             return (
-              <div
+              <button
                 key={n.key}
                 onClick={() => setView(n.key)}
+                aria-current={isActive ? "page" : undefined}
                 style={{
                   flex: 1,
                   display: "flex",
@@ -1481,6 +1483,9 @@ export default function Home() {
                   fontSize: 12,
                   fontWeight: isActive ? 600 : 500,
                   color: isActive ? "var(--accent-text)" : "var(--muted)",
+                  background: "transparent",
+                  border: "none",
+                  fontFamily: "inherit",
                 }}
               >
                 <span style={{ position: "relative", display: "flex" }}>
@@ -1512,10 +1517,10 @@ export default function Home() {
                   )}
                 </span>
                 {n.label}
-              </div>
+              </button>
             );
           })}
-        </div>
+        </nav>
       )}
 
       {/* ================= NEW SEARCH MODAL ================= */}

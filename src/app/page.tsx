@@ -591,6 +591,7 @@ export default function Home() {
                     </Button>
                   )}
                   <NativeSelect
+                    aria-label="Filter alerts by search"
                     className="font-mono"
                     value={String(alertFilter)}
                     onChange={(e) => setAlertFilter(e.target.value === "all" ? "all" : Number(e.target.value))}

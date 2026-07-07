@@ -85,12 +85,9 @@
   --sidebar-ring: oklch(0.52 0.2 232);
 
   /* brand color tokens (light) — read by shadcn components via Tailwind arbitrary values */
-  --eb-panel: oklch(0.995 0.003 265);
   --eb-panel2: oklch(0.975 0.005 265);
-  --eb-border: oklch(0.9 0.008 265);
   --eb-border-strong: oklch(0.85 0.012 265);
   --eb-text: oklch(0.24 0.02 265);
-  --eb-muted: oklch(0.46 0.02 265);
   --eb-faint: oklch(0.6 0.015 265);
   --eb-accent: oklch(0.52 0.2 232);
   --eb-accent-soft: oklch(0.52 0.2 232 / 0.12);
@@ -135,12 +132,9 @@
   --sidebar-ring: oklch(0.55 0.19 232);
 
   /* brand color tokens (dark) */
-  --eb-panel: oklch(0.2 0.018 265);
   --eb-panel2: oklch(0.185 0.012 265);
-  --eb-border: oklch(0.28 0.02 265);
   --eb-border-strong: oklch(0.33 0.02 265);
   --eb-text: oklch(0.94 0.008 265);
-  --eb-muted: oklch(0.66 0.02 265);
   --eb-faint: oklch(0.54 0.02 265);
   --eb-accent: oklch(0.55 0.19 232);
   --eb-accent-soft: oklch(0.6 0.19 232 / 0.16);

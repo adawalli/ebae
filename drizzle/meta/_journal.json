@@ -15,6 +15,13 @@
       "when": 1783376108717,
       "tag": "0001_crazy_pixie",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783381521387,
+      "tag": "0002_gigantic_blink",
+      "breakpoints": true
     }
   ]
 }

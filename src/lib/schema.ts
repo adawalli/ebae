@@ -37,6 +37,15 @@ export const channels = pgTable("channels", {
   enabled: boolean("enabled").notNull().default(true),
 });
 
+// Daily eBay API call counter, persisted so a restart doesn't reset tracking to
+// zero. Written opportunistically (piggybacks on poll writes + the 12h reload) so
+// it never opens a connection just for this; a reboot loses at most the calls
+// since the last write. day = new Date().toDateString(), matching the in-memory key.
+export const apiUsage = pgTable("api_usage", {
+  day: text("day").primaryKey(),
+  used: integer("used").notNull().default(0),
+});
+
 export const alerts = pgTable("alerts", {
   id: serial("id").primaryKey(),
   searchId: integer("search_id").references(() => searches.id, { onDelete: "set null" }),

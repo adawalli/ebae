@@ -2,16 +2,17 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { useTheme } from "next-themes";
-import { Inbox, Moon, Pencil, Plus, Search, Sun, Trash2 } from "lucide-react";
+import { Check, Inbox, Moon, Pencil, Plus, Search, Sun, Trash2 } from "lucide-react";
 import type { Alert, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { Item, ItemContent } from "@/components/ui/item";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
@@ -796,297 +797,157 @@ export default function Home() {
 
           {/* ---------- STATUS VIEW ---------- */}
           {view === "status" && (
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-              <div style={{ padding: isMobile ? "16px" : "24px 30px", borderBottom: "1px solid var(--eb-border)" }}>
-                <h2 style={{ margin: 0, fontSize: 21, fontWeight: 700, letterSpacing: "-0.01em" }}>Status</h2>
-                <div style={{ fontSize: 13, color: "var(--eb-muted)", marginTop: 4 }}>
-                  Poller, quota and eBay API health
-                </div>
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="border-b p-4 md:px-[30px] md:py-6">
+                <h2 className="text-[21px] font-bold tracking-[-0.01em]">Status</h2>
+                <div className="mt-1 text-[13px] text-muted-foreground">Poller, quota and eBay API health</div>
               </div>
-              <div
-                style={{
-                  flex: 1,
-                  overflowY: isMobile ? "visible" : "auto",
-                  padding: isMobile ? "16px" : "24px 30px",
-                }}
-              >
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: isMobile ? "1fr" : "repeat(3,1fr)",
-                    gap: isMobile ? 12 : 14,
-                    marginBottom: 20,
-                  }}
-                >
-                  <div style={statCard}>
-                    <div style={{ fontSize: 12.5, color: "var(--eb-muted)", marginBottom: 10 }}>Poller</div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                      <span
-                        style={{
-                          width: 9,
-                          height: 9,
-                          borderRadius: "50%",
-                          background: running ? (snoozed ? "var(--eb-amber)" : "var(--eb-green)") : "var(--eb-amber)",
-                          animation: running && !snoozed ? "ebPulse 2.4s ease-in-out infinite" : "none",
-                        }}
-                      />
-                      <span style={{ fontSize: 19, fontWeight: 700 }}>
-                        {running ? (snoozed ? "Snoozing" : "Running") : "Stopped"}
-                      </span>
-                    </div>
-                    <div style={{ fontFamily: MONO, fontSize: 12, color: "var(--eb-faint)", marginTop: 8 }}>
-                      {running && status?.poller.bootedAt
-                        ? `uptime ${duration(status.poller.bootedAt)} · ${status.poller.timers} timer${status.poller.timers === 1 ? "" : "s"}${status.snooze.window ? ` · ${snoozed ? "snoozing" : "snooze"} ${status.snooze.window}` : ""}`
-                        : (status?.bootError ?? "not started")}
-                    </div>
-                  </div>
-                  <div style={statCard}>
-                    <div style={{ fontSize: 12.5, color: "var(--eb-muted)", marginBottom: 10 }}>eBay Browse token</div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                      <span
-                        style={{
-                          width: 9,
-                          height: 9,
-                          borderRadius: "50%",
-                          background: mock ? "var(--eb-amber)" : "var(--eb-green)",
-                        }}
-                      />
-                      <span style={{ fontSize: 19, fontWeight: 700 }}>
-                        {mock ? "Mock mode" : status?.ebay.tokenExpiresAt ? "Valid" : "Not fetched"}
-                      </span>
-                    </div>
-                    <div style={{ fontFamily: MONO, fontSize: 12, color: "var(--eb-faint)", marginTop: 8 }}>
-                      {mock
-                        ? `set EBAY_CLIENT_ID to go live · ${status?.ebay.marketplace ?? "EBAY_US"}`
-                        : status?.ebay.tokenExpiresAt
-                          ? `refreshes in ${until(status.ebay.tokenExpiresAt)} · ${status.ebay.marketplace}`
-                          : `fetched on first poll · ${status?.ebay.marketplace ?? "EBAY_US"}`}
-                    </div>
-                  </div>
-                  <div style={statCard}>
-                    <div style={{ fontSize: 12.5, color: "var(--eb-muted)", marginBottom: 10 }}>Quota today</div>
-                    <div style={{ fontSize: 19, fontWeight: 700, fontFamily: MONO }}>
-                      {fmt(status?.quota.used ?? 0)}{" "}
-                      <span style={{ color: "var(--eb-faint)", fontWeight: 400, fontSize: 14 }}>/ {fmt(ceiling)}</span>
-                    </div>
-                    <div style={{ fontFamily: MONO, fontSize: 12, color: "var(--eb-faint)", marginTop: 8 }}>
-                      {Math.round(((status?.quota.used ?? 0) / ceiling) * 100)}% of daily budget
-                    </div>
-                  </div>
+              <div className="flex-1 overflow-y-visible p-4 md:overflow-y-auto md:px-[30px] md:py-6">
+                <div className="mb-5 grid grid-cols-1 gap-3 md:grid-cols-3 md:gap-3.5">
+                  <Card>
+                    <CardContent className="flex flex-col">
+                      <div className="mb-2.5 text-[12.5px] text-muted-foreground">Poller</div>
+                      <div className="flex items-center gap-[9px]">
+                        <span
+                          className="size-[9px] rounded-full"
+                          style={{
+                            background: running ? (snoozed ? "var(--eb-amber)" : "var(--eb-green)") : "var(--eb-amber)",
+                            animation: running && !snoozed ? "ebPulse 2.4s ease-in-out infinite" : undefined,
+                          }}
+                        />
+                        <span className="text-[19px] font-bold">
+                          {running ? (snoozed ? "Snoozing" : "Running") : "Stopped"}
+                        </span>
+                      </div>
+                      <div className="mt-2 font-mono text-xs text-[var(--eb-faint)]">
+                        {running && status?.poller.bootedAt
+                          ? `uptime ${duration(status.poller.bootedAt)} · ${status.poller.timers} timer${status.poller.timers === 1 ? "" : "s"}${status.snooze.window ? ` · ${snoozed ? "snoozing" : "snooze"} ${status.snooze.window}` : ""}`
+                          : (status?.bootError ?? "not started")}
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="flex flex-col">
+                      <div className="mb-2.5 text-[12.5px] text-muted-foreground">eBay Browse token</div>
+                      <div className="flex items-center gap-[9px]">
+                        <span
+                          className="size-[9px] rounded-full"
+                          style={{ background: mock ? "var(--eb-amber)" : "var(--eb-green)" }}
+                        />
+                        <span className="text-[19px] font-bold">
+                          {mock ? "Mock mode" : status?.ebay.tokenExpiresAt ? "Valid" : "Not fetched"}
+                        </span>
+                      </div>
+                      <div className="mt-2 font-mono text-xs text-[var(--eb-faint)]">
+                        {mock
+                          ? `set EBAY_CLIENT_ID to go live · ${status?.ebay.marketplace ?? "EBAY_US"}`
+                          : status?.ebay.tokenExpiresAt
+                            ? `refreshes in ${until(status.ebay.tokenExpiresAt)} · ${status.ebay.marketplace}`
+                            : `fetched on first poll · ${status?.ebay.marketplace ?? "EBAY_US"}`}
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="flex flex-col">
+                      <div className="mb-2.5 text-[12.5px] text-muted-foreground">Quota today</div>
+                      <div className="font-mono text-[19px] font-bold">
+                        {fmt(status?.quota.used ?? 0)}{" "}
+                        <span className="text-[14px] font-normal text-[var(--eb-faint)]">/ {fmt(ceiling)}</span>
+                      </div>
+                      <div className="mt-2 font-mono text-xs text-[var(--eb-faint)]">
+                        {Math.round(((status?.quota.used ?? 0) / ceiling) * 100)}% of daily budget
+                      </div>
+                    </CardContent>
+                  </Card>
                 </div>
 
                 {snooze && (
-                  <div
-                    style={{
-                      background: "var(--eb-panel)",
-                      border: "1px solid var(--eb-border)",
-                      borderRadius: 12,
-                      padding: isMobile ? "16px" : "18px 20px",
-                      marginBottom: 20,
-                    }}
-                  >
-                    <div
-                      style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}
-                    >
-                      <div>
-                        <div style={{ fontSize: 14, fontWeight: 600 }}>Overnight snooze</div>
-                        <div style={{ fontSize: 12.5, color: "var(--eb-muted)", marginTop: 3, maxWidth: 440 }}>
-                          Pause eBay polling during these hours to save quota while you sleep. Items listed in the
-                          window still alert on the first poll after it ends.
+                  <Card className="mb-5">
+                    <CardContent className="flex flex-col gap-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-semibold">Overnight snooze</div>
+                          <div className="mt-[3px] max-w-[440px] text-[12.5px] text-muted-foreground">
+                            Pause eBay polling during these hours to save quota while you sleep. Items listed in the
+                            window still alert on the first poll after it ends.
+                          </div>
                         </div>
-                      </div>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={snooze.enabled}
-                        aria-label="Overnight snooze"
-                        onClick={() => setSnoozeState({ ...snooze, enabled: !snooze.enabled })}
-                        style={{
-                          width: 38,
-                          height: 22,
-                          borderRadius: 20,
-                          border: "none",
-                          padding: 0,
-                          background: snooze.enabled ? "var(--eb-accent)" : "var(--eb-border-strong)",
-                          position: "relative",
-                          flex: "0 0 auto",
-                          cursor: "pointer",
-                          transition: "background .15s",
-                        }}
-                      >
-                        <span
-                          style={{
-                            position: "absolute",
-                            top: 2,
-                            left: snooze.enabled ? 18 : 2,
-                            width: 18,
-                            height: 18,
-                            borderRadius: "50%",
-                            background: "white",
-                            transition: "left .15s",
-                          }}
+                        <Switch
+                          aria-label="Overnight snooze"
+                          checked={snooze.enabled}
+                          onCheckedChange={(checked) => setSnoozeState({ ...snooze, enabled: checked })}
                         />
-                      </button>
-                    </div>
-
-                    {snooze.enabled && (
-                      <div
-                        style={{ display: "flex", alignItems: "flex-end", gap: 12, marginTop: 16, flexWrap: "wrap" }}
-                      >
-                        <label
-                          style={{
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: 6,
-                            fontSize: 12,
-                            color: "var(--eb-muted)",
-                          }}
-                        >
-                          From
-                          <input
-                            type="time"
-                            value={snooze.start}
-                            onChange={(e) => setSnoozeState({ ...snooze, start: e.target.value })}
-                            style={{ ...inputBox, width: 130 }}
-                          />
-                        </label>
-                        <label
-                          style={{
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: 6,
-                            fontSize: 12,
-                            color: "var(--eb-muted)",
-                          }}
-                        >
-                          To
-                          <input
-                            type="time"
-                            value={snooze.end}
-                            onChange={(e) => setSnoozeState({ ...snooze, end: e.target.value })}
-                            style={{ ...inputBox, width: 130 }}
-                          />
-                        </label>
-                        <span style={{ fontSize: 12, color: "var(--eb-faint)", fontFamily: MONO, paddingBottom: 12 }}>
-                          {snooze.tz ?? "server time"}
-                        </span>
                       </div>
-                    )}
 
-                    <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
-                      <button
-                        className="hv-accent"
-                        onClick={() => saveSnooze(snooze)}
-                        disabled={snoozeSaving}
-                        style={{
-                          background: "var(--eb-accent)",
-                          color: "white",
-                          border: "none",
-                          borderRadius: 9,
-                          padding: "9px 18px",
-                          fontFamily: "inherit",
-                          fontSize: 13.5,
-                          fontWeight: 600,
-                          cursor: snoozeSaving ? "default" : "pointer",
-                          opacity: snoozeSaving ? 0.7 : 1,
-                        }}
-                      >
-                        {snoozeSaving ? "Saving…" : "Save"}
-                      </button>
-                      {snoozeError && (
-                        <span style={{ fontSize: 12.5, color: "var(--eb-amber)", fontFamily: MONO }}>
-                          {snoozeError}
-                        </span>
+                      {snooze.enabled && (
+                        <div className="flex flex-wrap items-end gap-3">
+                          <Field className="w-[130px]">
+                            <FieldLabel htmlFor="snooze-from">From</FieldLabel>
+                            <Input
+                              id="snooze-from"
+                              type="time"
+                              value={snooze.start}
+                              onChange={(e) => setSnoozeState({ ...snooze, start: e.target.value })}
+                            />
+                          </Field>
+                          <Field className="w-[130px]">
+                            <FieldLabel htmlFor="snooze-to">To</FieldLabel>
+                            <Input
+                              id="snooze-to"
+                              type="time"
+                              value={snooze.end}
+                              onChange={(e) => setSnoozeState({ ...snooze, end: e.target.value })}
+                            />
+                          </Field>
+                          <span className="pb-3 font-mono text-xs text-[var(--eb-faint)]">
+                            {snooze.tz ?? "server time"}
+                          </span>
+                        </div>
                       )}
-                    </div>
-                  </div>
+
+                      <div className="flex items-center gap-3">
+                        <Button onClick={() => saveSnooze(snooze)} disabled={snoozeSaving}>
+                          {snoozeSaving ? "Saving…" : "Save"}
+                        </Button>
+                        {snoozeError && (
+                          <span className="font-mono text-[12.5px] text-[var(--eb-amber)]">{snoozeError}</span>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
                 )}
 
                 {status?.errors.length ? (
-                  <div
-                    style={{
-                      background: "var(--eb-panel)",
-                      border: "1px solid var(--eb-border)",
-                      borderRadius: 12,
-                      overflow: "hidden",
-                    }}
-                  >
-                    <div
-                      style={{
-                        padding: "13px 18px",
-                        borderBottom: "1px solid var(--eb-border)",
-                        fontSize: 13,
-                        fontWeight: 600,
-                        color: "var(--eb-muted)",
-                      }}
-                    >
-                      Recent errors
-                    </div>
-                    {status.errors.map((err, i) => (
-                      <div
-                        key={i}
-                        style={{
-                          display: "flex",
-                          gap: 12,
-                          padding: "10px 18px",
-                          borderBottom: i < status.errors.length - 1 ? "1px solid var(--eb-border)" : "none",
-                          fontFamily: MONO,
-                          fontSize: 12,
-                          alignItems: "baseline",
-                        }}
-                      >
-                        <span style={{ color: "var(--eb-faint)", whiteSpace: "nowrap" }}>{ago(err.time, true)}</span>
-                        {err.searchQ && (
-                          <span style={{ color: "var(--eb-accent-text)", whiteSpace: "nowrap" }}>{err.searchQ}</span>
-                        )}
-                        <span style={{ color: "var(--eb-muted)", overflowWrap: "anywhere" }}>{err.message}</span>
-                      </div>
-                    ))}
-                  </div>
+                  <Card className="gap-0 py-0">
+                    <CardHeader className="border-b py-3">
+                      <CardTitle className="text-sm font-semibold text-muted-foreground">Recent errors</CardTitle>
+                    </CardHeader>
+                    <CardContent className="flex flex-col gap-2 py-3">
+                      {status.errors.map((err, i) => (
+                        <Item key={i} variant="muted" size="sm" className="items-baseline gap-3 font-mono text-xs">
+                          <span className="whitespace-nowrap text-[var(--eb-faint)]">{ago(err.time, true)}</span>
+                          {err.searchQ && (
+                            <span className="whitespace-nowrap text-[var(--eb-accent-text)]">{err.searchQ}</span>
+                          )}
+                          <ItemContent className="text-muted-foreground [overflow-wrap:anywhere]">
+                            {err.message}
+                          </ItemContent>
+                        </Item>
+                      ))}
+                    </CardContent>
+                  </Card>
                 ) : (
-                  <div
-                    style={{
-                      background: "var(--eb-panel)",
-                      border: "1px solid var(--eb-border)",
-                      borderRadius: 12,
-                      padding: "44px 20px",
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "center",
-                      textAlign: "center",
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: 46,
-                        height: 46,
-                        borderRadius: 12,
-                        border: "1px solid var(--eb-border)",
-                        background: "var(--eb-panel2)",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        marginBottom: 14,
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: 16,
-                          height: 16,
-                          borderRadius: "50%",
-                          border: "2px solid var(--eb-green)",
-                          borderRightColor: "transparent",
-                          transform: "rotate(45deg)",
-                        }}
-                      />
-                    </div>
-                    <div style={{ fontSize: 15, fontWeight: 600 }}>No API errors in the last 24h</div>
-                    <div
-                      style={{ fontSize: 13, color: "var(--eb-muted)", marginTop: 5, maxWidth: 360, lineHeight: 1.5 }}
-                    >
-                      All searches are polling on schedule. Failed calls back off exponentially and surface here.
-                    </div>
-                  </div>
+                  <Empty className="rounded-xl bg-card ring-1 ring-foreground/10">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon">
+                        <Check className="text-[var(--eb-green)]" />
+                      </EmptyMedia>
+                      <EmptyTitle>No API errors in the last 24h</EmptyTitle>
+                      <EmptyDescription>
+                        All searches are polling on schedule. Failed calls back off exponentially and surface here.
+                      </EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
                 )}
               </div>
             </div>

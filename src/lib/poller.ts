@@ -156,7 +156,7 @@ async function reload() {
   const today = new Date().toDateString();
   // ponytail: fixed 90d retention, revisit if listings outlive it
   await database.delete(seenItems).where(lt(seenItems.seenAt, sql`now() - interval '90 days'`));
-  const [searchRows, seenRows, hitRows, lastHitRows, channelRows, usageRows] = await Promise.all([
+  const [searchRows, seenRows, hitRows, lastHitRows, channelRows] = await Promise.all([
     database.select().from(searches),
     database.select({ searchId: seenItems.searchId, itemId: seenItems.itemId }).from(seenItems),
     database
@@ -168,7 +168,6 @@ async function reload() {
       .from(alerts)
       .groupBy(alerts.searchId),
     database.select({ webhookUrl: channels.webhookUrl }).from(channels).where(eq(channels.enabled, true)),
-    database.select({ used: apiUsage.used }).from(apiUsage).where(eq(apiUsage.day, today)),
   ]);
 
   const st = state();
@@ -239,15 +238,17 @@ async function reload() {
   st.channels = channelRows.map((r) => r.webhookUrl);
   if (process.env.DISCORD_WEBHOOK_URL) st.channels.push(process.env.DISCORD_WEBHOOK_URL);
 
-  // Restore the persisted daily call count, then flush the merged value back on the
-  // connection reload already opened - so a long-lived instance persists even quiet
-  // searches' polling at least each refresh. Guard the midnight edge: if the day
-  // rolled over while the awaits above ran, a concurrent tick already owns st.calls
-  // for the new day (pollOnce's rollover reset), and usageRows/today are for the old
-  // day - merging would stamp st.calls backward. Skip; the tick has it.
+  // Reconcile the daily quota counter. Flush our in-memory value and read back
+  // what greatest() resolved to — one round-trip that handles both directions:
+  // dying-process race (DB has more than we just read) and concurrent polls
+  // (we have more than DB). Guard midnight twice: a poll tick can reset st.calls
+  // during the await, and if that happens we must not stamp it backward.
   if (new Date().toDateString() === today) {
-    st.calls = mergeCalls(st.calls, today, usageRows[0]?.used ?? 0);
-    if (st.calls.used > 0) await flushCalls(database, st.calls);
+    const inMem = st.calls.date === today ? st.calls.used : 0;
+    const reconciled = await flushCalls(database, { date: today, used: inMem });
+    if (new Date().toDateString() === today) {
+      st.calls = { date: today, used: reconciled };
+    }
   }
 }
 
@@ -260,14 +261,15 @@ export function mergeCalls(cur: State["calls"], today: string, dbUsed: number): 
   return { date: today, used: dbUsed };
 }
 
-// Persists the daily eBay call count. Callers invoke this only when a connection
-// is already open (poll writes, reload) so it never wakes serverless Postgres on
-// its own. greatest() means an out-of-order flush can never lower the stored count.
-async function flushCalls(database: ReturnType<typeof db>, calls: State["calls"]) {
-  await database
+// Persists the daily eBay call count. Returns the greatest()-reconciled value from
+// the DB so callers can sync in-memory state without a separate SELECT.
+async function flushCalls(database: ReturnType<typeof db>, calls: State["calls"]): Promise<number> {
+  const [row] = await database
     .insert(apiUsage)
     .values({ day: calls.date, used: calls.used })
-    .onConflictDoUpdate({ target: apiUsage.day, set: { used: sql`greatest(${apiUsage.used}, ${calls.used})` } });
+    .onConflictDoUpdate({ target: apiUsage.day, set: { used: sql`greatest(${apiUsage.used}, ${calls.used})` } })
+    .returning({ used: apiUsage.used });
+  return row?.used ?? calls.used;
 }
 
 function schedule(e: Entry, delayMs: number) {

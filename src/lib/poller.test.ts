@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { matchCriteriaChanged } from "./poller";
+import { matchCriteriaChanged, mergeCalls } from "./poller";
 
 // The re-seed guard in updateSearch: editing what a search matches must reset the
 // seeded baseline, but touching only interval/enabled (or a no-op edit) must not.
@@ -28,4 +28,17 @@ test("no-op or non-match edits do not re-seed", () => {
 
 test("undefined current (boot window) treats any provided field as changed", () => {
   expect(matchCriteriaChanged(undefined, { q: "anything" })).toBe(true);
+});
+
+// mergeCalls restores the persisted daily API count on reload without letting a
+// stale DB snapshot clobber the live in-memory counter.
+const TODAY = "Mon Jul 06 2026";
+test("fresh boot adopts the persisted count", () => {
+  expect(mergeCalls({ date: TODAY, used: 0 }, TODAY, 4000)).toEqual({ date: TODAY, used: 4000 });
+});
+test("live refresh keeps the larger in-memory count (un-flushed increments)", () => {
+  expect(mergeCalls({ date: TODAY, used: 4500 }, TODAY, 4000)).toEqual({ date: TODAY, used: 4500 });
+});
+test("day rollover discards the stale prior-day count", () => {
+  expect(mergeCalls({ date: "Sun Jul 05 2026", used: 4999 }, TODAY, 0)).toEqual({ date: TODAY, used: 0 });
 });

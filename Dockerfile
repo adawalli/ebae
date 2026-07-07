@@ -15,7 +15,9 @@ RUN node_modules/.bin/next build
 # run: standalone output, non-root
 FROM node:24-alpine
 WORKDIR /app
-ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 HOSTNAME=0.0.0.0 PORT=3000
+# NEXT_MANUAL_SIG_HANDLE: let poller.ts own SIGTERM/SIGINT so its shutdown flush
+# completes; otherwise Next's own handler process.exit()s and cuts the DB write off.
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 HOSTNAME=0.0.0.0 PORT=3000 NEXT_MANUAL_SIG_HANDLE=true
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public

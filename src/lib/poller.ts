@@ -1,7 +1,7 @@
 import { eq, gt, lt, max, sql } from "drizzle-orm";
 import pkg from "../../package.json";
 import { db, migrateToLatest } from "./db";
-import { alerts, channels, searches, seenItems } from "./schema";
+import { alerts, apiUsage, channels, searches, seenItems } from "./schema";
 import { MARKETPLACE, MOCK, searchNewlyListed, tokenExpiresAt } from "./ebay";
 import { notify } from "./discord";
 import { log } from "./log";
@@ -86,7 +86,37 @@ export async function boot() {
   const st = state();
   if (st.bootedAt) return;
   st.bootedAt = Date.now();
+  // A clean restart (docker/k8s SIGTERM, Ctrl-C SIGINT) is the one case where we
+  // can persist the exact count even after a run of empty polls: flush on the way
+  // out. Best-effort - a SIGKILL or crash still falls back to the last poll write.
+  // Requires NEXT_MANUAL_SIG_HANDLE=true (set in package.json + Dockerfile): without
+  // it Next installs its own handler that process.exit()s and cuts our async flush
+  // off mid-write, which we confirmed empirically.
+  process.once("SIGTERM", shutdownFlush);
+  process.once("SIGINT", shutdownFlush);
   await tryBoot();
+}
+
+let shuttingDown = false;
+async function shutdownFlush(signal: NodeJS.Signals) {
+  if (shuttingDown) return; // a second signal must not race a second flush/exit
+  shuttingDown = true;
+  const st = state();
+  try {
+    if (st.ready && st.calls.used > 0) {
+      // Cap the wait so a suspended/hung Neon can't hold the process past the
+      // container's shutdown grace period; the count is best-effort anyway.
+      await Promise.race([flushCalls(db(), st.calls), new Promise((r) => setTimeout(r, 3000))]);
+      // console.error (sync) not plog: a buffered pino write can be dropped by process.exit.
+      console.error(`[poller] flushed call count on ${signal}: used=${st.calls.used} day="${st.calls.date}"`);
+    }
+  } catch (err) {
+    console.error(`[poller] shutdown flush failed on ${signal}:`, err);
+  } finally {
+    // We own shutdown (NEXT_MANUAL_SIG_HANDLE), and the poll timers keep the event
+    // loop alive, so nothing exits unless we say so.
+    process.exit(0);
+  }
 }
 
 // migrate/reload can throw if Postgres isn't up yet (compose start order,
@@ -123,9 +153,10 @@ async function tryBoot() {
 // those, the poller works purely from memory so serverless Postgres can sleep.
 async function reload() {
   const database = db();
+  const today = new Date().toDateString();
   // ponytail: fixed 90d retention, revisit if listings outlive it
   await database.delete(seenItems).where(lt(seenItems.seenAt, sql`now() - interval '90 days'`));
-  const [searchRows, seenRows, hitRows, lastHitRows, channelRows] = await Promise.all([
+  const [searchRows, seenRows, hitRows, lastHitRows, channelRows, usageRows] = await Promise.all([
     database.select().from(searches),
     database.select({ searchId: seenItems.searchId, itemId: seenItems.itemId }).from(seenItems),
     database
@@ -137,6 +168,7 @@ async function reload() {
       .from(alerts)
       .groupBy(alerts.searchId),
     database.select({ webhookUrl: channels.webhookUrl }).from(channels).where(eq(channels.enabled, true)),
+    database.select({ used: apiUsage.used }).from(apiUsage).where(eq(apiUsage.day, today)),
   ]);
 
   const st = state();
@@ -206,6 +238,36 @@ async function reload() {
   }
   st.channels = channelRows.map((r) => r.webhookUrl);
   if (process.env.DISCORD_WEBHOOK_URL) st.channels.push(process.env.DISCORD_WEBHOOK_URL);
+
+  // Restore the persisted daily call count, then flush the merged value back on the
+  // connection reload already opened - so a long-lived instance persists even quiet
+  // searches' polling at least each refresh. Guard the midnight edge: if the day
+  // rolled over while the awaits above ran, a concurrent tick already owns st.calls
+  // for the new day (pollOnce's rollover reset), and usageRows/today are for the old
+  // day - merging would stamp st.calls backward. Skip; the tick has it.
+  if (new Date().toDateString() === today) {
+    st.calls = mergeCalls(st.calls, today, usageRows[0]?.used ?? 0);
+    if (st.calls.used > 0) await flushCalls(database, st.calls);
+  }
+}
+
+// Merge a persisted daily count with the in-memory one. Memory is authoritative
+// mid-run (it holds increments not yet flushed), so on a live refresh keep the
+// larger; a fresh boot has memory 0 and adopts the DB value; a day rollover
+// discards a stale prior-day DB count. Pure + exported so it's unit-testable.
+export function mergeCalls(cur: State["calls"], today: string, dbUsed: number): State["calls"] {
+  if (cur.date === today) return { date: today, used: Math.max(cur.used, dbUsed) };
+  return { date: today, used: dbUsed };
+}
+
+// Persists the daily eBay call count. Callers invoke this only when a connection
+// is already open (poll writes, reload) so it never wakes serverless Postgres on
+// its own. greatest() means an out-of-order flush can never lower the stored count.
+async function flushCalls(database: ReturnType<typeof db>, calls: State["calls"]) {
+  await database
+    .insert(apiUsage)
+    .values({ day: calls.date, used: calls.used })
+    .onConflictDoUpdate({ target: apiUsage.day, set: { used: sql`greatest(${apiUsage.used}, ${calls.used})` } });
 }
 
 function schedule(e: Entry, delayMs: number) {
@@ -249,6 +311,7 @@ async function pollOnce(e: Entry) {
     const database = db();
     const fresh = items.filter((i) => !e.seen.has(i.itemId));
     plog.debug({ searchId: e.s.id, fresh: fresh.length, of: items.length }, "dedup");
+    let wrote = false; // did this tick open a connection? gates the piggyback flush below
 
     if (!e.s.seeded) {
       // first poll seeds the seen set silently - no alert spam (DESIGN.md §3)
@@ -258,6 +321,7 @@ async function pollOnce(e: Entry) {
         for (const i of fresh) e.seen.add(i.itemId);
       }
       await database.update(searches).set({ seeded: true }).where(eq(searches.id, e.s.id));
+      wrote = true;
       e.s.seeded = true;
       plog.info({ searchId: e.s.id, q: e.s.q, count: fresh.length }, "seeded");
     } else {
@@ -281,6 +345,7 @@ async function pollOnce(e: Entry) {
             itemUrl: item.itemUrl,
           });
         });
+        wrote = true;
         e.seen.add(item.itemId);
         const now = Date.now();
         e.hitTimes.push(now);
@@ -293,6 +358,10 @@ async function pollOnce(e: Entry) {
       }
     }
 
+    // Piggyback the daily-call-count persist on the connection these writes already
+    // opened. Empty polls (seeded, nothing new) skip it and stay DB-free, so a
+    // reboot loses at most the calls counted since the last write - by design.
+    if (wrote) await flushCalls(database, st.calls);
     e.backoffMs = 0;
     schedule(e, e.s.intervalMin * 60_000);
   } catch (err) {

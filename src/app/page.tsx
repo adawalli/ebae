@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
-import type { Alert, SearchStats, StatusInfo } from "@/lib/types";
+import type { Alert, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
 
 const MONO = "var(--font-mono), ui-monospace, monospace";
 const HUE = 232; // "Cyan" accent from the design
@@ -121,6 +121,9 @@ export default function Home() {
   const [alertsBadge, setAlertsBadge] = useState(0);
   const [alertFilter, setAlertFilter] = useState<"all" | number>("all");
   const [status, setStatus] = useState<StatusInfo | null>(null);
+  const [snooze, setSnoozeState] = useState<SnoozeConfig | null>(null);
+  const [snoozeSaving, setSnoozeSaving] = useState(false);
+  const [snoozeError, setSnoozeError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [failedImg, setFailedImg] = useState<Set<number>>(new Set());
   const [editId, setEditId] = useState<number | null>(null);
@@ -164,6 +167,42 @@ export default function Home() {
     const t = setInterval(refresh, 10_000);
     return () => clearInterval(t);
   }, [refresh]);
+
+  useEffect(() => {
+    // snooze config: load once, not in the 10s loop (the form binds to this state,
+    // so re-fetching would clobber in-progress edits). Default tz to the browser's.
+    fetch("/api/settings")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!d) return;
+        const tz = d.snooze.tz ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+        setSnoozeState({ ...d.snooze, tz });
+      })
+      .catch(() => {});
+  }, []);
+
+  async function saveSnooze(next: SnoozeConfig) {
+    setSnoozeSaving(true);
+    setSnoozeError(null);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(next),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setSnoozeError(data.error ?? `request failed (${res.status})`);
+        return;
+      }
+      setSnoozeState({ ...data.snooze, tz: data.snooze.tz ?? next.tz });
+      refresh(); // reflect the new snooze state in the status tiles
+    } catch (e) {
+      setSnoozeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSnoozeSaving(false);
+    }
+  }
 
   async function togglePause(s: SearchStats) {
     await fetch(`/api/searches/${s.id}`, {
@@ -256,6 +295,7 @@ export default function Home() {
   const ceiling = status?.quota.ceiling ?? 5000;
   const quotaPct = Math.min(100, Math.round((projected / ceiling) * 100));
   const running = status?.poller.running ?? false;
+  const snoozed = status?.snooze.active ?? false;
   const mock = status?.ebay.mode === "mock";
 
   const navItems = [
@@ -1313,15 +1353,17 @@ export default function Home() {
                         width: 9,
                         height: 9,
                         borderRadius: "50%",
-                        background: running ? "var(--green)" : "var(--amber)",
-                        animation: running ? "ebPulse 2.4s ease-in-out infinite" : "none",
+                        background: running ? (snoozed ? "var(--amber)" : "var(--green)") : "var(--amber)",
+                        animation: running && !snoozed ? "ebPulse 2.4s ease-in-out infinite" : "none",
                       }}
                     />
-                    <span style={{ fontSize: 19, fontWeight: 700 }}>{running ? "Running" : "Stopped"}</span>
+                    <span style={{ fontSize: 19, fontWeight: 700 }}>
+                      {running ? (snoozed ? "Snoozing" : "Running") : "Stopped"}
+                    </span>
                   </div>
                   <div style={{ fontFamily: MONO, fontSize: 12, color: "var(--faint)", marginTop: 8 }}>
                     {running && status?.poller.bootedAt
-                      ? `uptime ${duration(status.poller.bootedAt)} · ${status.poller.timers} timer${status.poller.timers === 1 ? "" : "s"}`
+                      ? `uptime ${duration(status.poller.bootedAt)} · ${status.poller.timers} timer${status.poller.timers === 1 ? "" : "s"}${status.snooze.window ? ` · ${snoozed ? "snoozing" : "snooze"} ${status.snooze.window}` : ""}`
                       : (status?.bootError ?? "not started")}
                   </div>
                 </div>
@@ -1359,6 +1401,123 @@ export default function Home() {
                   </div>
                 </div>
               </div>
+
+              {snooze && (
+                <div
+                  style={{
+                    background: "var(--panel)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 12,
+                    padding: isMobile ? "16px" : "18px 20px",
+                    marginBottom: 20,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 600 }}>Overnight snooze</div>
+                      <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 3, maxWidth: 440 }}>
+                        Pause eBay polling during these hours to save quota while you sleep. Items listed in the window
+                        still alert on the first poll after it ends.
+                      </div>
+                    </div>
+                    <span
+                      role="switch"
+                      aria-checked={snooze.enabled}
+                      onClick={() => setSnoozeState({ ...snooze, enabled: !snooze.enabled })}
+                      style={{
+                        width: 38,
+                        height: 22,
+                        borderRadius: 20,
+                        background: snooze.enabled ? "var(--accent)" : "var(--border-strong)",
+                        position: "relative",
+                        flex: "0 0 auto",
+                        cursor: "pointer",
+                        transition: "background .15s",
+                      }}
+                    >
+                      <span
+                        style={{
+                          position: "absolute",
+                          top: 2,
+                          left: snooze.enabled ? 18 : 2,
+                          width: 18,
+                          height: 18,
+                          borderRadius: "50%",
+                          background: "white",
+                          transition: "left .15s",
+                        }}
+                      />
+                    </span>
+                  </div>
+
+                  {snooze.enabled && (
+                    <div style={{ display: "flex", alignItems: "flex-end", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
+                      <label
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 6,
+                          fontSize: 12,
+                          color: "var(--muted)",
+                        }}
+                      >
+                        From
+                        <input
+                          type="time"
+                          value={snooze.start}
+                          onChange={(e) => setSnoozeState({ ...snooze, start: e.target.value })}
+                          style={{ ...inputBox, width: 130 }}
+                        />
+                      </label>
+                      <label
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 6,
+                          fontSize: 12,
+                          color: "var(--muted)",
+                        }}
+                      >
+                        To
+                        <input
+                          type="time"
+                          value={snooze.end}
+                          onChange={(e) => setSnoozeState({ ...snooze, end: e.target.value })}
+                          style={{ ...inputBox, width: 130 }}
+                        />
+                      </label>
+                      <span style={{ fontSize: 12, color: "var(--faint)", fontFamily: MONO, paddingBottom: 12 }}>
+                        {snooze.tz ?? "server time"}
+                      </span>
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
+                    <button
+                      className="hv-accent"
+                      onClick={() => saveSnooze(snooze)}
+                      disabled={snoozeSaving}
+                      style={{
+                        background: "var(--accent)",
+                        color: "white",
+                        border: "none",
+                        borderRadius: 9,
+                        padding: "9px 18px",
+                        fontFamily: "inherit",
+                        fontSize: 13.5,
+                        fontWeight: 600,
+                        cursor: snoozeSaving ? "default" : "pointer",
+                        opacity: snoozeSaving ? 0.7 : 1,
+                      }}
+                    >
+                      {snoozeSaving ? "Saving…" : "Save"}
+                    </button>
+                    {snoozeError && (
+                      <span style={{ fontSize: 12.5, color: "var(--amber)", fontFamily: MONO }}>{snoozeError}</span>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {status?.errors.length ? (
                 <div

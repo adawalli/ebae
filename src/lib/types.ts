@@ -42,12 +42,18 @@ export type Alert = Item & {
 
 export type PollError = { time: string; searchQ: string | null; message: string };
 
+// Snooze config as sent over the wire / edited in the UI. start/end are "HH:MM"
+// local times in `tz` (IANA; null = server timezone). The poller stores them as
+// minutes-from-midnight internally.
+export type SnoozeConfig = { enabled: boolean; start: string; end: string; tz: string | null };
+
 export type StatusInfo = {
   ready: boolean;
   bootError: string | null;
   poller: { running: boolean; bootedAt: string | null; timers: number };
   ebay: { mode: "mock" | "live"; marketplace: string; tokenExpiresAt: string | null };
   quota: { used: number; ceiling: number };
+  snooze: { active: boolean; window: string | null };
   errors: PollError[];
   version: string;
 };

@@ -44,4 +44,31 @@ export function parseSearchBody(b: any, partial: boolean): string | Record<strin
   if (partial && b.enabled !== undefined) out.enabled = !!b.enabled;
   return out;
 }
+
+// "HH:MM" -> minutes from midnight, or null if malformed. Exported for tests.
+export function hhmmToMin(v: unknown): number | null {
+  if (typeof v !== "string") return null;
+  const m = v.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+}
+
+// Validates a snooze settings PUT. Returns an error string, or the cleaned config
+// with start/end as minutes-from-midnight (what the poller stores).
+export function parseSnoozeBody(b: any): string | { enabled: boolean; start: number; end: number; tz: string | null } {
+  const start = hhmmToMin(b?.start);
+  const end = hhmmToMin(b?.end);
+  if (start == null || end == null) return "start and end must be HH:MM times";
+  if (start === end) return "start and end must differ";
+  let tz: string | null = null;
+  if (b.tz != null && b.tz !== "") {
+    if (typeof b.tz !== "string") return "tz must be a string";
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: b.tz });
+      tz = b.tz;
+    } catch {
+      return "tz is not a valid IANA timezone";
+    }
+  }
+  return { enabled: !!b.enabled, start, end, tz };
+}
 /* eslint-enable @typescript-eslint/no-explicit-any */

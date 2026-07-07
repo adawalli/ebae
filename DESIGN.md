@@ -71,6 +71,7 @@ One Bun + Next.js app, one container image.
 | `searches`   | query terms, filters (BIN-only, price cap, category), poll interval, enabled flag                |
 | `seen_items` | `(search_id, item_id)` - the dedupe set; prunable after N days                                   |
 | `channels`   | notification targets (MVP: Discord webhook URL, one or more)                                     |
+| `settings`   | single-row global config (currently the optional overnight poll snooze window + timezone)        |
 | `alerts`     | log of sent notifications (item snapshot: title, price, image, url) - powers the UI history view |
 
 **Failure behavior.** eBay/API errors back off exponentially per search and surface on a status page; Discord send failures retry a few times then log. Restart recovers state from Postgres (seen set persists), so crashes never re-alert old items.

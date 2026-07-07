@@ -14,6 +14,7 @@ const SECRETS: RegExp[] = [
 ];
 
 export function redact(s: string): string {
+  if (s == null) return ""; // non-standard errors can have an undefined message/stack
   return SECRETS.reduce((acc, re) => acc.replace(re, "[redacted]"), s);
 }
 

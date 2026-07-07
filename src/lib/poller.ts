@@ -367,6 +367,7 @@ async function pollOnce(e: Entry) {
     e.backoffMs = 0;
     schedule(e, e.s.intervalMin * 60_000);
   } catch (err) {
+    plog.error({ err, searchId: e.s.id, q: e.s.q }, "poll failed"); // stack goes to stdout; recordError keeps only the message for the UI
     recordError(e.s.q, message(err));
     e.backoffMs = Math.min(e.backoffMs ? e.backoffMs * 2 : e.s.intervalMin * 60_000, MAX_BACKOFF_MS);
     schedule(e, e.backoffMs);

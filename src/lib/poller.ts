@@ -247,7 +247,7 @@ async function reload() {
     const inMem = st.calls.date === today ? st.calls.used : 0;
     const reconciled = await flushCalls(database, { date: today, used: inMem });
     if (new Date().toDateString() === today) {
-      st.calls = { date: today, used: reconciled };
+      st.calls = mergeCalls(st.calls, today, reconciled);
     }
   }
 }

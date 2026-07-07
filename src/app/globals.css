@@ -48,8 +48,8 @@
 }
 
 /* shadcn semantic tokens, mapped to ebae's OKLCH palette (HUE 232 accent).
-   The --eb-* block below is the legacy palette the still-inline view bodies
-   consume; it's retired page-by-page as components migrate (PRs 2-4). */
+   The --eb-* block below holds brand colors (accent/amber/green/faint/...) that
+   shadcn's neutral palette lacks; components read them via Tailwind arbitrary values. */
 :root {
   --background: oklch(0.955 0.006 265);
   --foreground: oklch(0.24 0.02 265);
@@ -84,11 +84,9 @@
   --sidebar-border: oklch(0.9 0.008 265);
   --sidebar-ring: oklch(0.52 0.2 232);
 
-  /* legacy bridge palette (light) */
-  --eb-bg: oklch(0.955 0.006 265);
+  /* brand color tokens (light) — read by shadcn components via Tailwind arbitrary values */
   --eb-panel: oklch(0.995 0.003 265);
   --eb-panel2: oklch(0.975 0.005 265);
-  --eb-sidebar: oklch(0.982 0.004 265);
   --eb-border: oklch(0.9 0.008 265);
   --eb-border-strong: oklch(0.85 0.012 265);
   --eb-text: oklch(0.24 0.02 265);
@@ -98,11 +96,9 @@
   --eb-accent-soft: oklch(0.52 0.2 232 / 0.12);
   --eb-accent-text: oklch(0.46 0.19 232);
   --eb-chip-bg: oklch(0.93 0.008 265);
-  --eb-chip-text: oklch(0.42 0.02 265);
   --eb-green: oklch(0.58 0.15 150);
   --eb-amber: oklch(0.6 0.14 60);
   --eb-input-bg: oklch(0.98 0.004 265);
-  --eb-row-hover: oklch(0.965 0.006 265);
 }
 
 .dark {
@@ -138,11 +134,9 @@
   --sidebar-border: oklch(0.28 0.02 265);
   --sidebar-ring: oklch(0.55 0.19 232);
 
-  /* legacy bridge palette (dark) */
-  --eb-bg: oklch(0.17 0.015 265);
+  /* brand color tokens (dark) */
   --eb-panel: oklch(0.2 0.018 265);
   --eb-panel2: oklch(0.185 0.012 265);
-  --eb-sidebar: oklch(0.2 0.018 265);
   --eb-border: oklch(0.28 0.02 265);
   --eb-border-strong: oklch(0.33 0.02 265);
   --eb-text: oklch(0.94 0.008 265);
@@ -152,11 +146,9 @@
   --eb-accent-soft: oklch(0.6 0.19 232 / 0.16);
   --eb-accent-text: oklch(0.8 0.12 232);
   --eb-chip-bg: oklch(0.28 0.02 265);
-  --eb-chip-text: oklch(0.72 0.02 265);
   --eb-green: oklch(0.7 0.17 150);
   --eb-amber: oklch(0.82 0.13 65);
   --eb-input-bg: oklch(0.16 0.012 265);
-  --eb-row-hover: oklch(0.225 0.02 265);
 }
 
 @layer base {
@@ -189,25 +181,6 @@
     opacity: 0.3;
   }
 }
-@keyframes ebModalIn {
-  from {
-    opacity: 0;
-    transform: translateY(12px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-@keyframes ebFade {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -219,33 +192,8 @@
   background-clip: padding-box;
 }
 
-/* hover states (the design's style-hover attributes), still used by the
-   inline-styled view bodies until they migrate to shadcn components */
-.hv-row:hover {
-  border-color: var(--eb-border-strong) !important;
-  background: var(--eb-row-hover) !important;
-}
-.hv-card:hover {
-  border-color: var(--eb-border-strong) !important;
-}
-.hv-nav:hover {
-  background: var(--eb-row-hover) !important;
-}
-.hv-accent:hover {
-  filter: brightness(1.08);
-}
-.hv-ghost:hover {
-  color: var(--eb-text) !important;
-  border-color: var(--eb-accent) !important;
-}
+/* accent color + underline on hover, for alert title anchors */
 .hv-link:hover {
   color: var(--eb-accent-text) !important;
   text-decoration: underline !important;
-}
-.hv-dim:hover {
-  color: var(--eb-text) !important;
-}
-.eb-input:focus {
-  border-color: var(--eb-accent) !important;
-  outline: none;
 }

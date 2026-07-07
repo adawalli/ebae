@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTheme } from "next-themes";
 import { Check, Inbox, Moon, Pencil, Plus, Search, Sun, Trash2 } from "lucide-react";
 import type { Alert, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
@@ -83,20 +83,6 @@ function dayLabel(iso: string) {
 }
 
 const emptyForm = { q: "", priceFloor: "", priceCap: "", categoryId: "", bin: true, auctions: false, interval: 2 };
-
-// inline styles can't hold @media, so responsiveness is driven off matchMedia.
-// SSR + first paint assume desktop, then correct on mount (same as theme sync).
-function useMediaQuery(query: string) {
-  const [matches, setMatches] = useState(false);
-  useEffect(() => {
-    const mql = window.matchMedia(query);
-    const sync = () => setMatches(mql.matches);
-    sync();
-    mql.addEventListener("change", sync);
-    return () => mql.removeEventListener("change", sync);
-  }, [query]);
-  return matches;
-}
 
 type NavItem = { key: "searches" | "alerts" | "status"; label: string; badge: number | null };
 
@@ -206,7 +192,6 @@ export default function Home() {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
-  const isMobile = useMediaQuery("(max-width: 767px)");
 
   const refresh = useCallback(async () => {
     // filter alerts server-side: a global top-N fetch can push a low-volume
@@ -369,77 +354,6 @@ export default function Home() {
     { key: "alerts" as const, label: "Alerts", badge: alertsBadge || null },
     { key: "status" as const, label: "Status", badge: status?.errors.length || null },
   ];
-
-  const chip: CSSProperties = {
-    fontSize: 10.5,
-    fontFamily: MONO,
-    padding: "2px 7px",
-    borderRadius: 5,
-  };
-  const statCard: CSSProperties = {
-    background: "var(--eb-panel)",
-    border: "1px solid var(--eb-border)",
-    borderRadius: 12,
-    padding: "18px 20px",
-  };
-  const emptyCard: CSSProperties = {
-    background: "var(--eb-panel)",
-    border: "1px solid var(--eb-border)",
-    borderRadius: 12,
-    padding: "40px 20px",
-    textAlign: "center",
-    color: "var(--eb-muted)",
-    fontSize: 13.5,
-  };
-  const inputBox: CSSProperties = {
-    width: "100%",
-    background: "var(--eb-input-bg)",
-    border: "1px solid var(--eb-border-strong)",
-    borderRadius: 9,
-    padding: "11px 13px",
-    fontFamily: "inherit",
-    fontSize: 14,
-    color: "var(--eb-text)",
-    outline: "none",
-  };
-  const fieldLabel: CSSProperties = {
-    display: "block",
-    fontSize: 12.5,
-    fontWeight: 600,
-    color: "var(--eb-muted)",
-    marginBottom: 7,
-  };
-  const dollarWrap: CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    background: "var(--eb-input-bg)",
-    border: "1px solid var(--eb-border-strong)",
-    borderRadius: 9,
-    padding: "0 13px",
-  };
-  const dollarInput: CSSProperties = {
-    width: "100%",
-    background: "transparent",
-    border: "none",
-    padding: "11px 8px",
-    fontFamily: MONO,
-    fontSize: 14,
-    color: "var(--eb-text)",
-    outline: "none",
-  };
-  // header row and data rows must share the same track sizes
-  const gridCols = "18px minmax(0,1fr) 150px 62px 76px 40px 132px";
-  const ghostBtn: CSSProperties = {
-    background: "transparent",
-    border: "1px solid var(--eb-border-strong)",
-    color: "var(--eb-muted)",
-    borderRadius: 7,
-    padding: "5px 9px",
-    fontFamily: "inherit",
-    fontSize: 11.5,
-    fontWeight: 500,
-    cursor: "pointer",
-  };
 
   function searchSub(s: SearchStats) {
     if (!s.enabled) return "paused";

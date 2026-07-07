@@ -2,9 +2,19 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { useTheme } from "next-themes";
-import { Moon, Sun } from "lucide-react";
+import { Moon, Pencil, Plus, Search, Sun, Trash2 } from "lucide-react";
 import type { Alert, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Field, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { Progress } from "@/components/ui/progress";
+import { Switch } from "@/components/ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Sidebar,
   SidebarContent,
@@ -455,253 +465,116 @@ export default function Home() {
         <div className="flex min-h-0 flex-1 flex-col">
           {/* ---------- SEARCHES VIEW ---------- */}
           {view === "searches" && (
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: isMobile ? "stretch" : "center",
-                  flexDirection: isMobile ? "column" : "row",
-                  justifyContent: "space-between",
-                  gap: isMobile ? 14 : 0,
-                  padding: isMobile ? "16px" : "24px 30px",
-                  borderBottom: "1px solid var(--eb-border)",
-                }}
-              >
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="flex flex-col items-stretch justify-between gap-3.5 border-b p-4 md:flex-row md:items-center md:gap-0 md:px-[30px] md:py-6">
                 <div>
-                  <h2 style={{ margin: 0, fontSize: 21, fontWeight: 700, letterSpacing: "-0.01em" }}>Saved searches</h2>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      fontSize: 13,
-                      color: "var(--eb-muted)",
-                      marginTop: 4,
-                    }}
-                  >
+                  <h2 className="text-[21px] font-bold tracking-[-0.01em]">Saved searches</h2>
+                  <div className="mt-1 flex items-center gap-2 text-[13px] text-muted-foreground">
                     <span
+                      className="size-1.5 rounded-full"
                       style={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: "50%",
                         background: running ? "var(--eb-green)" : "var(--eb-amber)",
-                        animation: running ? "ebPulse 2.4s ease-in-out infinite" : "none",
+                        animation: running ? "ebPulse 2.4s ease-in-out infinite" : undefined,
                       }}
                     />
                     {searches.length} searches · {active.length} active ·{" "}
                     {running ? (mock ? "polling (mock mode)" : "polling live") : "poller down"}
                   </div>
                 </div>
-                <button
-                  className="hv-accent"
-                  onClick={openCreate}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: isMobile ? "center" : "flex-start",
-                    gap: 7,
-                    background: "var(--eb-accent)",
-                    color: "white",
-                    border: "none",
-                    borderRadius: 9,
-                    padding: "10px 17px",
-                    fontFamily: "inherit",
-                    fontSize: 14,
-                    fontWeight: 600,
-                    cursor: "pointer",
-                  }}
-                >
-                  <span style={{ fontSize: 17, lineHeight: 0, marginTop: -1 }}>+</span> New search
-                </button>
+                <Button onClick={openCreate} className="justify-center md:justify-start">
+                  <Plus /> New search
+                </Button>
               </div>
 
               {/* quota strip */}
-              <div
-                style={{
-                  margin: isMobile ? "16px 16px 6px" : "20px 30px 6px",
-                  background: "var(--eb-panel)",
-                  border: "1px solid var(--eb-border)",
-                  borderRadius: 12,
-                  padding: "15px 20px",
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "baseline",
-                    justifyContent: "space-between",
-                    flexWrap: "wrap",
-                    gap: 6,
-                    marginBottom: 10,
-                  }}
-                >
-                  <span style={{ fontSize: 13, color: "var(--eb-muted)" }}>
-                    Projected API usage <span style={{ color: "var(--eb-faint)" }}>· enforced global budget</span>
-                  </span>
-                  <span style={{ fontFamily: MONO, fontSize: 13, color: "var(--eb-text)" }}>
-                    <b style={{ color: "var(--eb-accent-text)" }}>{fmt(projected)}</b> / {fmt(ceiling)} calls·day{" "}
-                    <span style={{ color: "var(--eb-faint)" }}>· {quotaPct}%</span>
-                  </span>
-                </div>
-                <div style={{ height: 8, borderRadius: 5, background: "var(--eb-chip-bg)", overflow: "hidden" }}>
-                  <div
-                    style={{
-                      width: `${quotaPct}%`,
-                      height: "100%",
-                      borderRadius: 5,
-                      background: "linear-gradient(90deg,var(--eb-accent),var(--eb-accent-text))",
-                    }}
-                  />
-                </div>
-              </div>
+              <Card className="mx-4 mt-4 mb-1.5 md:mx-[30px] md:mt-5">
+                <CardContent>
+                  <div className="mb-2.5 flex flex-wrap items-baseline justify-between gap-1.5">
+                    <span className="text-[13px] text-muted-foreground">
+                      Projected API usage <span className="text-[var(--eb-faint)]">· enforced global budget</span>
+                    </span>
+                    <span className="font-mono text-[13px] text-foreground">
+                      <b className="text-[var(--eb-accent-text)]">{fmt(projected)}</b> / {fmt(ceiling)} calls·day{" "}
+                      <span className="text-[var(--eb-faint)]">· {quotaPct}%</span>
+                    </span>
+                  </div>
+                  <Progress value={quotaPct} className="h-2" />
+                </CardContent>
+              </Card>
 
               {/* table */}
-              <div
-                style={{
-                  flex: 1,
-                  overflowY: isMobile ? "visible" : "auto",
-                  padding: isMobile ? "14px 16px 20px" : "14px 30px 26px",
-                }}
-              >
-                {!isMobile && (
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: gridCols,
-                      gap: 8,
-                      alignItems: "center",
-                      padding: "0 14px 10px",
-                      fontFamily: MONO,
-                      fontSize: 10.5,
-                      letterSpacing: ".1em",
-                      textTransform: "uppercase",
-                      color: "var(--eb-faint)",
-                    }}
-                  >
-                    <span />
-                    <span>Search</span>
-                    <span>Filters</span>
-                    <span style={{ textAlign: "right" }}>Every</span>
-                    <span style={{ textAlign: "right" }}>Calls·day</span>
-                    <span style={{ textAlign: "right" }}>24h</span>
-                    <span />
-                  </div>
-                )}
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div className="flex-1 overflow-visible px-4 pt-3.5 pb-5 md:overflow-y-auto md:px-[30px] md:pb-[26px]">
+                <div className="hidden px-3.5 pb-2.5 font-mono text-[10.5px] tracking-[.1em] text-[var(--eb-faint)] uppercase md:grid md:grid-cols-[18px_minmax(0,1fr)_150px_62px_76px_40px_132px] md:items-center md:gap-2">
+                  <span />
+                  <span>Search</span>
+                  <span>Filters</span>
+                  <span className="text-right">Every</span>
+                  <span className="text-right">Calls·day</span>
+                  <span className="text-right">24h</span>
+                  <span />
+                </div>
+                <div className="flex flex-col gap-2">
                   {searches.length === 0 && (
-                    <div style={emptyCard}>
-                      No saved searches yet — create one and ebae starts watching within seconds.
-                    </div>
+                    <Empty className="border">
+                      <EmptyHeader>
+                        <EmptyMedia variant="icon">
+                          <Search />
+                        </EmptyMedia>
+                        <EmptyTitle>No saved searches yet</EmptyTitle>
+                        <EmptyDescription>Create one and ebae starts watching within seconds.</EmptyDescription>
+                      </EmptyHeader>
+                    </Empty>
                   )}
                   {searches.map((s) => {
                     const seeding = s.enabled && !s.seeded;
-                    const hasChips = s.binOnly || s.priceFloor != null || s.priceCap != null || s.includeAuctions;
-                    if (isMobile) {
-                      return (
-                        <div
-                          key={s.id}
-                          className="hv-card"
-                          style={{
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: 10,
-                            background: "var(--eb-panel)",
-                            border: "1px solid var(--eb-border)",
-                            borderRadius: 12,
-                            padding: "14px 15px",
-                            opacity: s.enabled ? 1 : 0.62,
-                          }}
-                        >
-                          <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+                    return (
+                      <Card key={s.id} className="gap-0 py-0" style={{ opacity: s.enabled ? 1 : 0.62 }}>
+                        <CardContent className="flex flex-col gap-2.5 p-3.5 md:grid md:grid-cols-[18px_minmax(0,1fr)_150px_62px_76px_40px_132px] md:items-center md:gap-2">
+                          <div className="flex min-w-0 items-center gap-2.5 md:contents">
                             <span
+                              className="size-2 shrink-0 md:justify-self-start"
                               style={{
-                                width: 8,
-                                height: 8,
-                                flex: "0 0 auto",
                                 borderRadius: s.enabled ? "50%" : 2,
                                 background: s.enabled ? "var(--eb-green)" : "var(--eb-faint)",
                                 boxShadow: s.enabled
                                   ? "0 0 0 3px color-mix(in oklab, var(--eb-green) 18%, transparent)"
                                   : "none",
                                 animation:
-                                  s.enabled && s.intervalMin <= 2 ? "ebPulse 2.4s ease-in-out infinite" : "none",
+                                  s.enabled && s.intervalMin <= 2 ? "ebPulse 2.4s ease-in-out infinite" : undefined,
                               }}
                             />
-                            <div style={{ minWidth: 0, flex: 1 }}>
-                              <div
-                                style={{
-                                  fontWeight: 600,
-                                  fontSize: 15,
-                                  whiteSpace: "nowrap",
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                }}
-                              >
-                                {s.q}
-                              </div>
-                              <div
-                                style={{
-                                  fontSize: 11.5,
-                                  color: "var(--eb-faint)",
-                                  fontFamily: MONO,
-                                  marginTop: 2,
-                                  whiteSpace: "nowrap",
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                }}
-                              >
+                            <div className="min-w-0">
+                              <div className="truncate text-[15px] font-semibold md:text-[14.5px]">{s.q}</div>
+                              <div className="mt-0.5 truncate font-mono text-[11.5px] text-[var(--eb-faint)]">
                                 {searchSub(s)}
                               </div>
                             </div>
                           </div>
-                          {hasChips && (
-                            <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                              {s.binOnly && (
-                                <span
-                                  style={{
-                                    ...chip,
-                                    background: "var(--eb-accent-soft)",
-                                    color: "var(--eb-accent-text)",
-                                  }}
-                                >
-                                  BIN
-                                </span>
-                              )}
-                              {s.priceFloor != null && (
-                                <span
-                                  style={{ ...chip, background: "var(--eb-chip-bg)", color: "var(--eb-chip-text)" }}
-                                >
-                                  ≥ {money(s.priceFloor).replace(/\.00$/, "")}
-                                </span>
-                              )}
-                              {s.priceCap != null && (
-                                <span
-                                  style={{ ...chip, background: "var(--eb-chip-bg)", color: "var(--eb-chip-text)" }}
-                                >
-                                  ≤ {money(s.priceCap).replace(/\.00$/, "")}
-                                </span>
-                              )}
-                              {s.includeAuctions && (
-                                <span
-                                  style={{ ...chip, background: "var(--eb-chip-bg)", color: "var(--eb-chip-text)" }}
-                                >
-                                  Auctions ok
-                                </span>
-                              )}
-                            </div>
-                          )}
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 8,
-                              flexWrap: "wrap",
-                              fontFamily: MONO,
-                              fontSize: 12,
-                              color: "var(--eb-muted)",
-                            }}
-                          >
+                          <div className="flex flex-wrap items-center gap-1.5 empty:hidden md:empty:flex">
+                            {s.binOnly && (
+                              <Badge className="border-transparent bg-[var(--eb-accent-soft)] font-mono text-[var(--eb-accent-text)]">
+                                BIN
+                              </Badge>
+                            )}
+                            {s.priceFloor != null && (
+                              <Badge variant="secondary" className="font-mono">
+                                ≥ {money(s.priceFloor).replace(/\.00$/, "")}
+                              </Badge>
+                            )}
+                            {s.priceCap != null && (
+                              <Badge variant="secondary" className="font-mono">
+                                ≤ {money(s.priceCap).replace(/\.00$/, "")}
+                              </Badge>
+                            )}
+                            {s.includeAuctions && (
+                              <Badge variant="secondary" className="font-mono">
+                                Auctions ok
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs md:contents">
                             <span
+                              className="md:text-right md:text-[13px]"
                               style={{
                                 color: s.enabled
                                   ? s.intervalMin <= 1
@@ -710,204 +583,74 @@ export default function Home() {
                                   : "var(--eb-faint)",
                               }}
                             >
-                              every {s.intervalMin}m
+                              <span className="md:hidden">every </span>
+                              {s.intervalMin}
+                              <span className="md:hidden">m</span>
+                              <span className="hidden md:inline"> min</span>
                             </span>
-                            <span style={{ color: "var(--eb-faint)" }}>·</span>
-                            <span>{s.enabled ? `${fmt(callsFor(s.intervalMin))} calls·day` : "paused"}</span>
-                            <span style={{ color: "var(--eb-faint)" }}>·</span>
-                            <span style={{ color: s.hits24 > 0 ? "var(--eb-accent-text)" : "var(--eb-muted)" }}>
-                              {seeding ? "seeding" : `${s.hits24} in 24h`}
+                            <span className="text-muted-foreground md:text-right md:text-[13px]">
+                              {s.enabled ? (
+                                <>
+                                  {fmt(callsFor(s.intervalMin))}
+                                  <span className="md:hidden"> calls·day</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="md:hidden">paused</span>
+                                  <span className="hidden md:inline">—</span>
+                                </>
+                              )}
+                            </span>
+                            <span className="md:text-right md:text-[13px]">
+                              {seeding ? (
+                                <Badge className="border-transparent bg-[color-mix(in_oklab,var(--eb-amber)_18%,transparent)] font-mono text-[var(--eb-amber)]">
+                                  seed
+                                </Badge>
+                              ) : (
+                                <>
+                                  <span
+                                    style={{
+                                      color: s.hits24 > 0 ? "var(--eb-accent-text)" : "var(--eb-faint)",
+                                      fontWeight: s.hits24 > 0 ? 600 : 400,
+                                    }}
+                                  >
+                                    {s.hits24}
+                                  </span>
+                                  <span className="text-muted-foreground md:hidden"> in 24h</span>
+                                </>
+                              )}
                             </span>
                           </div>
-                          <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
-                            <button
-                              className="hv-ghost"
+                          <div className="flex gap-1.5 md:justify-self-end">
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
                               onClick={() => openEdit(s)}
-                              style={{
-                                ...ghostBtn,
-                                flex: "0 0 auto",
-                                padding: "9px 13px",
-                                fontSize: 13,
-                                color: "var(--eb-faint)",
-                              }}
+                              title="Edit search"
+                              aria-label="Edit search"
                             >
-                              ✎ Edit
-                            </button>
-                            <button
-                              className="hv-ghost"
+                              <Pencil />
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="flex-1 md:flex-none"
                               onClick={() => togglePause(s)}
-                              style={{ ...ghostBtn, flex: 1, padding: "9px 13px", fontSize: 13 }}
                             >
                               {s.enabled ? "Pause" : "Resume"}
-                            </button>
-                            <button
-                              className="hv-ghost"
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
                               onClick={() => removeSearch(s)}
-                              style={{
-                                ...ghostBtn,
-                                flex: "0 0 auto",
-                                padding: "9px 13px",
-                                fontSize: 13,
-                                color: "var(--eb-faint)",
-                              }}
+                              title="Delete search"
+                              aria-label="Delete search"
                             >
-                              ✕
-                            </button>
+                              <Trash2 />
+                            </Button>
                           </div>
-                        </div>
-                      );
-                    }
-                    return (
-                      <div
-                        key={s.id}
-                        className="hv-row"
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: gridCols,
-                          gap: 8,
-                          alignItems: "center",
-                          background: "var(--eb-panel)",
-                          border: "1px solid var(--eb-border)",
-                          borderRadius: 10,
-                          padding: "13px 14px",
-                          opacity: s.enabled ? 1 : 0.62,
-                        }}
-                      >
-                        <span
-                          style={{
-                            width: 8,
-                            height: 8,
-                            justifySelf: "start",
-                            borderRadius: s.enabled ? "50%" : 2,
-                            background: s.enabled ? "var(--eb-green)" : "var(--eb-faint)",
-                            boxShadow: s.enabled
-                              ? "0 0 0 3px color-mix(in oklab, var(--eb-green) 18%, transparent)"
-                              : "none",
-                            animation: s.enabled && s.intervalMin <= 2 ? "ebPulse 2.4s ease-in-out infinite" : "none",
-                          }}
-                        />
-                        <div style={{ minWidth: 0 }}>
-                          <div
-                            style={{
-                              fontWeight: 600,
-                              fontSize: 14.5,
-                              whiteSpace: "nowrap",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
-                          >
-                            {s.q}
-                          </div>
-                          <div
-                            style={{
-                              fontSize: 11.5,
-                              color: "var(--eb-faint)",
-                              fontFamily: MONO,
-                              marginTop: 2,
-                              whiteSpace: "nowrap",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
-                          >
-                            {searchSub(s)}
-                          </div>
-                        </div>
-                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                          {s.binOnly && (
-                            <span
-                              style={{ ...chip, background: "var(--eb-accent-soft)", color: "var(--eb-accent-text)" }}
-                            >
-                              BIN
-                            </span>
-                          )}
-                          {s.priceFloor != null && (
-                            <span style={{ ...chip, background: "var(--eb-chip-bg)", color: "var(--eb-chip-text)" }}>
-                              ≥ {money(s.priceFloor).replace(/\.00$/, "")}
-                            </span>
-                          )}
-                          {s.priceCap != null && (
-                            <span style={{ ...chip, background: "var(--eb-chip-bg)", color: "var(--eb-chip-text)" }}>
-                              ≤ {money(s.priceCap).replace(/\.00$/, "")}
-                            </span>
-                          )}
-                          {s.includeAuctions && (
-                            <span style={{ ...chip, background: "var(--eb-chip-bg)", color: "var(--eb-chip-text)" }}>
-                              Auctions ok
-                            </span>
-                          )}
-                        </div>
-                        <span
-                          style={{
-                            textAlign: "right",
-                            fontFamily: MONO,
-                            fontSize: 13,
-                            color: s.enabled
-                              ? s.intervalMin <= 1
-                                ? "var(--eb-amber)"
-                                : "var(--eb-text)"
-                              : "var(--eb-faint)",
-                          }}
-                        >
-                          {s.intervalMin} min
-                        </span>
-                        <span style={{ textAlign: "right", fontFamily: MONO, fontSize: 13, color: "var(--eb-muted)" }}>
-                          {s.enabled ? fmt(callsFor(s.intervalMin)) : "—"}
-                        </span>
-                        <span style={{ textAlign: "right", fontFamily: MONO, fontSize: 13 }}>
-                          {seeding ? (
-                            <span
-                              style={{
-                                fontSize: 9,
-                                background: "color-mix(in oklab, var(--eb-amber) 18%, transparent)",
-                                color: "var(--eb-amber)",
-                                padding: "2px 6px",
-                                borderRadius: 5,
-                              }}
-                            >
-                              seed
-                            </span>
-                          ) : (
-                            <span
-                              style={{
-                                color: s.hits24 > 0 ? "var(--eb-accent-text)" : "var(--eb-faint)",
-                                fontWeight: s.hits24 > 0 ? 600 : 400,
-                              }}
-                            >
-                              {s.hits24}
-                            </span>
-                          )}
-                        </span>
-                        <span style={{ display: "flex", gap: 5, justifySelf: "end" }}>
-                          <button
-                            className="hv-ghost"
-                            onClick={() => openEdit(s)}
-                            title="Edit search"
-                            style={{ ...ghostBtn, color: "var(--eb-faint)", padding: "5px 8px" }}
-                          >
-                            ✎
-                          </button>
-                          <button className="hv-ghost" onClick={() => togglePause(s)} style={ghostBtn}>
-                            {s.enabled ? "Pause" : "Resume"}
-                          </button>
-                          <button
-                            className="hv-ghost"
-                            onClick={() => removeSearch(s)}
-                            title="Delete search"
-                            style={{
-                              background: "transparent",
-                              border: "1px solid var(--eb-border-strong)",
-                              color: "var(--eb-faint)",
-                              borderRadius: 7,
-                              padding: "5px 8px",
-                              fontFamily: "inherit",
-                              fontSize: 11.5,
-                              cursor: "pointer",
-                            }}
-                          >
-                            ✕
-                          </button>
-                        </span>
-                      </div>
+                        </CardContent>
+                      </Card>
                     );
                   })}
                 </div>
@@ -1467,136 +1210,84 @@ export default function Home() {
 
       {/* ================= NEW SEARCH MODAL ================= */}
       {showForm && (
-        <div
-          onClick={() => setShowForm(false)}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "oklch(0.1 0.02 265 / .55)",
-            backdropFilter: "blur(2px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 50,
-            animation: "ebFade .14s ease",
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              width: 520,
-              maxWidth: "calc(100vw - 32px)",
-              maxHeight: isMobile ? "calc(100dvh - 24px)" : undefined,
-              background: "var(--eb-panel)",
-              border: "1px solid var(--eb-border-strong)",
-              borderRadius: 16,
-              boxShadow: "0 40px 90px -30px oklch(0.1 0.05 265 / .7)",
-              overflow: isMobile ? "auto" : "hidden",
-              animation: "ebModalIn .18s cubic-bezier(.2,.7,.3,1)",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "20px 24px",
-                borderBottom: "1px solid var(--eb-border)",
-              }}
-            >
-              <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>
-                {editId == null ? "New saved search" : "Edit search"}
-              </h3>
-              <div
-                className="hv-dim"
-                onClick={() => setShowForm(false)}
-                style={{ cursor: "pointer", color: "var(--eb-faint)", fontSize: 18, lineHeight: 1, padding: 4 }}
-              >
-                ✕
-              </div>
-            </div>
-            <div style={{ padding: "22px 24px", display: "flex", flexDirection: "column", gap: 18 }}>
-              <div>
-                <label style={fieldLabel}>Search terms</label>
-                <input
-                  className="eb-input"
+        <Dialog open={showForm} onOpenChange={setShowForm}>
+          <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-[520px]">
+            <DialogHeader>
+              <DialogTitle>{editId == null ? "New saved search" : "Edit search"}</DialogTitle>
+            </DialogHeader>
+            <div className="flex flex-col gap-4">
+              <Field>
+                <FieldLabel htmlFor="search-terms">Search terms</FieldLabel>
+                <Input
+                  id="search-terms"
                   value={form.q}
                   onChange={(e) => setForm({ ...form, q: e.target.value })}
                   placeholder="e.g. Leica M6 body"
                   autoFocus
-                  style={inputBox}
                 />
-              </div>
-              <div style={{ display: "flex", gap: 14, flexWrap: isMobile ? "wrap" : "nowrap" }}>
-                <div style={{ flex: isMobile ? "1 1 100%" : 1 }}>
-                  <label style={fieldLabel}>Category ID</label>
-                  <input
-                    className="eb-input"
+              </Field>
+              <div className="flex flex-col gap-3.5 md:flex-row">
+                <Field className="md:flex-1">
+                  <FieldLabel htmlFor="category-id">Category ID</FieldLabel>
+                  <Input
+                    id="category-id"
                     value={form.categoryId}
                     onChange={(e) => setForm({ ...form, categoryId: e.target.value })}
                     placeholder="all categories"
-                    style={inputBox}
                   />
-                </div>
-                <div style={{ width: isMobile ? "auto" : 116, flex: isMobile ? 1 : "0 0 auto" }}>
-                  <label style={fieldLabel}>Min price</label>
-                  <div style={dollarWrap}>
-                    <span style={{ color: "var(--eb-faint)", fontFamily: MONO, fontSize: 14 }}>$</span>
-                    <input
-                      value={form.priceFloor}
-                      onChange={(e) => setForm({ ...form, priceFloor: e.target.value })}
-                      placeholder="any"
-                      inputMode="decimal"
-                      style={dollarInput}
-                    />
-                  </div>
-                </div>
-                <div style={{ width: isMobile ? "auto" : 116, flex: isMobile ? 1 : "0 0 auto" }}>
-                  <label style={fieldLabel}>Max price</label>
-                  <div style={dollarWrap}>
-                    <span style={{ color: "var(--eb-faint)", fontFamily: MONO, fontSize: 14 }}>$</span>
-                    <input
-                      value={form.priceCap}
-                      onChange={(e) => setForm({ ...form, priceCap: e.target.value })}
-                      placeholder="2500"
-                      inputMode="decimal"
-                      style={dollarInput}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label style={{ ...fieldLabel, marginBottom: 8 }}>Poll interval</label>
-                <div style={{ display: "flex", gap: 7 }}>
-                  {[1, 2, 5, 10, 15].map((v) => {
-                    const on = form.interval === v;
-                    return (
-                      <div
-                        key={v}
-                        onClick={() => setForm({ ...form, interval: v })}
-                        style={{
-                          flex: 1,
-                          textAlign: "center",
-                          padding: "9px 0",
-                          borderRadius: 8,
-                          border: `1px solid ${on ? "var(--eb-accent)" : "var(--eb-border-strong)"}`,
-                          background: on ? "var(--eb-accent-soft)" : "var(--eb-input-bg)",
-                          color: on ? "var(--eb-accent-text)" : "var(--eb-muted)",
-                          fontFamily: MONO,
-                          fontSize: 13,
-                          fontWeight: 600,
-                          cursor: "pointer",
-                        }}
-                      >
-                        {v}m
-                      </div>
-                    );
-                  })}
+                </Field>
+                <div className="flex gap-3.5">
+                  <Field className="flex-1 md:w-[116px] md:flex-none">
+                    <FieldLabel htmlFor="min-price">Min price</FieldLabel>
+                    <InputGroup>
+                      <InputGroupAddon className="font-mono">$</InputGroupAddon>
+                      <InputGroupInput
+                        id="min-price"
+                        value={form.priceFloor}
+                        onChange={(e) => setForm({ ...form, priceFloor: e.target.value })}
+                        placeholder="any"
+                        inputMode="decimal"
+                        className="font-mono"
+                      />
+                    </InputGroup>
+                  </Field>
+                  <Field className="flex-1 md:w-[116px] md:flex-none">
+                    <FieldLabel htmlFor="max-price">Max price</FieldLabel>
+                    <InputGroup>
+                      <InputGroupAddon className="font-mono">$</InputGroupAddon>
+                      <InputGroupInput
+                        id="max-price"
+                        value={form.priceCap}
+                        onChange={(e) => setForm({ ...form, priceCap: e.target.value })}
+                        placeholder="2500"
+                        inputMode="decimal"
+                        className="font-mono"
+                      />
+                    </InputGroup>
+                  </Field>
                 </div>
               </div>
 
-              <div style={{ display: "flex", gap: 10 }}>
+              <Field>
+                <FieldLabel>Poll interval</FieldLabel>
+                <ToggleGroup
+                  type="single"
+                  variant="outline"
+                  value={String(form.interval)}
+                  onValueChange={(v) => {
+                    if (v) setForm({ ...form, interval: Number(v) });
+                  }}
+                  className="w-full"
+                >
+                  {[1, 2, 5, 10, 15].map((v) => (
+                    <ToggleGroupItem key={v} value={String(v)} className="flex-1 font-mono">
+                      {v}m
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              </Field>
+
+              <div className="flex flex-col gap-2.5 md:flex-row">
                 {(
                   [
                     ["Buy It Now only", "bin"],
@@ -1608,127 +1299,41 @@ export default function Home() {
                   // mutually exclusive so the saved search can't claim both
                   const other = key === "bin" ? "auctions" : "bin";
                   return (
-                    <div
+                    <Field
                       key={key}
-                      onClick={() => setForm({ ...form, [key]: !on, [other]: on })}
-                      style={{
-                        flex: 1,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        background: "var(--eb-input-bg)",
-                        border: "1px solid var(--eb-border-strong)",
-                        borderRadius: 9,
-                        padding: "11px 13px",
-                        cursor: "pointer",
-                      }}
+                      orientation="horizontal"
+                      className="flex-1 rounded-lg border bg-[var(--eb-input-bg)] px-3.5 py-3"
                     >
-                      <span style={{ fontSize: 13.5, fontWeight: 500 }}>{text}</span>
-                      <span
-                        style={{
-                          width: 38,
-                          height: 22,
-                          borderRadius: 20,
-                          background: on ? "var(--eb-accent)" : "var(--eb-border-strong)",
-                          position: "relative",
-                          transition: "background .15s",
-                          flex: "0 0 auto",
-                        }}
-                      >
-                        <span
-                          style={{
-                            position: "absolute",
-                            top: 2,
-                            left: on ? 18 : 2,
-                            width: 18,
-                            height: 18,
-                            borderRadius: "50%",
-                            background: "white",
-                            transition: "left .15s",
-                          }}
-                        />
-                      </span>
-                    </div>
+                      <FieldLabel htmlFor={`toggle-${key}`} className="text-[13.5px] font-medium">
+                        {text}
+                      </FieldLabel>
+                      <Switch
+                        id={`toggle-${key}`}
+                        checked={on}
+                        onCheckedChange={() => setForm({ ...form, [key]: !on, [other]: on })}
+                      />
+                    </Field>
                   );
                 })}
               </div>
 
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 9,
-                  background: "var(--eb-accent-soft)",
-                  borderRadius: 9,
-                  padding: "11px 14px",
-                  fontSize: 12.5,
-                  color: "var(--eb-accent-text)",
-                }}
-              >
-                <span style={{ fontFamily: MONO, fontWeight: 600 }}>≈ {fmt(callsFor(form.interval))} calls·day</span>
-                <span style={{ color: "var(--eb-muted)" }}>
+              <div className="flex items-center gap-2 rounded-lg bg-[var(--eb-accent-soft)] px-3.5 py-3 text-[12.5px] text-[var(--eb-accent-text)]">
+                <span className="font-mono font-semibold">≈ {fmt(callsFor(form.interval))} calls·day</span>
+                <span className="text-muted-foreground">
                   · first poll seeds silently — no alert spam from existing listings
                 </span>
               </div>
               {formError && (
-                <div
-                  style={{
-                    background: "color-mix(in oklab, var(--eb-amber) 14%, transparent)",
-                    borderRadius: 9,
-                    padding: "10px 14px",
-                    fontSize: 12.5,
-                    color: "var(--eb-amber)",
-                    fontFamily: MONO,
-                  }}
-                >
+                <div className="rounded-lg bg-[color-mix(in_oklab,var(--eb-amber)_14%,transparent)] px-3.5 py-2.5 font-mono text-[12.5px] text-[var(--eb-amber)]">
                   {formError}
                 </div>
               )}
             </div>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "flex-end",
-                gap: 10,
-                padding: "16px 24px",
-                borderTop: "1px solid var(--eb-border)",
-                background: "var(--eb-panel2)",
-              }}
-            >
-              <button
-                className="hv-nav"
-                onClick={() => setShowForm(false)}
-                style={{
-                  background: "transparent",
-                  border: "1px solid var(--eb-border-strong)",
-                  color: "var(--eb-text)",
-                  borderRadius: 9,
-                  padding: "10px 16px",
-                  fontFamily: "inherit",
-                  fontSize: 14,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setShowForm(false)}>
                 Cancel
-              </button>
-              <button
-                className="hv-accent"
-                onClick={submitSearch}
-                disabled={saving}
-                style={{
-                  background: "var(--eb-accent)",
-                  color: "white",
-                  border: "none",
-                  borderRadius: 9,
-                  padding: "10px 18px",
-                  fontFamily: "inherit",
-                  fontSize: 14,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  opacity: saving ? 0.7 : 1,
-                }}
-              >
+              </Button>
+              <Button onClick={submitSearch} disabled={saving}>
                 {saving
                   ? editId == null
                     ? "Creating…"
@@ -1736,10 +1341,10 @@ export default function Home() {
                   : editId == null
                     ? "Create search"
                     : "Save changes"}
-              </button>
-            </div>
-          </div>
-        </div>
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </SidebarProvider>
   );

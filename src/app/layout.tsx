@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import "./globals.css";
+import { Providers } from "./providers";
 
 const plexSans = IBM_Plex_Sans({
   subsets: ["latin"],
@@ -21,8 +22,10 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body className={`${plexSans.variable} ${plexMono.variable}`}>{children}</body>
+    <html lang="en" suppressHydrationWarning className={`${plexSans.variable} ${plexMono.variable}`}>
+      <body>
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }

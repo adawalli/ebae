@@ -46,6 +46,18 @@ export const apiUsage = pgTable("api_usage", {
   used: integer("used").notNull().default(0),
 });
 
+// Single-row global settings (id is always 1). Currently just the optional
+// overnight poll snooze; start/end are minutes-from-midnight in `snooze_tz`
+// (IANA; null = server timezone). Loaded into the poller cache and written
+// through on UI change, same as searches/channels.
+export const settings = pgTable("settings", {
+  id: integer("id").primaryKey().default(1),
+  snoozeEnabled: boolean("snooze_enabled").notNull().default(false),
+  snoozeStart: integer("snooze_start").notNull().default(60), // 01:00
+  snoozeEnd: integer("snooze_end").notNull().default(420), // 07:00
+  snoozeTz: text("snooze_tz"),
+});
+
 export const alerts = pgTable("alerts", {
   id: serial("id").primaryKey(),
   searchId: integer("search_id").references(() => searches.id, { onDelete: "set null" }),

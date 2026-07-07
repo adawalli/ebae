@@ -1,11 +1,11 @@
 import { eq, gt, lt, max, sql } from "drizzle-orm";
 import pkg from "../../package.json";
 import { db, migrateToLatest } from "./db";
-import { alerts, apiUsage, channels, searches, seenItems } from "./schema";
+import { alerts, apiUsage, channels, searches, seenItems, settings } from "./schema";
 import { MARKETPLACE, MOCK, searchNewlyListed, tokenExpiresAt } from "./ebay";
 import { notify } from "./discord";
 import { log } from "./log";
-import type { PollError, Search, SearchStats, StatusInfo } from "./types";
+import type { PollError, Search, SearchStats, SnoozeConfig, StatusInfo } from "./types";
 
 const plog = log.child({ component: "poller" });
 
@@ -13,6 +13,44 @@ const QUOTA_CEILING = Number(process.env.EBAY_DAILY_QUOTA ?? 5000);
 export const DEFAULT_INTERVAL = Number(process.env.POLL_INTERVAL_DEFAULT ?? 5);
 const REFRESH_HOURS = Number(process.env.CACHE_REFRESH_HOURS ?? 12);
 const MAX_BACKOFF_MS = 30 * 60_000;
+
+// Overnight snooze (UI-configured, stored in `settings`, cached in state().snooze):
+// skip all eBay polls during a local-time window so we don't burn quota while nobody's
+// watching. Items listed during the window still alert on the first poll after it ends,
+// via the same newly-listed dedupe (subject to page-1/50-item coverage; a long snooze
+// can push very old listings off page 1). start/end = minutes from midnight in `tz`.
+type SnoozeState = { enabled: boolean; start: number; end: number; tz: string | null };
+const SNOOZE_DEFAULT: SnoozeState = { enabled: false, start: 60, end: 420, tz: null };
+
+// Minutes-from-midnight window membership, handling windows that cross midnight
+// (start > end, e.g. 22:00-06:00). Start inclusive, end exclusive. Pure + exported.
+export function inWindow(start: number, end: number, minutes: number): boolean {
+  return start < end ? minutes >= start && minutes < end : minutes >= start || minutes < end;
+}
+
+// Current wall-clock minutes-from-midnight in an IANA zone (null = server timezone).
+function localMinutes(tz: string | null, now: Date): number {
+  const p = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz ?? undefined,
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+  }).formatToParts(now);
+  const h = Number(p.find((x) => x.type === "hour")?.value) % 24; // ICU can emit "24" at midnight
+  return h * 60 + Number(p.find((x) => x.type === "minute")?.value);
+}
+
+function snoozing(now = new Date()): boolean {
+  const sn = state().snooze;
+  return sn.enabled && inWindow(sn.start, sn.end, localMinutes(sn.tz, now));
+}
+
+const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
+function snoozeWindow(): string | null {
+  const sn = state().snooze;
+  return sn.enabled ? `${hhmm(sn.start)}–${hhmm(sn.end)}${sn.tz ? ` ${sn.tz}` : ""}` : null;
+}
 
 type Entry = {
   s: Search;
@@ -32,6 +70,7 @@ type State = {
   entries: Map<number, Entry>;
   channels: string[];
   calls: { date: string; used: number };
+  snooze: SnoozeState;
   errors: PollError[];
 };
 
@@ -45,6 +84,7 @@ function state(): State {
     entries: new Map(),
     channels: [],
     calls: { date: new Date().toDateString(), used: 0 },
+    snooze: { ...SNOOZE_DEFAULT },
     errors: [],
   });
 }
@@ -156,7 +196,7 @@ async function reload() {
   const today = new Date().toDateString();
   // ponytail: fixed 90d retention, revisit if listings outlive it
   await database.delete(seenItems).where(lt(seenItems.seenAt, sql`now() - interval '90 days'`));
-  const [searchRows, seenRows, hitRows, lastHitRows, channelRows] = await Promise.all([
+  const [searchRows, seenRows, hitRows, lastHitRows, channelRows, settingsRows] = await Promise.all([
     database.select().from(searches),
     database.select({ searchId: seenItems.searchId, itemId: seenItems.itemId }).from(seenItems),
     database
@@ -168,6 +208,7 @@ async function reload() {
       .from(alerts)
       .groupBy(alerts.searchId),
     database.select({ webhookUrl: channels.webhookUrl }).from(channels).where(eq(channels.enabled, true)),
+    database.select().from(settings).where(eq(settings.id, 1)),
   ]);
 
   const st = state();
@@ -237,6 +278,10 @@ async function reload() {
   }
   st.channels = channelRows.map((r) => r.webhookUrl);
   if (process.env.DISCORD_WEBHOOK_URL) st.channels.push(process.env.DISCORD_WEBHOOK_URL);
+  const snRow = settingsRows[0];
+  st.snooze = snRow
+    ? { enabled: snRow.snoozeEnabled, start: snRow.snoozeStart, end: snRow.snoozeEnd, tz: snRow.snoozeTz }
+    : { ...SNOOZE_DEFAULT };
 
   // Reconcile the daily quota counter. Flush our in-memory value and read back
   // what greatest() resolved to — one round-trip that handles both directions:
@@ -295,6 +340,14 @@ async function tick(e: Entry) {
 }
 
 async function pollOnce(e: Entry) {
+  // Overnight snooze: don't touch the eBay API during the window. Re-tick at the
+  // search's normal interval; the first tick after the window ends polls and picks
+  // up anything listed meanwhile (still-available items alert then, not never).
+  if (snoozing()) {
+    plog.debug({ searchId: e.s.id, q: e.s.q }, "snoozed - poll skipped");
+    schedule(e, e.s.intervalMin * 60_000);
+    return;
+  }
   const st = state();
   const today = new Date().toDateString();
   if (st.calls.date !== today) st.calls = { date: today, used: 0 };
@@ -501,6 +554,30 @@ export async function deleteSearch(id: number): Promise<boolean> {
   return true;
 }
 
+export function getSnooze(): SnoozeConfig {
+  const sn = state().snooze;
+  return { enabled: sn.enabled, start: hhmm(sn.start), end: hhmm(sn.end), tz: sn.tz };
+}
+
+// Persist + write-through the snooze config, then re-kick enabled searches so the
+// change lands now, not at each timer's next tick (disable → poll promptly again).
+export async function setSnooze(sn: SnoozeState): Promise<SnoozeConfig> {
+  const values = {
+    snoozeEnabled: sn.enabled,
+    snoozeStart: sn.start,
+    snoozeEnd: sn.end,
+    snoozeTz: sn.tz,
+  };
+  await db()
+    .insert(settings)
+    .values({ id: 1, ...values })
+    .onConflictDoUpdate({ target: settings.id, set: values });
+  state().snooze = sn;
+  for (const e of state().entries.values()) if (e.s.enabled) schedule(e, 1000 + Math.random() * 3000);
+  plog.info({ enabled: sn.enabled, start: sn.start, end: sn.end, tz: sn.tz }, "snooze updated");
+  return getSnooze();
+}
+
 export function status(): StatusInfo {
   const st = state();
   const today = new Date().toDateString();
@@ -518,6 +595,7 @@ export function status(): StatusInfo {
       tokenExpiresAt: tokenExpiresAt(),
     },
     quota: { used: st.calls.date === today ? st.calls.used : 0, ceiling: QUOTA_CEILING },
+    snooze: { active: snoozing(), window: snoozeWindow() },
     errors: [...st.errors].reverse().slice(0, 20),
     version: pkg.version,
   };

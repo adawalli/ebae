@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { matchCriteriaChanged, mergeCalls } from "./poller";
+import { inWindow, matchCriteriaChanged, mergeCalls } from "./poller";
+import { hhmmToMin, parseSnoozeBody } from "./validate";
 
 // The re-seed guard in updateSearch: editing what a search matches must reset the
 // seeded baseline, but touching only interval/enabled (or a no-op edit) must not.
@@ -41,4 +42,51 @@ test("live refresh keeps the larger in-memory count (un-flushed increments)", ()
 });
 test("day rollover discards the stale prior-day count", () => {
   expect(mergeCalls({ date: "Sun Jul 05 2026", used: 4999 }, TODAY, 0)).toEqual({ date: TODAY, used: 0 });
+});
+
+// Snooze window membership. Guards the quota saver: an off-by-one boundary or a
+// broken midnight-crossing check silently changes when the eBay API gets hit.
+test("inWindow: start inclusive, end exclusive", () => {
+  expect(inWindow(60, 420, 60)).toBe(true); // 01:00 - in
+  expect(inWindow(60, 420, 419)).toBe(true); // 06:59 - in
+  expect(inWindow(60, 420, 420)).toBe(false); // 07:00 - out
+  expect(inWindow(60, 420, 59)).toBe(false); // 00:59 - out
+});
+test("inWindow: window crossing midnight", () => {
+  expect(inWindow(1320, 360, 1350)).toBe(true); // 22:00-06:00 @ 22:30
+  expect(inWindow(1320, 360, 30)).toBe(true); // @ 00:30
+  expect(inWindow(1320, 360, 359)).toBe(true); // @ 05:59
+  expect(inWindow(1320, 360, 360)).toBe(false); // @ 06:00
+  expect(inWindow(1320, 360, 720)).toBe(false); // @ 12:00
+});
+
+// Snooze settings validation (the API trust boundary): HH:MM parsing, tz check,
+// and the empty-window guard that would otherwise mean "snooze all day".
+test("hhmmToMin parses valid times and rejects junk", () => {
+  expect(hhmmToMin("01:00")).toBe(60);
+  expect(hhmmToMin("22:30")).toBe(1350);
+  expect(hhmmToMin("00:00")).toBe(0);
+  expect(hhmmToMin("24:00")).toBeNull();
+  expect(hhmmToMin("7:5")).toBeNull();
+  expect(hhmmToMin(90)).toBeNull();
+});
+test("parseSnoozeBody: valid config returns minutes", () => {
+  expect(parseSnoozeBody({ enabled: true, start: "01:00", end: "07:00", tz: "America/New_York" })).toEqual({
+    enabled: true,
+    start: 60,
+    end: 420,
+    tz: "America/New_York",
+  });
+  // blank/absent tz -> null (server timezone)
+  expect(parseSnoozeBody({ enabled: false, start: "22:00", end: "06:00", tz: "" })).toEqual({
+    enabled: false,
+    start: 1320,
+    end: 360,
+    tz: null,
+  });
+});
+test("parseSnoozeBody: rejects bad times, equal window, bad tz", () => {
+  expect(typeof parseSnoozeBody({ start: "nope", end: "07:00" })).toBe("string");
+  expect(typeof parseSnoozeBody({ start: "07:00", end: "07:00" })).toBe("string"); // empty window
+  expect(typeof parseSnoozeBody({ start: "01:00", end: "07:00", tz: "Mars/Phobos" })).toBe("string");
 });

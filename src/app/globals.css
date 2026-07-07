@@ -7,6 +7,14 @@ body {
   background: oklch(0.17 0.015 265);
   font-family: var(--font-sans), system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (max-width: 767px) {
+  html,
+  body {
+    overflow-x: hidden;
+  }
 }
 
 @keyframes ebPulse {

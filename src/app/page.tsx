@@ -955,7 +955,11 @@ export default function Home() {
                   className="w-full"
                 >
                   {[1, 2, 5, 10, 15].map((v) => (
-                    <ToggleGroupItem key={v} value={String(v)} className="flex-1 font-mono">
+                    <ToggleGroupItem
+                      key={v}
+                      value={String(v)}
+                      className="flex-1 font-mono data-[state=on]:border-[var(--eb-accent)] data-[state=on]:bg-[var(--eb-accent-soft)] data-[state=on]:text-[var(--eb-accent-text)]"
+                    >
                       {v}m
                     </ToggleGroupItem>
                   ))}

@@ -604,6 +604,6 @@ export function status(): StatusInfo {
     quota: { used: st.calls.date === today ? st.calls.used : 0, ceiling: QUOTA_CEILING },
     snooze: { active: snoozing(), window: snoozeWindow(), dailyMinutes: snoozeMinutes() },
     errors: [...st.errors].reverse().slice(0, 20),
-    version: pkg.version,
+    version: process.env.APP_VERSION || pkg.version,
   };
 }

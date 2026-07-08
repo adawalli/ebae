@@ -22,3 +22,7 @@ test("auctions allowed drops LH_BIN; price bounds, category, and marketplace dom
   expect(u.searchParams.get("_udhi")).toBe("500");
   expect(u.searchParams.get("_sacat")).toBe("9355");
 });
+
+test("unmapped marketplace degrades to a working ebay.com link", () => {
+  expect(new URL(ebayWebUrl(base, "EBAY_XX")).host).toBe("www.ebay.com");
+});

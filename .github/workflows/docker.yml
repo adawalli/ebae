@@ -35,6 +35,10 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
+          # metadata-action's {{version}} is the bare semver (0.1.0); bake it into the image
+          # so status.version reflects the pushed tag, not package.json.
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
           platforms: linux/amd64 # Talos-on-Proxmox is amd64; add arm64 only if a node needs it
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}

@@ -17,7 +17,10 @@ FROM node:24-alpine
 WORKDIR /app
 # NEXT_MANUAL_SIG_HANDLE: let poller.ts own SIGTERM/SIGINT so its shutdown flush
 # completes; otherwise Next's own handler process.exit()s and cuts the DB write off.
-ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 HOSTNAME=0.0.0.0 PORT=3000 NEXT_MANUAL_SIG_HANDLE=true
+# APP_VERSION: the image tag, threaded in at build time so the UI is self-describing
+# without a package.json bump. Falls back to "dev" for local builds.
+ARG APP_VERSION=dev
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 HOSTNAME=0.0.0.0 PORT=3000 NEXT_MANUAL_SIG_HANDLE=true APP_VERSION=$APP_VERSION
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public

@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useTheme } from "next-themes";
-import { Check, Inbox, Moon, Pencil, Plus, Search, Sun, Trash2 } from "lucide-react";
+import { Check, ExternalLink, Inbox, Moon, Pencil, Plus, Search, Sun, Trash2 } from "lucide-react";
 import type { Alert, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
+import { ebayWebUrl } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -463,7 +464,16 @@ export default function Home() {
                               }}
                             />
                             <div className="min-w-0">
-                              <div className="truncate text-[15px] font-semibold md:text-[14.5px]">{s.q}</div>
+                              <a
+                                href={ebayWebUrl(s, status?.ebay.marketplace)}
+                                target="_blank"
+                                rel="noreferrer"
+                                title="View live matches on eBay"
+                                className="hv-link group flex min-w-0 items-center gap-1.5 text-[15px] font-semibold text-foreground no-underline md:text-[14.5px]"
+                              >
+                                <span className="truncate">{s.q}</span>
+                                <ExternalLink className="size-3.5 shrink-0 text-[var(--eb-faint)] transition-colors group-hover:text-[var(--eb-accent-text)]" />
+                              </a>
                               <div className="mt-0.5 truncate font-mono text-[11.5px] text-[var(--eb-faint)]">
                                 {searchSub(s)}
                               </div>

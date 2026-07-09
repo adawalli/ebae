@@ -41,6 +41,20 @@ export function parseSearchBody(b: any, partial: boolean): string | Record<strin
     if (out.includeAuctions !== undefined) out.binOnly = !out.includeAuctions;
     else out.includeAuctions = !(out.binOnly as boolean);
   }
+  // Whitelist, not passthrough: this value is interpolated into the eBay filter string,
+  // so only the two mapped keys (or null = any) are allowed through.
+  if (!partial || b.conditions !== undefined) {
+    const c = b.conditions == null || b.conditions === "" ? null : String(b.conditions);
+    if (c != null && c !== "NEW" && c !== "USED") return "conditions must be NEW, USED, or empty";
+    out.conditions = c;
+  }
+  if (!partial || b.excludeTerms !== undefined) {
+    const v = typeof b.excludeTerms === "string" ? b.excludeTerms.trim() : "";
+    // Store null unless there's a real term: all-punctuation input like ",," matches
+    // nothing yet would render a misleading "−0 excluded" badge if kept as a string.
+    const hasTerm = (v as string).split(/[,\n]/).some((t) => t.trim());
+    out.excludeTerms = hasTerm ? v.slice(0, 500) : null; // cap: a title has nothing to match beyond this
+  }
   if (partial && b.enabled !== undefined) out.enabled = !!b.enabled;
   return out;
 }

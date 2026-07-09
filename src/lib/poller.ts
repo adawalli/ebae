@@ -1,11 +1,11 @@
-import { eq, gt, lt, max, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, lt, max, sql } from "drizzle-orm";
 import pkg from "../../package.json";
 import { db, migrateToLatest } from "./db";
 import { alerts, apiUsage, channels, searches, seenItems, settings } from "./schema";
 import { MARKETPLACE, MOCK, searchNewlyListed, tokenExpiresAt } from "./ebay";
 import { notify } from "./discord";
 import { log } from "./log";
-import type { PollError, Search, SearchStats, SnoozeConfig, StatusInfo } from "./types";
+import type { PollError, PriceContext, Search, SearchStats, SnoozeConfig, StatusInfo } from "./types";
 
 const plog = log.child({ component: "poller" });
 
@@ -17,7 +17,7 @@ const MAX_BACKOFF_MS = 30 * 60_000;
 // Overnight snooze (UI-configured, stored in `settings`, cached in state().snooze):
 // skip all eBay polls during a local-time window so we don't burn quota while nobody's
 // watching. Items listed during the window still alert on the first poll after it ends,
-// via the same newly-listed dedupe (subject to page-1/50-item coverage; a long snooze
+// via the same newly-listed dedupe (subject to page-1/200-item coverage; a long snooze
 // can push very old listings off page 1). start/end = minutes from midnight in `tz`.
 type SnoozeState = { enabled: boolean; start: number; end: number; tz: string | null };
 const SNOOZE_DEFAULT: SnoozeState = { enabled: false, start: 60, end: 420, tz: null };
@@ -100,6 +100,29 @@ function message(e: unknown) {
   return e instanceof Error ? e.message : String(e);
 }
 
+// A listing's title matches one of the search's exclude terms (comma/newline
+// separated, case-insensitive substring). No terms -> never excluded. The Browse
+// API has no negative-keyword support, so this suppression is client-side. Pure +
+// exported for tests.
+export function excludeMatch(title: string, excludeTerms: string | null): boolean {
+  if (!excludeTerms) return false;
+  const t = title.toLowerCase();
+  return excludeTerms
+    .split(/[,\n]/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+    .some((term) => t.includes(term));
+}
+
+// Median of a numeric list (mean of the two middles on an even count); null on
+// empty. Powers the "typical price" deal-context in alert embeds. Pure + exported.
+export function median(nums: number[]): number | null {
+  const xs = nums.filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
+  if (!xs.length) return null;
+  const m = Math.floor(xs.length / 2);
+  return xs.length % 2 ? xs[m] : (xs[m - 1] + xs[m]) / 2;
+}
+
 // Single chokepoint for poll-loop failures: keeps the Status-page ring buffer
 // and stdout in sync. level defaults to warn (transient/self-healing); pass
 // "error" for terminal failures (e.g. a webhook dead after all retries).
@@ -119,6 +142,8 @@ function rowToSearch(r: typeof searches.$inferSelect): Search {
     priceCap: r.priceCap,
     binOnly: r.binOnly,
     includeAuctions: r.includeAuctions,
+    conditions: r.conditions,
+    excludeTerms: r.excludeTerms,
     intervalMin: r.intervalMin,
     enabled: r.enabled,
     seeded: r.seeded,
@@ -346,6 +371,20 @@ async function tick(e: Entry) {
   }
 }
 
+// Median + sample size of a search's recent priced alerts, for the embed's deal
+// context. Runs on the connection the poll writes already opened (alerting ticks
+// only), so it never breaks the DB-free steady state.
+async function priceContext(database: ReturnType<typeof db>, searchId: number): Promise<PriceContext> {
+  const rows = await database
+    .select({ price: alerts.price })
+    .from(alerts)
+    .where(and(eq(alerts.searchId, searchId), isNotNull(alerts.price)))
+    .orderBy(desc(alerts.createdAt))
+    .limit(20);
+  const prices = rows.map((r) => r.price).filter((p): p is number => p != null);
+  return { typical: median(prices), count: prices.length };
+}
+
 async function pollOnce(e: Entry) {
   // Overnight snooze: don't touch the eBay API during the window. Re-tick at the
   // search's normal interval; the first tick after the window ends polls and picks
@@ -387,8 +426,21 @@ async function pollOnce(e: Entry) {
       e.s.seeded = true;
       plog.info({ searchId: e.s.id, q: e.s.q, count: fresh.length }, "seeded");
     } else {
+      // Deal-context baseline: median of this search's recent priced alerts, computed
+      // once per tick from before this batch lands (so the new items don't skew their
+      // own "typical"). Only when there's something fresh, so empty polls stay DB-free.
+      const ctx = fresh.length ? await priceContext(database, e.s.id) : { typical: null, count: 0 };
       for (const item of [...fresh].reverse()) {
         if (e.seen.has(item.itemId)) continue; // reload() may have merged it in mid-loop
+        // Exclude-terms hit: mark seen (so a later exclusion removal won't re-alert this
+        // old listing) but send no alert. Seen set stays the full dedupe set.
+        if (excludeMatch(item.title, e.s.excludeTerms)) {
+          await database.insert(seenItems).values({ searchId: e.s.id, itemId: item.itemId }).onConflictDoNothing();
+          wrote = true;
+          e.seen.add(item.itemId);
+          plog.debug({ searchId: e.s.id, itemId: item.itemId, q: e.s.q }, "excluded - suppressed");
+          continue;
+        }
         // Transaction: if alerts insert fails, seen_items also rolls back so the
         // item is retried next poll instead of being permanently dropped.
         await database.transaction(async (tx) => {
@@ -414,7 +466,7 @@ async function pollOnce(e: Entry) {
         e.lastHitAt = now;
         plog.info({ searchId: e.s.id, itemId: item.itemId, price: item.price }, "alert sent");
         if (st.channels.length) {
-          const err = await notify(item, e.s, st.channels);
+          const err = await notify(item, e.s, st.channels, ctx);
           if (err) recordError(e.s.q, err, "error");
         }
       }
@@ -459,6 +511,8 @@ export type SearchInput = {
   priceCap: number | null;
   binOnly: boolean;
   includeAuctions: boolean;
+  conditions: string | null;
+  excludeTerms: string | null;
   intervalMin: number;
 };
 
@@ -472,6 +526,8 @@ export async function createSearch(input: SearchInput): Promise<SearchStats> {
       priceCap: input.priceCap,
       binOnly: input.binOnly,
       includeAuctions: input.includeAuctions,
+      conditions: input.conditions,
+      excludeTerms: input.excludeTerms,
       intervalMin: input.intervalMin,
     })
     .returning();
@@ -495,7 +551,9 @@ export async function createSearch(input: SearchInput): Promise<SearchStats> {
 // baseline stale (the new criteria surface listings never in `seen`), so an edit
 // touching them must re-seed. Pure + exported so the decision is unit-testable.
 // undefined in the patch = field untouched.
-const MATCH_FIELDS = ["q", "categoryId", "priceFloor", "priceCap", "binOnly", "includeAuctions"] as const;
+// excludeTerms is intentionally absent: it's a client-side suppression, not a Browse
+// query field, and suppressed items are already in `seen`, so it never re-seeds.
+const MATCH_FIELDS = ["q", "categoryId", "priceFloor", "priceCap", "binOnly", "includeAuctions", "conditions"] as const;
 
 export function matchCriteriaChanged(
   cur: Record<string, unknown> | undefined,
@@ -516,9 +574,11 @@ export async function updateSearch(
   if (patch.priceCap !== undefined) row.priceCap = patch.priceCap;
   if (patch.binOnly !== undefined) row.binOnly = patch.binOnly;
   if (patch.includeAuctions !== undefined) row.includeAuctions = patch.includeAuctions;
+  if (patch.conditions !== undefined) row.conditions = patch.conditions;
+  if (patch.excludeTerms !== undefined) row.excludeTerms = patch.excludeTerms;
   if (patch.intervalMin !== undefined) row.intervalMin = patch.intervalMin;
   if (patch.enabled !== undefined) row.enabled = patch.enabled;
-  // Editing what a search matches (query/category/price/buying-option) invalidates
+  // Editing what a search matches (query/category/price/buying-option/condition) invalidates
   // the seeded baseline: the new criteria surface listings never in `seen`, which a
   // seeded search would alert on all at once. Re-seed so that backlog stays silent -
   // the same guarantee the first poll gives a brand-new search (DESIGN.md §3).

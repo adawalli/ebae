@@ -85,6 +85,7 @@ Embed layout per new item:
 - Thumbnail: item image
 - Title: listing title, hyperlinked to the item
 - Fields: price (+ shipping if present), **Buy It Now** / Auction badge, condition, listing time
+- Deal context: a **Typical** field comparing the price to the median of recent alerts for the same search (shown once ≥3 priced alerts exist)
 - Footer: which saved search matched
 
 One `notify(item, search)` function with Discord as the only implementation. Deliberately no channel-plugin framework yet - a `Notifier` interface gets extracted when the second channel (Telegram) actually lands.
@@ -127,7 +128,7 @@ Everything else (searches, webhooks) is managed in the UI and lives in Postgres.
 
 - Telegram bot notifications (outbound send; long-polling if commands are wanted)
 - Generic webhook channel (POST JSON → ntfy, Slack, Home Assistant, ...)
-- Richer per-search filters: price caps, condition, seller location, exclude-keywords
+- Richer per-search filters: price caps ✓, condition ✓, exclude-keywords ✓, seller location
 - Quota dashboard + adaptive polling (slow down overnight, speed up on hot searches)
 
 **Phase 3 - Nice-to-haves**

@@ -17,6 +17,16 @@ const MARKETPLACE_CURRENCY: Record<string, string> = {
   EBAY_ES: "EUR",
 };
 
+// Condition presets -> Browse `conditionIds` values. USED spans excellent..acceptable
+// (3000-6000) but omits 7000 "for parts/not working" - the junk tier most searches want
+// gone. Keys are the only values validate.ts lets through. Note: these are condition IDs,
+// so they go in `conditionIds`, NOT the `conditions` filter (which takes only the coarse
+// NEW/USED/UNSPECIFIED enums and 400s on numeric IDs).
+const CONDITION_FILTER: Record<string, string> = {
+  NEW: "1000",
+  USED: "3000|4000|5000|6000",
+};
+
 const SANDBOX = process.env.EBAY_ENV === "sandbox";
 const AUTH_HOST = SANDBOX ? "https://api.sandbox.ebay.com" : "https://api.ebay.com";
 const API_HOST = AUTH_HOST;
@@ -47,13 +57,10 @@ async function token(): Promise<string> {
   return data.access_token;
 }
 
-// Newest-first page 1 of the Browse API for one saved search
-export async function searchNewlyListed(s: Search): Promise<Item[]> {
-  if (MOCK) {
-    elog.debug({ q: s.q }, "mock search");
-    return mockSearch(s);
-  }
-
+// Browse `filter` clauses for a search. Pure + exported so the exact contract (field
+// names, condition-ID mapping, price-bound syntax) is unit-tested — mock mode bypasses
+// this whole path, which is how a `conditions` vs `conditionIds` mistake could ship.
+export function browseFilters(s: Search): string[] {
   const filters = [
     // always constrain buying options: without a filter eBay returns auctions too.
     // includeAuctions is the source of truth (binOnly is its UI inverse); default is BIN-only.
@@ -65,8 +72,25 @@ export async function searchNewlyListed(s: Search): Promise<Item[]> {
     const hi = s.priceCap ?? "";
     filters.push(`price:[${lo}..${hi}]`, `priceCurrency:${MARKETPLACE_CURRENCY[MARKETPLACE] ?? "USD"}`);
   }
+  // numeric condition IDs belong in `conditionIds`; the `conditions` filter only takes the
+  // NEW/USED/UNSPECIFIED enums and 400s on IDs (which would back the search off to silence).
+  if (s.conditions && CONDITION_FILTER[s.conditions]) filters.push(`conditionIds:{${CONDITION_FILTER[s.conditions]}}`);
+  return filters;
+}
 
-  const params = new URLSearchParams({ q: s.q, sort: "newlyListed", limit: "50" });
+// Newest-first page 1 of the Browse API for one saved search
+export async function searchNewlyListed(s: Search): Promise<Item[]> {
+  if (MOCK) {
+    elog.debug({ q: s.q }, "mock search");
+    return mockSearch(s);
+  }
+
+  const filters = browseFilters(s);
+
+  // limit 200 (Browse max) is one call but covers 200 newly-listed items per poll, so a
+  // hot search or a long snooze can't silently drop new listings off a 50-item page 1.
+  // ponytail: single page; if 200 new between two polls ever happens, add offset paging.
+  const params = new URLSearchParams({ q: s.q, sort: "newlyListed", limit: "200" });
   if (s.categoryId) params.set("category_ids", s.categoryId);
   if (filters.length) params.set("filter", filters.join(","));
 
@@ -128,6 +152,15 @@ const VARIANTS = [
 ];
 const CONDITIONS = ["New", "Open box", "Excellent", "Used", "Pre-owned", "For parts or not working"];
 
+// Mirror the live `conditions` filter in mock mode so the feature is exercisable
+// without eBay credentials. NEW = brand new only; USED = anything used-ish except
+// the for-parts tier (matching CONDITION_FILTER's omission of ID 7000).
+function mockConditionOk(condition: string | null, conditions: string | null): boolean {
+  if (!conditions) return true;
+  if (conditions === "NEW") return condition === "New";
+  return condition != null && condition !== "New" && condition !== "For parts or not working";
+}
+
 function mockItem(s: Search, n: number): Item {
   const id = `v1|mock-${s.id}-${n}|0`;
   // mirror the live price:[floor..cap] filter so mock alerts respect both bounds
@@ -156,12 +189,11 @@ function mockSearch(s: Search): Item[] {
     // first poll: a page of "existing" listings for the seed pass
     pool = Array.from({ length: 8 }, () => mockItem(s, ++st.counter));
     st.pools.set(s.id, pool);
-    return pool;
-  }
-  // ~40% of polls surface a brand-new listing
-  if (Math.random() < 0.4) {
+  } else if (Math.random() < 0.4) {
+    // ~40% of polls surface a brand-new listing
     pool.unshift(mockItem(s, ++st.counter));
     if (pool.length > 50) pool.pop();
   }
-  return pool;
+  // condition filter is server-side for the live API, so mirror it here
+  return pool.filter((i: Item) => mockConditionOk(i.condition, s.conditions));
 }

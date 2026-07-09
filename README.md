@@ -32,18 +32,19 @@ Create a webhook in your Discord channel (channel settings → Integrations → 
 
 All config is env vars - see [.env.example](.env.example). Searches and webhooks live in Postgres and are managed in the UI.
 
-| var                                     | purpose                       | default                        |
-| --------------------------------------- | ----------------------------- | ------------------------------ |
-| `DATABASE_URL`                          | Postgres connection string    | required                       |
-| `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | eBay app credentials          | unset = mock mode              |
-| `EBAY_ENV`                              | `production` or `sandbox`     | production                     |
-| `EBAY_MARKETPLACE`                      | marketplace id                | `EBAY_US`                      |
-| `DISCORD_WEBHOOK_URL`                   | notification target           | unset                          |
-| `POLL_INTERVAL_DEFAULT`                 | fallback poll interval (min)  | 5                              |
-| `CACHE_REFRESH_HOURS`                   | DB → cache refresh cadence    | 12                             |
-| `EBAY_DAILY_QUOTA`                      | enforced daily call budget    | 5000                           |
-| `LOG_LEVEL`                             | `error`/`warn`/`info`/`debug` | `info`                         |
-| `LOG_FORMAT`                            | `json` or `pretty`            | `pretty` on a TTY, else `json` |
+| var                                     | purpose                                              | default                        |
+| --------------------------------------- | ---------------------------------------------------- | ------------------------------ |
+| `DATABASE_URL`                          | Postgres connection string                           | required                       |
+| `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | eBay app credentials                                 | unset = mock mode              |
+| `EBAY_ENV`                              | `production` or `sandbox`                            | production                     |
+| `EBAY_MARKETPLACE`                      | marketplace id                                       | `EBAY_US`                      |
+| `DISCORD_WEBHOOK_URL`                   | notification target                                  | unset                          |
+| `POLL_INTERVAL_DEFAULT`                 | fallback poll interval (min)                         | 5                              |
+| `CACHE_REFRESH_HOURS`                   | DB → cache refresh cadence                           | 12                             |
+| `MARKET_SAMPLE_HOURS`                   | market-baseline resample gap (band-limited searches) | 24                             |
+| `EBAY_DAILY_QUOTA`                      | enforced daily call budget                           | 5000                           |
+| `LOG_LEVEL`                             | `error`/`warn`/`info`/`debug`                        | `info`                         |
+| `LOG_FORMAT`                            | `json` or `pretty`                                   | `pretty` on a TTY, else `json` |
 
 ## Deploy
 

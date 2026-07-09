@@ -85,7 +85,7 @@ Embed layout per new item:
 - Thumbnail: item image
 - Title: listing title, hyperlinked to the item
 - Fields: price (+ shipping if present), **Buy It Now** / Auction badge, condition, listing time
-- Deal context: a **Typical** field comparing the price to the median of recent alerts for the same search (shown once ≥3 priced alerts exist)
+- Deal context: a **Market** field comparing the price to a daily unfiltered market baseline (median asking price of the same criteria without the price band), so a band-limited deal-hunt still sees the true going rate. Falls back to a **Typical** field (median of recent alerts for the search) when no market baseline exists yet, shown once ≥3 priced alerts exist. Poller-managed on `searches.market_median` / `market_sampled_at`, refreshed once/day per band-limited search (`MARKET_SAMPLE_HOURS`); asking prices only (Browse has no sold data)
 - Footer: which saved search matched
 
 One `notify(item, search)` function with Discord as the only implementation. Deliberately no channel-plugin framework yet - a `Notifier` interface gets extracted when the second channel (Telegram) actually lands.
@@ -129,6 +129,7 @@ Everything else (searches, webhooks) is managed in the UI and lives in Postgres.
 - Telegram bot notifications (outbound send; long-polling if commands are wanted)
 - Generic webhook channel (POST JSON → ntfy, Slack, Home Assistant, ...)
 - Richer per-search filters: price caps ✓, condition ✓, exclude-keywords ✓, seller location
+- Deal context: within-band **Typical** median ✓, daily unfiltered **Market** baseline ✓ (asking prices; sold-price history needs the Marketplace Insights API)
 - Quota dashboard + adaptive polling (slow down overnight, speed up on hot searches)
 
 **Phase 3 - Nice-to-haves**

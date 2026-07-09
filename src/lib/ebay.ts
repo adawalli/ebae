@@ -60,14 +60,15 @@ async function token(): Promise<string> {
 // Browse `filter` clauses for a search. Pure + exported so the exact contract (field
 // names, condition-ID mapping, price-bound syntax) is unit-tested — mock mode bypasses
 // this whole path, which is how a `conditions` vs `conditionIds` mistake could ship.
-export function browseFilters(s: Search): string[] {
+export function browseFilters(s: Search, includePrice = true): string[] {
   const filters = [
     // always constrain buying options: without a filter eBay returns auctions too.
     // includeAuctions is the source of truth (binOnly is its UI inverse); default is BIN-only.
     s.includeAuctions ? "buyingOptions:{FIXED_PRICE|AUCTION}" : "buyingOptions:{FIXED_PRICE}",
   ];
   // eBay accepts [min..max], [min..], or [..max] — build whichever bounds are set.
-  if (s.priceFloor != null || s.priceCap != null) {
+  // includePrice=false drops the band entirely for the market-baseline sample (sampleMarket).
+  if (includePrice && (s.priceFloor != null || s.priceCap != null)) {
     const lo = s.priceFloor ?? "";
     const hi = s.priceCap ?? "";
     filters.push(`price:[${lo}..${hi}]`, `priceCurrency:${MARKETPLACE_CURRENCY[MARKETPLACE] ?? "USD"}`);
@@ -102,6 +103,26 @@ export async function searchNewlyListed(s: Search): Promise<Item[]> {
     },
   });
   if (!res.ok) throw new Error(`eBay search failed (${s.q}): ${res.status} ${await res.text()}`);
+  const data = (await res.json()) as { itemSummaries?: EbaySummary[] };
+  return (data.itemSummaries ?? []).map(normalize);
+}
+
+// Unfiltered market sample: same item criteria (q, category, condition) but WITHOUT the
+// price band, so its median reflects the true going rate even for a deal-hunt search whose
+// own band would clip it. Newest 100; active asking prices only (Browse has no sold data).
+export async function sampleMarket(s: Search): Promise<Item[]> {
+  if (MOCK) {
+    elog.debug({ q: s.q }, "mock market sample");
+    return mockMarket(s);
+  }
+  const filters = browseFilters(s, false); // drop the price band
+  const params = new URLSearchParams({ q: s.q, sort: "newlyListed", limit: "100" });
+  if (s.categoryId) params.set("category_ids", s.categoryId);
+  if (filters.length) params.set("filter", filters.join(","));
+  const res = await fetch(`${API_HOST}/buy/browse/v1/item_summary/search?${params}`, {
+    headers: { Authorization: `Bearer ${await token()}`, "X-EBAY-C-MARKETPLACE-ID": MARKETPLACE },
+  });
+  if (!res.ok) throw new Error(`eBay market sample failed (${s.q}): ${res.status} ${await res.text()}`);
   const data = (await res.json()) as { itemSummaries?: EbaySummary[] };
   return (data.itemSummaries ?? []).map(normalize);
 }
@@ -196,4 +217,14 @@ function mockSearch(s: Search): Item[] {
   }
   // condition filter is server-side for the live API, so mirror it here
   return pool.filter((i: Item) => mockConditionOk(i.condition, s.conditions));
+}
+
+// Mock market sample: prices centered ~$500 regardless of the search's band, so the
+// market-baseline feature is exercisable without eBay creds. Deterministic per index so a
+// band-limited (e.g. 100-300) mock search visibly shows a higher "market" figure.
+function mockMarket(s: Search): Item[] {
+  return Array.from({ length: 40 }, (_, n) => ({
+    ...mockItem(s, n),
+    price: 400 + ((n * 16) % 21) * 10, // 400..600, median ~500 — independent of the price band
+  })).filter((i) => mockConditionOk(i.condition, s.conditions));
 }

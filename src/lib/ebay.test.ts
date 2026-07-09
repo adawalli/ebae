@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { browseFilters } from "./ebay";
+import { browseFilters, sampleMarket } from "./ebay";
+import { median } from "./poller";
 import type { Search } from "./types";
 
 const base: Search = {
@@ -12,6 +13,8 @@ const base: Search = {
   includeAuctions: false,
   conditions: null,
   excludeTerms: null,
+  marketMedian: null,
+  marketSampledAt: null,
   intervalMin: 5,
   enabled: true,
   seeded: false,
@@ -51,4 +54,25 @@ test("browseFilters: all clauses compose in order", () => {
   expect(f[0]).toBe("buyingOptions:{FIXED_PRICE|AUCTION}");
   expect(f).toContain("price:[50..900]");
   expect(f).toContain("conditionIds:{1000}");
+});
+
+// The market-baseline sample reuses browseFilters with includePrice=false: it must keep
+// buying-option and condition constraints but DROP the price band, or the median it stores
+// would be clipped by the very band it exists to see past.
+test("browseFilters: includePrice=false drops the price band, keeps other clauses", () => {
+  const f = browseFilters({ ...base, priceFloor: 100, priceCap: 300, conditions: "USED" }, false);
+  expect(f.some((c) => c.startsWith("price:"))).toBe(false);
+  expect(f.some((c) => c.startsWith("priceCurrency:"))).toBe(false);
+  expect(f).toContain("conditionIds:{3000|4000|5000|6000}");
+  expect(f[0]).toBe("buyingOptions:{FIXED_PRICE}");
+});
+
+// Mock market sample must center well above a deal-hunt band so the feature is visibly
+// exercisable (and the median helper agrees on the figure the poller would store).
+test("sampleMarket (mock): median sits ~500, independent of the search band", async () => {
+  const items = await sampleMarket({ ...base, priceFloor: 100, priceCap: 300 });
+  const m = median(items.map((i) => i.price).filter((p): p is number => p != null));
+  expect(m).not.toBeNull();
+  expect(m!).toBeGreaterThan(300); // above the 100-300 band its own listings would sit in
+  expect(m!).toBeLessThan(700);
 });

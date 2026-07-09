@@ -66,28 +66,39 @@ const mkItem = (price: number | null): Item => ({
   itemUrl: "u",
 });
 test("dealField: null until 3+ priced samples with a price and baseline", () => {
-  expect(dealField(mkItem(400), { typical: 500, count: 2 })).toBeNull(); // too few
-  expect(dealField(mkItem(null), { typical: 500, count: 9 })).toBeNull(); // no listing price
-  expect(dealField(mkItem(400), { typical: null, count: 9 })).toBeNull(); // no baseline
-  expect(dealField(mkItem(400), { typical: 0, count: 9 })).toBeNull(); // zero baseline -> no divide-by-zero
+  expect(dealField(mkItem(400), { typical: 500, count: 2, basis: "recent" })).toBeNull(); // too few
+  expect(dealField(mkItem(null), { typical: 500, count: 9, basis: "recent" })).toBeNull(); // no listing price
+  expect(dealField(mkItem(400), { typical: null, count: 9, basis: "recent" })).toBeNull(); // no baseline
+  expect(dealField(mkItem(400), { typical: 0, count: 9, basis: "recent" })).toBeNull(); // zero baseline -> no divide-by-zero
   expect(dealField(mkItem(400), undefined)).toBeNull();
 });
 test("dealField: signed delta vs typical", () => {
-  expect(dealField(mkItem(400), { typical: 500, count: 5 })).toEqual({
+  expect(dealField(mkItem(400), { typical: 500, count: 5, basis: "recent" })).toEqual({
     name: "Typical",
     value: "$500.00 · ▼ 20% under",
     inline: true,
   });
-  expect(dealField(mkItem(550), { typical: 500, count: 5 })).toEqual({
+  expect(dealField(mkItem(550), { typical: 500, count: 5, basis: "recent" })).toEqual({
     name: "Typical",
     value: "$500.00 · ▲ 10% over",
     inline: true,
   });
-  expect(dealField(mkItem(500), { typical: 500, count: 5 })).toEqual({
+  expect(dealField(mkItem(500), { typical: 500, count: 5, basis: "recent" })).toEqual({
     name: "Typical",
     value: "$500.00 · ≈ typical",
     inline: true,
   });
+});
+// Market basis: a dedicated unfiltered sample, so it shows from the first alert (no count
+// gate) and is labeled "Market". This is the whole point of option 2 — a 100-300 deal-hunt
+// on an item that lists ~500 gets true market context its own in-band alerts can't give.
+test("dealField: market basis labels 'Market' and needs no sample count", () => {
+  expect(dealField(mkItem(250), { typical: 500, count: 0, basis: "market" })).toEqual({
+    name: "Market",
+    value: "$500.00 · ▼ 50% under",
+    inline: true,
+  });
+  expect(dealField(mkItem(250), { typical: 0, count: 9, basis: "market" })).toBeNull(); // still no divide-by-zero
 });
 
 // parseSearchBody: the API trust boundary for the two new fields. conditions is

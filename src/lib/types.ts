@@ -8,6 +8,8 @@ export type Search = {
   includeAuctions: boolean;
   conditions: string | null; // "NEW" | "USED" | null (any)
   excludeTerms: string | null; // comma/newline-separated title exclusions
+  marketMedian: number | null; // daily unfiltered market baseline (poller-managed)
+  marketSampledAt: string | null;
   intervalMin: number;
   enabled: boolean;
   seeded: boolean;
@@ -35,9 +37,10 @@ export type Item = {
   itemUrl: string;
 };
 
-// Recent-price context for an alert embed: median of prior priced alerts for the
-// same search, and how many contributed (the poller gates display on a real sample).
-export type PriceContext = { typical: number | null; count: number };
+// Price context for an alert embed. basis "market" = the daily unfiltered market median
+// (preferred, reflects the whole market); basis "recent" = median of prior priced alerts
+// for the search (in-band fallback, gated on `count` >= a real sample).
+export type PriceContext = { typical: number | null; count: number; basis: "market" | "recent" };
 
 export type Alert = Item & {
   id: number;

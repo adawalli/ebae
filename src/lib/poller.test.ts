@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { excludeMatch, inWindow, matchCriteriaChanged, median, mergeCalls, snoozeMinutes } from "./poller";
+import {
+  baselineInvalidated,
+  excludeMatch,
+  inWindow,
+  matchCriteriaChanged,
+  median,
+  mergeCalls,
+  snoozeMinutes,
+} from "./poller";
 import { dealField } from "./discord";
 import { hhmmToMin, parseSearchBody, parseSnoozeBody } from "./validate";
 import type { Item } from "./types";
@@ -23,6 +31,19 @@ test("changing a match field re-seeds", () => {
   expect(matchCriteriaChanged(cur, { categoryId: "625" })).toBe(true);
   expect(matchCriteriaChanged(cur, { includeAuctions: true })).toBe(true);
   expect(matchCriteriaChanged(cur, { conditions: "NEW" })).toBe(true); // server-side filter
+});
+
+// baselineInvalidated: the market baseline is sampled against the match criteria AND
+// filtered through excludeMatch, so any of those changing must reset it. Unlike re-seeding,
+// an excludeTerms change counts here (the sample is exclude-filtered) but a no-op edit must not.
+const curEx = { ...cur, excludeTerms: "for parts, repro" };
+test("baselineInvalidated: match-field OR excludeTerms change resets the market baseline", () => {
+  expect(baselineInvalidated(curEx, { priceCap: 3000 })).toBe(true); // match field
+  expect(baselineInvalidated(curEx, { conditions: "NEW" })).toBe(true); // match field
+  expect(baselineInvalidated(curEx, { excludeTerms: "for parts" })).toBe(true); // exclude changed
+  expect(baselineInvalidated(curEx, { excludeTerms: "for parts, repro" })).toBe(false); // same value, no-op
+  expect(baselineInvalidated(curEx, { intervalMin: 10, enabled: false })).toBe(false); // neither
+  expect(baselineInvalidated(curEx, {})).toBe(false);
 });
 
 test("no-op or non-match edits do not re-seed", () => {

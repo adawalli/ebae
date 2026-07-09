@@ -611,6 +611,15 @@ export function matchCriteriaChanged(
   return MATCH_FIELDS.some((k) => patch[k] !== undefined && patch[k] !== cur?.[k]);
 }
 
+// The market baseline is sampled against the match criteria AND filtered through excludeMatch,
+// so it's stale whenever either changes. A match-field change also re-seeds; an excludeTerms
+// change resets the baseline only (excludeTerms stays out of MATCH_FIELDS so the seen set is
+// preserved). Pure + exported so the reset decision is unit-testable, like matchCriteriaChanged.
+export function baselineInvalidated(cur: Record<string, unknown> | undefined, patch: Record<string, unknown>): boolean {
+  if (matchCriteriaChanged(cur, patch)) return true;
+  return patch.excludeTerms !== undefined && patch.excludeTerms !== cur?.excludeTerms;
+}
+
 export async function updateSearch(
   id: number,
   patch: Partial<SearchInput> & { enabled?: boolean },
@@ -633,12 +642,11 @@ export async function updateSearch(
   // the same guarantee the first poll gives a brand-new search (DESIGN.md §3).
   const criteriaChanged = matchCriteriaChanged(cur, row);
   if (criteriaChanged) row.seeded = false;
-  // The market baseline is sampled against the criteria AND filtered through excludeMatch, so
-  // clear it whenever either changes and let the next poll re-sample. An exclude-terms edit
-  // must NOT re-seed (it's deliberately not a MATCH_FIELD — the seen set stays complete), but
-  // it does make the stored baseline stale, so it clears the baseline without touching seeded.
-  const excludeChanged = row.excludeTerms !== undefined && row.excludeTerms !== cur?.excludeTerms;
-  if (criteriaChanged || excludeChanged) {
+  // Clear the market baseline when the criteria or the exclude terms change (see
+  // baselineInvalidated) so the next poll re-samples instead of comparing against a stale
+  // market. An excludeTerms-only edit resets the baseline without re-seeding — the seen set
+  // stays complete, matching the DESIGN.md §3 guarantee.
+  if (baselineInvalidated(cur, row)) {
     row.marketMedian = null;
     row.marketSampledAt = null;
   }

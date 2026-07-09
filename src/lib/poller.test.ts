@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
-import { inWindow, matchCriteriaChanged, mergeCalls, snoozeMinutes } from "./poller";
-import { hhmmToMin, parseSnoozeBody } from "./validate";
+import { excludeMatch, inWindow, matchCriteriaChanged, median, mergeCalls, snoozeMinutes } from "./poller";
+import { dealField } from "./discord";
+import { hhmmToMin, parseSearchBody, parseSnoozeBody } from "./validate";
+import type { Item } from "./types";
 
 // The re-seed guard in updateSearch: editing what a search matches must reset the
 // seeded baseline, but touching only interval/enabled (or a no-op edit) must not.
@@ -11,6 +13,7 @@ const cur = {
   priceCap: 2500,
   binOnly: true,
   includeAuctions: false,
+  conditions: null,
 };
 
 test("changing a match field re-seeds", () => {
@@ -19,12 +22,89 @@ test("changing a match field re-seeds", () => {
   expect(matchCriteriaChanged(cur, { priceFloor: 100 })).toBe(true); // null -> value
   expect(matchCriteriaChanged(cur, { categoryId: "625" })).toBe(true);
   expect(matchCriteriaChanged(cur, { includeAuctions: true })).toBe(true);
+  expect(matchCriteriaChanged(cur, { conditions: "NEW" })).toBe(true); // server-side filter
 });
 
 test("no-op or non-match edits do not re-seed", () => {
   expect(matchCriteriaChanged(cur, { q: "Leica M6", priceCap: 2500 })).toBe(false); // same values
   expect(matchCriteriaChanged(cur, { intervalMin: 10, enabled: false })).toBe(false); // not match fields
+  expect(matchCriteriaChanged(cur, { excludeTerms: "for parts" })).toBe(false); // client-side, seen stays complete
+  expect(matchCriteriaChanged(cur, { conditions: null })).toBe(false); // unchanged
   expect(matchCriteriaChanged(cur, {})).toBe(false);
+});
+
+// excludeMatch: the client-side negative-keyword filter. A false negative spams the
+// user with junk; a false positive silently drops a wanted listing.
+test("excludeMatch: case-insensitive substring across comma/newline terms", () => {
+  expect(excludeMatch("Leica M6 - FOR PARTS", "for parts, repro")).toBe(true);
+  expect(excludeMatch("Nikon repro plate", "for parts\nrepro")).toBe(true);
+  expect(excludeMatch("Leica M6 mint boxed", "for parts, repro")).toBe(false);
+  expect(excludeMatch("anything", null)).toBe(false);
+  expect(excludeMatch("anything", "  , \n ")).toBe(false); // all-empty terms match nothing
+});
+
+// median: the "typical price" for deal context. Even counts average the two middles.
+test("median: odd, even, empty, NaN-filtered", () => {
+  expect(median([5])).toBe(5);
+  expect(median([3, 1, 2])).toBe(2);
+  expect(median([4, 1, 3, 2])).toBe(2.5);
+  expect(median([])).toBeNull();
+  expect(median([NaN, 2, 4])).toBe(3);
+});
+
+// dealField: the embed's "is this a deal?" line. Gated on a real sample so a single
+// prior alert can't masquerade as "typical".
+const mkItem = (price: number | null): Item => ({
+  itemId: "x",
+  title: "t",
+  price,
+  currency: "USD",
+  shippingCost: null,
+  buyingOption: "FIXED_PRICE",
+  condition: null,
+  imageUrl: null,
+  itemUrl: "u",
+});
+test("dealField: null until 3+ priced samples with a price and baseline", () => {
+  expect(dealField(mkItem(400), { typical: 500, count: 2 })).toBeNull(); // too few
+  expect(dealField(mkItem(null), { typical: 500, count: 9 })).toBeNull(); // no listing price
+  expect(dealField(mkItem(400), { typical: null, count: 9 })).toBeNull(); // no baseline
+  expect(dealField(mkItem(400), { typical: 0, count: 9 })).toBeNull(); // zero baseline -> no divide-by-zero
+  expect(dealField(mkItem(400), undefined)).toBeNull();
+});
+test("dealField: signed delta vs typical", () => {
+  expect(dealField(mkItem(400), { typical: 500, count: 5 })).toEqual({
+    name: "Typical",
+    value: "$500.00 · ▼ 20% under",
+    inline: true,
+  });
+  expect(dealField(mkItem(550), { typical: 500, count: 5 })).toEqual({
+    name: "Typical",
+    value: "$500.00 · ▲ 10% over",
+    inline: true,
+  });
+  expect(dealField(mkItem(500), { typical: 500, count: 5 })).toEqual({
+    name: "Typical",
+    value: "$500.00 · ≈ typical",
+    inline: true,
+  });
+});
+
+// parseSearchBody: the API trust boundary for the two new fields. conditions is
+// interpolated into the eBay filter, so anything but the whitelist must be rejected.
+test("parseSearchBody: conditions whitelist and excludeTerms trim/cap", () => {
+  const ok = parseSearchBody({ q: "x", conditions: "NEW", excludeTerms: " for parts, repro " }, false) as Record<
+    string,
+    unknown
+  >;
+  expect(ok.conditions).toBe("NEW");
+  expect(ok.excludeTerms).toBe("for parts, repro");
+  expect(typeof parseSearchBody({ q: "x", conditions: "1000|3000" }, false)).toBe("string"); // injection rejected
+  expect((parseSearchBody({ conditions: "" }, true) as Record<string, unknown>).conditions).toBeNull();
+  expect((parseSearchBody({ excludeTerms: "   " }, true) as Record<string, unknown>).excludeTerms).toBeNull();
+  expect((parseSearchBody({ excludeTerms: ",," }, true) as Record<string, unknown>).excludeTerms).toBeNull(); // no real term
+  const long = parseSearchBody({ excludeTerms: "a".repeat(999) }, true) as Record<string, unknown>;
+  expect((long.excludeTerms as string).length).toBe(500);
 });
 
 test("undefined current (boot window) treats any provided field as changed", () => {

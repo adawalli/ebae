@@ -12,6 +12,13 @@ export const searches = pgTable("searches", {
   priceCap: numeric("price_cap", { mode: "number" }),
   binOnly: boolean("bin_only").notNull().default(true),
   includeAuctions: boolean("include_auctions").notNull().default(false),
+  // eBay condition filter: "NEW" | "USED" | null (any). Mapped to condition IDs at
+  // the API boundary (see ebay.ts); a server-side filter, so changing it re-seeds.
+  conditions: text("conditions"),
+  // Case-insensitive title exclusions, comma/newline separated. Client-side (the
+  // Browse API has no negative-keyword support): matching listings are marked seen
+  // but never alerted. Not a match field - the seen set stays comprehensive.
+  excludeTerms: text("exclude_terms"),
   intervalMin: integer("interval_min").notNull().default(5),
   enabled: boolean("enabled").notNull().default(true),
   seeded: boolean("seeded").notNull().default(false),

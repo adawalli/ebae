@@ -17,6 +17,7 @@ import { Item, ItemContent } from "@/components/ui/item";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Sidebar,
@@ -85,7 +86,17 @@ function dayLabel(iso: string) {
   return d.toLocaleDateString("en-US", { weekday: "short", day: "numeric", month: "short" });
 }
 
-const emptyForm = { q: "", priceFloor: "", priceCap: "", categoryId: "", bin: true, auctions: false, interval: 2 };
+const emptyForm = {
+  q: "",
+  priceFloor: "",
+  priceCap: "",
+  categoryId: "",
+  condition: "",
+  exclude: "",
+  bin: true,
+  auctions: false,
+  interval: 2,
+};
 
 type NavItem = { key: "searches" | "alerts" | "status"; label: string; badge: number | null };
 
@@ -300,6 +311,8 @@ export default function Home() {
       priceFloor: s.priceFloor == null ? "" : String(s.priceFloor),
       priceCap: s.priceCap == null ? "" : String(s.priceCap),
       categoryId: s.categoryId ?? "",
+      condition: s.conditions ?? "",
+      exclude: s.excludeTerms ?? "",
       bin: s.binOnly,
       auctions: s.includeAuctions,
       interval: s.intervalMin,
@@ -322,6 +335,8 @@ export default function Home() {
           priceFloor: form.priceFloor || null,
           priceCap: form.priceCap || null,
           categoryId: form.categoryId || null,
+          conditions: form.condition || null,
+          excludeTerms: form.exclude || null,
           binOnly: form.bin,
           includeAuctions: form.auctions,
           intervalMin: form.interval,
@@ -498,6 +513,20 @@ export default function Home() {
                             {s.includeAuctions && (
                               <Badge variant="secondary" className="font-mono">
                                 Auctions ok
+                              </Badge>
+                            )}
+                            {s.conditions && (
+                              <Badge variant="secondary" className="font-mono">
+                                {s.conditions === "NEW" ? "New" : "Used"}
+                              </Badge>
+                            )}
+                            {s.excludeTerms && (
+                              <Badge
+                                variant="secondary"
+                                className="font-mono"
+                                title={`Excludes: ${s.excludeTerms.replace(/[,\n]+/g, ", ")}`}
+                              >
+                                −{s.excludeTerms.split(/[,\n]/).filter((t) => t.trim()).length} excluded
                               </Badge>
                             )}
                           </div>
@@ -942,6 +971,36 @@ export default function Home() {
                   </Field>
                 </div>
               </div>
+
+              <div className="flex flex-col gap-3.5 md:flex-row">
+                <Field className="md:w-[190px]">
+                  <FieldLabel htmlFor="condition">Condition</FieldLabel>
+                  <NativeSelect
+                    id="condition"
+                    className="w-full font-mono"
+                    value={form.condition}
+                    onChange={(e) => setForm({ ...form, condition: e.target.value })}
+                  >
+                    <option value="">Any condition</option>
+                    <option value="NEW">New only</option>
+                    <option value="USED">Used (excl. for parts)</option>
+                  </NativeSelect>
+                </Field>
+              </div>
+
+              <Field>
+                <FieldLabel htmlFor="exclude-terms">Exclude keywords</FieldLabel>
+                <Textarea
+                  id="exclude-terms"
+                  value={form.exclude}
+                  onChange={(e) => setForm({ ...form, exclude: e.target.value })}
+                  placeholder="for parts, repro, case only, read description"
+                  className="min-h-[56px] font-mono text-[13px]"
+                />
+                <span className="font-mono text-[11.5px] text-[var(--eb-faint)]">
+                  comma or line separated · a listing whose title contains any term is skipped
+                </span>
+              </Field>
 
               <Field>
                 <FieldLabel>Poll interval</FieldLabel>

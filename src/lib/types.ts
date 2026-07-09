@@ -6,6 +6,8 @@ export type Search = {
   priceCap: number | null;
   binOnly: boolean;
   includeAuctions: boolean;
+  conditions: string | null; // "NEW" | "USED" | null (any)
+  excludeTerms: string | null; // comma/newline-separated title exclusions
   intervalMin: number;
   enabled: boolean;
   seeded: boolean;
@@ -32,6 +34,10 @@ export type Item = {
   imageUrl: string | null;
   itemUrl: string;
 };
+
+// Recent-price context for an alert embed: median of prior priced alerts for the
+// same search, and how many contributed (the poller gates display on a real sample).
+export type PriceContext = { typical: number | null; count: number };
 
 export type Alert = Item & {
   id: number;

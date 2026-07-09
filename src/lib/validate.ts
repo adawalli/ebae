@@ -1,4 +1,5 @@
 import { DEFAULT_INTERVAL } from "./poller";
+import { CONDITION_KEYS, type ConditionKey } from "./types";
 
 // Returns an error string, or the cleaned fields. partial=true (PATCH) only
 // validates the keys that are present.
@@ -45,7 +46,8 @@ export function parseSearchBody(b: any, partial: boolean): string | Record<strin
   // so only the two mapped keys (or null = any) are allowed through.
   if (!partial || b.conditions !== undefined) {
     const c = b.conditions == null || b.conditions === "" ? null : String(b.conditions);
-    if (c != null && c !== "NEW" && c !== "USED") return "conditions must be NEW, USED, or empty";
+    if (c != null && !CONDITION_KEYS.includes(c as ConditionKey))
+      return `conditions must be ${CONDITION_KEYS.join(", ")}, or empty`;
     out.conditions = c;
   }
   if (!partial || b.excludeTerms !== undefined) {

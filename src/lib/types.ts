@@ -1,3 +1,9 @@
+// User-selectable condition presets, shared so the three places that must agree can't
+// drift: the API whitelist (validate.ts), the Browse condition-ID mapping (ebay.ts
+// CONDITION_FILTER, typed by this), and the UI options (page.tsx). null = any condition.
+export const CONDITION_KEYS = ["NEW", "USED"] as const;
+export type ConditionKey = (typeof CONDITION_KEYS)[number];
+
 export type Search = {
   id: number;
   q: string;
@@ -60,7 +66,7 @@ export type StatusInfo = {
   ready: boolean;
   bootError: string | null;
   poller: { running: boolean; bootedAt: string | null; timers: number };
-  ebay: { mode: "mock" | "live"; marketplace: string; tokenExpiresAt: string | null };
+  ebay: { mode: "mock" | "live"; marketplace: string; currency: string; tokenExpiresAt: string | null };
   quota: { used: number; ceiling: number };
   snooze: { active: boolean; window: string | null; dailyMinutes: number };
   errors: PollError[];

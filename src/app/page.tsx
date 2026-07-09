@@ -379,7 +379,7 @@ export default function Home() {
     if (!s.seeded) return "seeding baseline — first matches silenced";
     const hit = s.lastHitAt ? `last hit ${ago(s.lastHitAt, true)}` : "no hits yet";
     // market baseline (band-limited searches only): the true going rate an alert compares against
-    const market = s.marketMedian != null ? ` · market ~${money(s.marketMedian)}` : "";
+    const market = s.marketMedian != null ? ` · market ~${money(s.marketMedian, status?.ebay.currency)}` : "";
     return `${hit} · seen ${fmt(s.seenCount)}${market}`;
   }
 

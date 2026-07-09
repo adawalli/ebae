@@ -2,7 +2,7 @@ import { and, desc, eq, gt, isNotNull, lt, max, sql } from "drizzle-orm";
 import pkg from "../../package.json";
 import { db, migrateToLatest } from "./db";
 import { alerts, apiUsage, channels, searches, seenItems, settings } from "./schema";
-import { MARKETPLACE, MOCK, sampleMarket, searchNewlyListed, tokenExpiresAt } from "./ebay";
+import { CURRENCY, MARKETPLACE, MOCK, sampleMarket, searchNewlyListed, tokenExpiresAt } from "./ebay";
 import { notify } from "./discord";
 import { log } from "./log";
 import type { PollError, PriceContext, Search, SearchStats, SnoozeConfig, StatusInfo } from "./types";
@@ -465,15 +465,16 @@ async function pollOnce(e: Entry) {
       plog.info({ searchId: e.s.id, q: e.s.q, count: fresh.length }, "seeded");
     } else {
       // Deal-context baseline. Prefer the daily market sample (reflects the whole market,
-      // even for a band-limited search); fall back to the median of this search's recent
-      // priced alerts, computed once per tick from before this batch lands (so the new
-      // items don't skew their own "typical"). Only when there's something fresh, so empty
-      // polls stay DB-free.
-      const recent = fresh.length ? await priceContext(database, e.s.id) : { typical: null, count: 0 };
+      // even for a band-limited search); only when there's no baseline fall back to the
+      // median of this search's recent priced alerts, computed from before this batch lands
+      // (so the new items don't skew their own "typical"). The recent-alert read is skipped
+      // whenever a market baseline exists (dealField's market branch ignores its count) and
+      // whenever the poll is empty, so steady-state polls stay DB-free.
+      const market = e.s.marketMedian;
       const ctx: PriceContext =
-        e.s.marketMedian != null && e.s.marketMedian > 0
-          ? { typical: e.s.marketMedian, count: recent.count, basis: "market" }
-          : { ...recent, basis: "recent" };
+        market != null && market > 0
+          ? { typical: market, count: 0, basis: "market" }
+          : { ...(fresh.length ? await priceContext(database, e.s.id) : { typical: null, count: 0 }), basis: "recent" };
       for (const item of [...fresh].reverse()) {
         if (e.seen.has(item.itemId)) continue; // reload() may have merged it in mid-loop
         // Exclude-terms hit: mark seen (so a later exclusion removal won't re-alert this
@@ -713,6 +714,7 @@ export function status(): StatusInfo {
     ebay: {
       mode: MOCK ? "mock" : "live",
       marketplace: MARKETPLACE,
+      currency: CURRENCY,
       tokenExpiresAt: tokenExpiresAt(),
     },
     quota: { used: st.calls.date === today ? st.calls.used : 0, ceiling: QUOTA_CEILING },

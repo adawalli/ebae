@@ -1,5 +1,5 @@
 import { log } from "./log";
-import type { Item, Search } from "./types";
+import type { ConditionKey, Item, Search } from "./types";
 
 const elog = log.child({ component: "ebay" });
 
@@ -17,12 +17,19 @@ const MARKETPLACE_CURRENCY: Record<string, string> = {
   EBAY_ES: "EUR",
 };
 
+// The active marketplace's currency, surfaced to the UI (via /api/status) so figures the
+// poller computes server-side (e.g. the market-median badge) render with the right symbol.
+export const CURRENCY = MARKETPLACE_CURRENCY[MARKETPLACE] ?? "USD";
+
 // Condition presets -> Browse `conditionIds` values. USED spans excellent..acceptable
 // (3000-6000) but omits 7000 "for parts/not working" - the junk tier most searches want
 // gone. Keys are the only values validate.ts lets through. Note: these are condition IDs,
 // so they go in `conditionIds`, NOT the `conditions` filter (which takes only the coarse
 // NEW/USED/UNSPECIFIED enums and 400s on numeric IDs).
-const CONDITION_FILTER: Record<string, string> = {
+// Keyed by ConditionKey so adding a preset to CONDITION_KEYS (types.ts) is a compile error
+// here until its ID mapping is supplied — the whitelist (validate.ts) and UI (page.tsx)
+// derive from the same source, so the three can't silently drift.
+const CONDITION_FILTER: Record<ConditionKey, string> = {
   NEW: "1000",
   USED: "3000|4000|5000|6000",
 };
@@ -71,40 +78,42 @@ export function browseFilters(s: Search, includePrice = true): string[] {
   if (includePrice && (s.priceFloor != null || s.priceCap != null)) {
     const lo = s.priceFloor ?? "";
     const hi = s.priceCap ?? "";
-    filters.push(`price:[${lo}..${hi}]`, `priceCurrency:${MARKETPLACE_CURRENCY[MARKETPLACE] ?? "USD"}`);
+    filters.push(`price:[${lo}..${hi}]`, `priceCurrency:${CURRENCY}`);
   }
   // numeric condition IDs belong in `conditionIds`; the `conditions` filter only takes the
   // NEW/USED/UNSPECIFIED enums and 400s on IDs (which would back the search off to silence).
-  if (s.conditions && CONDITION_FILTER[s.conditions]) filters.push(`conditionIds:{${CONDITION_FILTER[s.conditions]}}`);
+  const cond = s.conditions as ConditionKey | null; // validated to a ConditionKey (or null) at the API boundary
+  if (cond && CONDITION_FILTER[cond]) filters.push(`conditionIds:{${CONDITION_FILTER[cond]}}`);
   return filters;
 }
 
-// Newest-first page 1 of the Browse API for one saved search
+// Shared Browse item_summary/search call. searchNewlyListed and sampleMarket differ only in
+// page size and whether the price band applies, so auth/params/error-handling/parsing live
+// here once — a fix to any of those can't land in one path and miss the other.
+async function browseSearch(s: Search, limit: number, includePrice: boolean): Promise<Item[]> {
+  const filters = browseFilters(s, includePrice);
+  const params = new URLSearchParams({ q: s.q, sort: "newlyListed", limit: String(limit) });
+  if (s.categoryId) params.set("category_ids", s.categoryId);
+  if (filters.length) params.set("filter", filters.join(","));
+  elog.debug({ q: s.q, filters: filters.join(","), marketplace: MARKETPLACE, limit }, "eBay request");
+  const res = await fetch(`${API_HOST}/buy/browse/v1/item_summary/search?${params}`, {
+    headers: { Authorization: `Bearer ${await token()}`, "X-EBAY-C-MARKETPLACE-ID": MARKETPLACE },
+  });
+  if (!res.ok) throw new Error(`eBay search failed (${s.q}): ${res.status} ${await res.text()}`);
+  const data = (await res.json()) as { itemSummaries?: EbaySummary[] };
+  return (data.itemSummaries ?? []).map(normalize);
+}
+
+// Newest-first page 1 of the Browse API for one saved search. limit 200 (Browse max) is one
+// call but covers 200 newly-listed items per poll, so a hot search or a long snooze can't
+// silently drop new listings off a 50-item page 1.
+// ponytail: single page; if 200 new between two polls ever happens, add offset paging.
 export async function searchNewlyListed(s: Search): Promise<Item[]> {
   if (MOCK) {
     elog.debug({ q: s.q }, "mock search");
     return mockSearch(s);
   }
-
-  const filters = browseFilters(s);
-
-  // limit 200 (Browse max) is one call but covers 200 newly-listed items per poll, so a
-  // hot search or a long snooze can't silently drop new listings off a 50-item page 1.
-  // ponytail: single page; if 200 new between two polls ever happens, add offset paging.
-  const params = new URLSearchParams({ q: s.q, sort: "newlyListed", limit: "200" });
-  if (s.categoryId) params.set("category_ids", s.categoryId);
-  if (filters.length) params.set("filter", filters.join(","));
-
-  elog.debug({ q: s.q, filters: filters.join(","), marketplace: MARKETPLACE }, "eBay request");
-  const res = await fetch(`${API_HOST}/buy/browse/v1/item_summary/search?${params}`, {
-    headers: {
-      Authorization: `Bearer ${await token()}`,
-      "X-EBAY-C-MARKETPLACE-ID": MARKETPLACE,
-    },
-  });
-  if (!res.ok) throw new Error(`eBay search failed (${s.q}): ${res.status} ${await res.text()}`);
-  const data = (await res.json()) as { itemSummaries?: EbaySummary[] };
-  return (data.itemSummaries ?? []).map(normalize);
+  return browseSearch(s, 200, true);
 }
 
 // Unfiltered market sample: same item criteria (q, category, condition) but WITHOUT the
@@ -115,16 +124,7 @@ export async function sampleMarket(s: Search): Promise<Item[]> {
     elog.debug({ q: s.q }, "mock market sample");
     return mockMarket(s);
   }
-  const filters = browseFilters(s, false); // drop the price band
-  const params = new URLSearchParams({ q: s.q, sort: "newlyListed", limit: "100" });
-  if (s.categoryId) params.set("category_ids", s.categoryId);
-  if (filters.length) params.set("filter", filters.join(","));
-  const res = await fetch(`${API_HOST}/buy/browse/v1/item_summary/search?${params}`, {
-    headers: { Authorization: `Bearer ${await token()}`, "X-EBAY-C-MARKETPLACE-ID": MARKETPLACE },
-  });
-  if (!res.ok) throw new Error(`eBay market sample failed (${s.q}): ${res.status} ${await res.text()}`);
-  const data = (await res.json()) as { itemSummaries?: EbaySummary[] };
-  return (data.itemSummaries ?? []).map(normalize);
+  return browseSearch(s, 100, false);
 }
 
 type EbaySummary = {

@@ -632,10 +632,13 @@ export async function updateSearch(
   // seeded search would alert on all at once. Re-seed so that backlog stays silent -
   // the same guarantee the first poll gives a brand-new search (DESIGN.md §3).
   const criteriaChanged = matchCriteriaChanged(cur, row);
-  if (criteriaChanged) {
-    row.seeded = false;
-    // The market baseline was sampled against the old criteria (query/band/condition);
-    // clear it so the next poll re-samples rather than comparing against a stale market.
+  if (criteriaChanged) row.seeded = false;
+  // The market baseline is sampled against the criteria AND filtered through excludeMatch, so
+  // clear it whenever either changes and let the next poll re-sample. An exclude-terms edit
+  // must NOT re-seed (it's deliberately not a MATCH_FIELD — the seen set stays complete), but
+  // it does make the stored baseline stale, so it clears the baseline without touching seeded.
+  const excludeChanged = row.excludeTerms !== undefined && row.excludeTerms !== cur?.excludeTerms;
+  if (criteriaChanged || excludeChanged) {
     row.marketMedian = null;
     row.marketSampledAt = null;
   }

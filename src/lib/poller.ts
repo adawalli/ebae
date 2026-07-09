@@ -2,7 +2,7 @@ import { and, desc, eq, gt, isNotNull, lt, max, sql } from "drizzle-orm";
 import pkg from "../../package.json";
 import { db, migrateToLatest } from "./db";
 import { alerts, apiUsage, channels, searches, seenItems, settings } from "./schema";
-import { MARKETPLACE, MOCK, searchNewlyListed, tokenExpiresAt } from "./ebay";
+import { MARKETPLACE, MOCK, sampleMarket, searchNewlyListed, tokenExpiresAt } from "./ebay";
 import { notify } from "./discord";
 import { log } from "./log";
 import type { PollError, PriceContext, Search, SearchStats, SnoozeConfig, StatusInfo } from "./types";
@@ -12,6 +12,7 @@ const plog = log.child({ component: "poller" });
 const QUOTA_CEILING = Number(process.env.EBAY_DAILY_QUOTA ?? 5000);
 export const DEFAULT_INTERVAL = Number(process.env.POLL_INTERVAL_DEFAULT ?? 5);
 const REFRESH_HOURS = Number(process.env.CACHE_REFRESH_HOURS ?? 12);
+const MARKET_SAMPLE_HOURS = Number(process.env.MARKET_SAMPLE_HOURS ?? 24);
 const MAX_BACKOFF_MS = 30 * 60_000;
 
 // Overnight snooze (UI-configured, stored in `settings`, cached in state().snooze):
@@ -144,6 +145,8 @@ function rowToSearch(r: typeof searches.$inferSelect): Search {
     includeAuctions: r.includeAuctions,
     conditions: r.conditions,
     excludeTerms: r.excludeTerms,
+    marketMedian: r.marketMedian,
+    marketSampledAt: r.marketSampledAt ? r.marketSampledAt.toISOString() : null,
     intervalMin: r.intervalMin,
     enabled: r.enabled,
     seeded: r.seeded,
@@ -371,10 +374,14 @@ async function tick(e: Entry) {
   }
 }
 
-// Median + sample size of a search's recent priced alerts, for the embed's deal
-// context. Runs on the connection the poll writes already opened (alerting ticks
-// only), so it never breaks the DB-free steady state.
-async function priceContext(database: ReturnType<typeof db>, searchId: number): Promise<PriceContext> {
+// Median + sample size of a search's recent priced alerts (the in-band "recent" basis).
+// Runs on the connection the poll writes already opened (alerting ticks only), so it
+// never breaks the DB-free steady state. The basis label is decided at the call site,
+// which prefers the search's market baseline when one is set (see pollOnce).
+async function priceContext(
+  database: ReturnType<typeof db>,
+  searchId: number,
+): Promise<{ typical: number | null; count: number }> {
   const rows = await database
     .select({ price: alerts.price })
     .from(alerts)
@@ -383,6 +390,37 @@ async function priceContext(database: ReturnType<typeof db>, searchId: number): 
     .limit(20);
   const prices = rows.map((r) => r.price).filter((p): p is number => p != null);
   return { typical: median(prices), count: prices.length };
+}
+
+// Best-effort daily market baseline: an unfiltered (no price band) sample of the same item
+// criteria, so a band-limited search can compare an alert against the true market median
+// instead of only its own in-band alerts. Self-throttled to once/MARKET_SAMPLE_HOURS per
+// search, quota-guarded, and fully isolated (own try/catch) so a failure here never backs
+// off the main poll. Only band-limited searches need it — an unbounded search's recent
+// median already reflects the whole market, so sampling it would just burn quota.
+async function maybeSampleMarket(e: Entry, database: ReturnType<typeof db>) {
+  const s = e.s;
+  if (s.priceFloor == null && s.priceCap == null) return; // no band -> recent median is already full-market
+  if (s.marketSampledAt && Date.now() - Date.parse(s.marketSampledAt) < MARKET_SAMPLE_HOURS * 3600_000) return;
+  const st = state();
+  if (st.calls.used >= QUOTA_CEILING) return; // don't spend the last of the budget on a baseline
+  try {
+    st.calls.used++;
+    const items = await sampleMarket(s);
+    const prices = items
+      .filter((i) => !excludeMatch(i.title, s.excludeTerms))
+      .map((i) => i.price)
+      .filter((p): p is number => p != null);
+    const m = median(prices);
+    const sampledAt = new Date();
+    await database.update(searches).set({ marketMedian: m, marketSampledAt: sampledAt }).where(eq(searches.id, s.id));
+    s.marketMedian = m;
+    s.marketSampledAt = sampledAt.toISOString();
+    await flushCalls(database, st.calls); // piggyback the +1 eBay call we just spent
+    plog.info({ searchId: s.id, q: s.q, sample: prices.length, marketMedian: m }, "market sampled");
+  } catch (err) {
+    recordError(s.q, `market sample: ${message(err)}`); // warn only; the main poll keeps its cadence
+  }
 }
 
 async function pollOnce(e: Entry) {
@@ -426,10 +464,16 @@ async function pollOnce(e: Entry) {
       e.s.seeded = true;
       plog.info({ searchId: e.s.id, q: e.s.q, count: fresh.length }, "seeded");
     } else {
-      // Deal-context baseline: median of this search's recent priced alerts, computed
-      // once per tick from before this batch lands (so the new items don't skew their
-      // own "typical"). Only when there's something fresh, so empty polls stay DB-free.
-      const ctx = fresh.length ? await priceContext(database, e.s.id) : { typical: null, count: 0 };
+      // Deal-context baseline. Prefer the daily market sample (reflects the whole market,
+      // even for a band-limited search); fall back to the median of this search's recent
+      // priced alerts, computed once per tick from before this batch lands (so the new
+      // items don't skew their own "typical"). Only when there's something fresh, so empty
+      // polls stay DB-free.
+      const recent = fresh.length ? await priceContext(database, e.s.id) : { typical: null, count: 0 };
+      const ctx: PriceContext =
+        e.s.marketMedian != null && e.s.marketMedian > 0
+          ? { typical: e.s.marketMedian, count: recent.count, basis: "market" }
+          : { ...recent, basis: "recent" };
       for (const item of [...fresh].reverse()) {
         if (e.seen.has(item.itemId)) continue; // reload() may have merged it in mid-loop
         // Exclude-terms hit: mark seen (so a later exclusion removal won't re-alert this
@@ -476,6 +520,10 @@ async function pollOnce(e: Entry) {
     // opened. Empty polls (seeded, nothing new) skip it and stay DB-free, so a
     // reboot loses at most the calls counted since the last write - by design.
     if (wrote) await flushCalls(database, st.calls);
+    // Refresh the market baseline at most once/day per band-limited search. Self-throttled
+    // and isolated: it opens a connection only when actually due, so steady-state empty
+    // polls stay DB-free, and its own try/catch keeps a sample failure off the main poll.
+    await maybeSampleMarket(e, database);
     e.backoffMs = 0;
     schedule(e, e.s.intervalMin * 60_000);
   } catch (err) {
@@ -583,7 +631,13 @@ export async function updateSearch(
   // seeded search would alert on all at once. Re-seed so that backlog stays silent -
   // the same guarantee the first poll gives a brand-new search (DESIGN.md §3).
   const criteriaChanged = matchCriteriaChanged(cur, row);
-  if (criteriaChanged) row.seeded = false;
+  if (criteriaChanged) {
+    row.seeded = false;
+    // The market baseline was sampled against the old criteria (query/band/condition);
+    // clear it so the next poll re-samples rather than comparing against a stale market.
+    row.marketMedian = null;
+    row.marketSampledAt = null;
+  }
   if (Object.keys(row).length) {
     const [updated] = await db().update(searches).set(row).where(eq(searches.id, id)).returning();
     if (!updated) return null; // deleted concurrently

@@ -8,16 +8,19 @@ function money(n: number | null, currency: string) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(n);
 }
 
-// "Is this a deal?" at a glance: compares the listing to the median of recent alerts
-// for the same search. Needs a real sample (>=3 priced alerts) and a price to compare,
-// else null and the field is omitted. Pure + exported for tests.
+// "Is this a deal?" at a glance. basis "market" = a dedicated unfiltered market sample
+// (labeled "Market", trusted on its own); basis "recent" = median of this search's prior
+// in-band alerts (labeled "Typical", gated on >=3 so one alert can't masquerade as typical).
+// Needs a price and a positive baseline, else null and the field is omitted. Pure + exported.
 export function dealField(item: Item, ctx?: PriceContext): { name: string; value: string; inline: boolean } | null {
   // typical <= 0 (e.g. a $0 starting-bid auction dominating the sample) would make the
   // percentage divide by zero -> "Infinity% over"; treat it as no usable baseline.
-  if (!ctx || ctx.typical == null || ctx.typical <= 0 || ctx.count < 3 || item.price == null) return null;
+  if (!ctx || ctx.typical == null || ctx.typical <= 0 || item.price == null) return null;
+  if (ctx.basis === "recent" && ctx.count < 3) return null; // in-band median needs a real sample
   const pct = Math.round(((item.price - ctx.typical) / ctx.typical) * 100);
   const rel = pct <= -1 ? `▼ ${-pct}% under` : pct >= 1 ? `▲ ${pct}% over` : "≈ typical";
-  return { name: "Typical", value: `${money(ctx.typical, item.currency)} · ${rel}`, inline: true };
+  const name = ctx.basis === "market" ? "Market" : "Typical";
+  return { name, value: `${money(ctx.typical, item.currency)} · ${rel}`, inline: true };
 }
 
 // DESIGN.md §5: thumbnail, linked title, price/type/condition fields, matched-search footer

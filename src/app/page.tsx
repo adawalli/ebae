@@ -378,7 +378,9 @@ export default function Home() {
     if (!s.enabled) return "paused";
     if (!s.seeded) return "seeding baseline — first matches silenced";
     const hit = s.lastHitAt ? `last hit ${ago(s.lastHitAt, true)}` : "no hits yet";
-    return `${hit} · seen ${fmt(s.seenCount)}`;
+    // market baseline (band-limited searches only): the true going rate an alert compares against
+    const market = s.marketMedian != null ? ` · market ~${money(s.marketMedian)}` : "";
+    return `${hit} · seen ${fmt(s.seenCount)}${market}`;
   }
 
   return (

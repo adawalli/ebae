@@ -19,6 +19,11 @@ export const searches = pgTable("searches", {
   // Browse API has no negative-keyword support): matching listings are marked seen
   // but never alerted. Not a match field - the seen set stays comprehensive.
   excludeTerms: text("exclude_terms"),
+  // Active-market price baseline: median asking price of a daily unfiltered sample (same
+  // item criteria as the search but WITHOUT the price band), so an alert can say "market
+  // ~$X" instead of only comparing to other in-band alerts. Poller-managed, not user-set.
+  marketMedian: numeric("market_median", { mode: "number" }),
+  marketSampledAt: timestamp("market_sampled_at", { withTimezone: true }),
   intervalMin: integer("interval_min").notNull().default(5),
   enabled: boolean("enabled").notNull().default(true),
   seeded: boolean("seeded").notNull().default(false),

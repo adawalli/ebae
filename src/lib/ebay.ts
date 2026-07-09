@@ -67,15 +67,14 @@ async function token(): Promise<string> {
 // Browse `filter` clauses for a search. Pure + exported so the exact contract (field
 // names, condition-ID mapping, price-bound syntax) is unit-tested — mock mode bypasses
 // this whole path, which is how a `conditions` vs `conditionIds` mistake could ship.
-export function browseFilters(s: Search, includePrice = true): string[] {
+export function browseFilters(s: Search): string[] {
   const filters = [
     // always constrain buying options: without a filter eBay returns auctions too.
     // includeAuctions is the source of truth (binOnly is its UI inverse); default is BIN-only.
     s.includeAuctions ? "buyingOptions:{FIXED_PRICE|AUCTION}" : "buyingOptions:{FIXED_PRICE}",
   ];
   // eBay accepts [min..max], [min..], or [..max] — build whichever bounds are set.
-  // includePrice=false drops the band entirely for the market-baseline sample (sampleMarket).
-  if (includePrice && (s.priceFloor != null || s.priceCap != null)) {
+  if (s.priceFloor != null || s.priceCap != null) {
     const lo = s.priceFloor ?? "";
     const hi = s.priceCap ?? "";
     filters.push(`price:[${lo}..${hi}]`, `priceCurrency:${CURRENCY}`);
@@ -87,11 +86,21 @@ export function browseFilters(s: Search, includePrice = true): string[] {
   return filters;
 }
 
+// The market sample's search: keeps the price FLOOR but drops the cap. The floor filters out
+// the sub-band accessories/parts that share the query's keywords (mounts, cables, "for parts")
+// — without it a loose keyword query's median collapses to accessory noise (measured $23 for a
+// doorbell that actually lists ~$760). Dropping the cap lets items priced above the user's
+// ceiling into the sample so the median reflects the true going rate. Pure + exported so the
+// keep-floor/drop-cap contract is locked by a test.
+export function marketSampleSearch(s: Search): Search {
+  return { ...s, priceCap: null };
+}
+
 // Shared Browse item_summary/search call. searchNewlyListed and sampleMarket differ only in
-// page size and whether the price band applies, so auth/params/error-handling/parsing live
-// here once — a fix to any of those can't land in one path and miss the other.
-async function browseSearch(s: Search, limit: number, includePrice: boolean): Promise<Item[]> {
-  const filters = browseFilters(s, includePrice);
+// page size and (via marketSampleSearch) the price bounds, so auth/params/error-handling/
+// parsing live here once — a fix to any of those can't land in one path and miss the other.
+async function browseSearch(s: Search, limit: number): Promise<Item[]> {
+  const filters = browseFilters(s);
   const params = new URLSearchParams({ q: s.q, sort: "newlyListed", limit: String(limit) });
   if (s.categoryId) params.set("category_ids", s.categoryId);
   if (filters.length) params.set("filter", filters.join(","));
@@ -113,18 +122,19 @@ export async function searchNewlyListed(s: Search): Promise<Item[]> {
     elog.debug({ q: s.q }, "mock search");
     return mockSearch(s);
   }
-  return browseSearch(s, 200, true);
+  return browseSearch(s, 200);
 }
 
-// Unfiltered market sample: same item criteria (q, category, condition) but WITHOUT the
-// price band, so its median reflects the true going rate even for a deal-hunt search whose
-// own band would clip it. Newest 100; active asking prices only (Browse has no sold data).
+// Market sample: same item criteria (q, category, condition, price floor) but with the cap
+// removed, so its median reflects the true going rate even for a deal-hunt search whose cap
+// would clip it — while the kept floor keeps sub-band accessories out of the median. Newest
+// 100; active asking prices only (Browse has no sold data).
 export async function sampleMarket(s: Search): Promise<Item[]> {
   if (MOCK) {
     elog.debug({ q: s.q }, "mock market sample");
     return mockMarket(s);
   }
-  return browseSearch(s, 100, false);
+  return browseSearch(marketSampleSearch(s), 100);
 }
 
 type EbaySummary = {

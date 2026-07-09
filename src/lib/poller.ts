@@ -392,15 +392,18 @@ async function priceContext(
   return { typical: median(prices), count: prices.length };
 }
 
-// Best-effort daily market baseline: an unfiltered (no price band) sample of the same item
+// Best-effort daily market baseline: a cap-removed (floor-kept) sample of the same item
 // criteria, so a band-limited search can compare an alert against the true market median
 // instead of only its own in-band alerts. Self-throttled to once/MARKET_SAMPLE_HOURS per
 // search, quota-guarded, and fully isolated (own try/catch) so a failure here never backs
-// off the main poll. Only band-limited searches need it — an unbounded search's recent
-// median already reflects the whole market, so sampling it would just burn quota.
+// off the main poll.
 async function maybeSampleMarket(e: Entry, database: ReturnType<typeof db>) {
   const s = e.s;
-  if (s.priceFloor == null && s.priceCap == null) return; // no band -> recent median is already full-market
+  // Only searches with BOTH a floor and a cap get a baseline. The floor filters accessory
+  // noise out of the sample (see marketSampleSearch); the cap is the ceiling the sample exists
+  // to see past. Floor-less searches would sample junk; cap-less searches already see the full
+  // upper market via their in-band alerts, so a sample would just burn quota.
+  if (s.priceFloor == null || s.priceCap == null) return;
   if (s.marketSampledAt && Date.now() - Date.parse(s.marketSampledAt) < MARKET_SAMPLE_HOURS * 3600_000) return;
   const st = state();
   if (st.calls.used >= QUOTA_CEILING) return; // don't spend the last of the budget on a baseline

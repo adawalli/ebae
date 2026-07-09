@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { browseFilters, sampleMarket } from "./ebay";
+import { browseFilters, marketSampleSearch, sampleMarket } from "./ebay";
 import { median } from "./poller";
 import type { Search } from "./types";
 
@@ -56,15 +56,17 @@ test("browseFilters: all clauses compose in order", () => {
   expect(f).toContain("conditionIds:{1000}");
 });
 
-// The market-baseline sample reuses browseFilters with includePrice=false: it must keep
-// buying-option and condition constraints but DROP the price band, or the median it stores
-// would be clipped by the very band it exists to see past.
-test("browseFilters: includePrice=false drops the price band, keeps other clauses", () => {
-  const f = browseFilters({ ...base, priceFloor: 100, priceCap: 300, conditions: "USED" }, false);
-  expect(f.some((c) => c.startsWith("price:"))).toBe(false);
-  expect(f.some((c) => c.startsWith("priceCurrency:"))).toBe(false);
-  expect(f).toContain("conditionIds:{3000|4000|5000|6000}");
-  expect(f[0]).toBe("buyingOptions:{FIXED_PRICE}");
+// The market sample keeps the FLOOR and drops only the CAP. Regression guard for the
+// "market ~$20 for a $150-800 doorbell" bug: dropping the whole band floods the median with
+// sub-band accessories that share the query's keywords (mounts, cables, "for parts").
+test("marketSampleSearch keeps the floor, drops the cap", () => {
+  const m = marketSampleSearch({ ...base, priceFloor: 150, priceCap: 800, conditions: "USED" });
+  expect(m.priceFloor).toBe(150);
+  expect(m.priceCap).toBeNull();
+  const f = browseFilters(m);
+  expect(f).toContain("price:[150..]"); // floor kept, open-ended top
+  expect(f.some((c) => c.includes("800"))).toBe(false); // cap gone
+  expect(f).toContain("conditionIds:{3000|4000|5000|6000}"); // other constraints preserved
 });
 
 // Mock market sample must center well above a deal-hunt band so the feature is visibly

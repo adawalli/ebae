@@ -13,6 +13,7 @@ const QUOTA_CEILING = Number(process.env.EBAY_DAILY_QUOTA ?? 5000);
 export const DEFAULT_INTERVAL = Number(process.env.POLL_INTERVAL_DEFAULT ?? 5);
 const REFRESH_HOURS = Number(process.env.CACHE_REFRESH_HOURS ?? 12);
 const MARKET_SAMPLE_HOURS = Number(process.env.MARKET_SAMPLE_HOURS ?? 24);
+const SEEN_RETENTION_DAYS = Number(process.env.SEEN_RETENTION_DAYS ?? 90);
 const MAX_BACKOFF_MS = 30 * 60_000;
 
 // Overnight snooze (UI-configured, stored in `settings`, cached in state().snooze):
@@ -229,8 +230,10 @@ async function tryBoot() {
 async function reload() {
   const database = db();
   const today = new Date().toDateString();
-  // ponytail: fixed 90d retention, revisit if listings outlive it
-  await database.delete(seenItems).where(lt(seenItems.seenAt, sql`now() - interval '90 days'`));
+  // prune the dedupe set so it can't grow unbounded (SEEN_RETENTION_DAYS, default 90)
+  await database
+    .delete(seenItems)
+    .where(lt(seenItems.seenAt, sql`now() - (${SEEN_RETENTION_DAYS} * interval '1 day')`));
   const [searchRows, seenRows, hitRows, lastHitRows, channelRows, settingsRows] = await Promise.all([
     database.select().from(searches),
     database.select({ searchId: seenItems.searchId, itemId: seenItems.itemId }).from(seenItems),

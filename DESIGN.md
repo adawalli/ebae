@@ -96,13 +96,14 @@ One `notify(item, search)` function with Discord as the only implementation. Del
 
 **Config is env-only** - no config files to mount:
 
-| var                                     | purpose                                            |
-| --------------------------------------- | -------------------------------------------------- |
-| `DATABASE_URL`                          | Postgres connection string (Neon, local, anything) |
-| `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | eBay app credentials                               |
-| `EBAY_MARKETPLACE`                      | e.g. `EBAY_US` (default)                           |
-| `POLL_INTERVAL_DEFAULT`                 | fallback per-search interval (default 5 min)       |
-| `CACHE_REFRESH_HOURS`                   | DB→cache refresh cadence (default 12)              |
+| var                                     | purpose                                                 |
+| --------------------------------------- | ------------------------------------------------------- |
+| `DATABASE_URL`                          | Postgres connection string (Neon, local, anything)      |
+| `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | eBay app credentials                                    |
+| `EBAY_MARKETPLACE`                      | e.g. `EBAY_US` (default)                                |
+| `POLL_INTERVAL_DEFAULT`                 | fallback per-search interval (default 5 min)            |
+| `CACHE_REFRESH_HOURS`                   | DB→cache refresh cadence (default 12)                   |
+| `SEEN_RETENTION_DAYS`                   | how long `seen_items` dedupe rows are kept (default 90) |
 
 Everything else (searches, webhooks) is managed in the UI and lives in Postgres.
 
@@ -142,4 +143,4 @@ Everything else (searches, webhooks) is managed in the UI and lives in Postgres.
 ## 8. Open Questions
 
 - **Marketplace scope for MVP:** single `EBAY_MARKETPLACE` env var globally, or per-search? (Leaning global for MVP.)
-- **Seen-set pruning:** how long to retain `seen_items` rows - fixed 90 days, or tied to eBay listing lifetime?
+- **Seen-set pruning:** resolved - fixed-day retention pruned on each cache refresh, default 90 days, tunable via `SEEN_RETENTION_DAYS`. Tying retention to actual eBay listing lifetime is a future refinement.

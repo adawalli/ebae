@@ -1,0 +1,261 @@
+"use client";
+
+import { ExternalLink, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import type { SearchStats, StatusInfo } from "@/lib/types";
+import { ebayWebUrl } from "@/lib/utils";
+import { ago, callsFor, fmt, money } from "@/lib/format";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Progress } from "@/components/ui/progress";
+
+export function SearchesView({
+  searches,
+  active,
+  activeMin,
+  projected,
+  ceiling,
+  quotaPct,
+  running,
+  mock,
+  status,
+  openCreate,
+  openEdit,
+  togglePause,
+  removeSearch,
+}: {
+  searches: SearchStats[];
+  active: SearchStats[];
+  activeMin: number;
+  projected: number;
+  ceiling: number;
+  quotaPct: number;
+  running: boolean;
+  mock: boolean;
+  status: StatusInfo | null;
+  openCreate: () => void;
+  openEdit: (s: SearchStats) => void;
+  togglePause: (s: SearchStats) => void;
+  removeSearch: (s: SearchStats) => void;
+}) {
+  function searchSub(s: SearchStats) {
+    if (!s.enabled) return "paused";
+    if (!s.seeded) return "seeding baseline — first matches silenced";
+    const hit = s.lastHitAt ? `last hit ${ago(s.lastHitAt, true)}` : "no hits yet";
+    // market baseline (band-limited searches only): the true going rate an alert compares against
+    const market = s.marketMedian != null ? ` · market ~${money(s.marketMedian, status?.ebay.currency)}` : "";
+    return `${hit} · seen ${fmt(s.seenCount)}${market}`;
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex flex-col items-stretch justify-between gap-3.5 border-b p-4 md:flex-row md:items-center md:gap-0 md:px-[30px] md:py-6">
+        <div>
+          <h2 className="text-[21px] font-bold tracking-[-0.01em]">Saved searches</h2>
+          <div className="mt-1 flex items-center gap-2 text-[13px] text-muted-foreground">
+            <span
+              className="size-1.5 rounded-full"
+              style={{
+                background: running ? "var(--eb-green)" : "var(--eb-amber)",
+                animation: running ? "ebPulse 2.4s ease-in-out infinite" : undefined,
+              }}
+            />
+            {searches.length} searches · {active.length} active ·{" "}
+            {running ? (mock ? "polling (mock mode)" : "polling live") : "poller down"}
+          </div>
+        </div>
+        <Button onClick={openCreate} className="justify-center md:justify-start">
+          <Plus /> New search
+        </Button>
+      </div>
+
+      {/* quota strip */}
+      <Card className="mx-4 mt-4 mb-1.5 md:mx-[30px] md:mt-5">
+        <CardContent>
+          <div className="mb-2.5 flex flex-wrap items-baseline justify-between gap-1.5">
+            <span className="text-[13px] text-muted-foreground">
+              Projected API usage <span className="text-[var(--eb-faint)]">· enforced global budget</span>
+            </span>
+            <span className="font-mono text-[13px] text-foreground">
+              <b className="text-[var(--eb-accent-text)]">{fmt(projected)}</b> / {fmt(ceiling)} calls·day{" "}
+              <span className="text-[var(--eb-faint)]">· {quotaPct}%</span>
+            </span>
+          </div>
+          <Progress value={quotaPct} className="h-2" />
+        </CardContent>
+      </Card>
+
+      {/* table */}
+      <div className="flex-1 overflow-visible px-4 pt-3.5 pb-5 md:overflow-y-auto md:px-[30px] md:pb-[26px]">
+        <div className="hidden px-3.5 pb-2.5 font-mono text-[10.5px] tracking-[.1em] text-[var(--eb-faint)] uppercase md:grid md:grid-cols-[18px_minmax(0,1fr)_150px_62px_76px_40px_132px] md:items-center md:gap-2">
+          <span />
+          <span>Search</span>
+          <span>Filters</span>
+          <span className="text-right">Every</span>
+          <span className="text-right">Calls·day</span>
+          <span className="text-right">24h</span>
+          <span />
+        </div>
+        <div className="flex flex-col gap-2">
+          {searches.length === 0 && (
+            <Empty className="border">
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <Search />
+                </EmptyMedia>
+                <EmptyTitle>No saved searches yet</EmptyTitle>
+                <EmptyDescription>Create one and ebae starts watching within seconds.</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          )}
+          {searches.map((s) => {
+            const seeding = s.enabled && !s.seeded;
+            return (
+              <Card key={s.id} className="gap-0 py-0" style={{ opacity: s.enabled ? 1 : 0.62 }}>
+                <CardContent className="flex flex-col gap-2.5 p-3.5 md:grid md:grid-cols-[18px_minmax(0,1fr)_150px_62px_76px_40px_132px] md:items-center md:gap-2">
+                  <div className="flex min-w-0 items-center gap-2.5 md:contents">
+                    <span
+                      className="size-2 shrink-0 md:justify-self-start"
+                      style={{
+                        borderRadius: s.enabled ? "50%" : 2,
+                        background: s.enabled ? "var(--eb-green)" : "var(--eb-faint)",
+                        boxShadow: s.enabled
+                          ? "0 0 0 3px color-mix(in oklab, var(--eb-green) 18%, transparent)"
+                          : "none",
+                        animation: s.enabled && s.intervalMin <= 2 ? "ebPulse 2.4s ease-in-out infinite" : undefined,
+                      }}
+                    />
+                    <div className="min-w-0">
+                      <a
+                        href={ebayWebUrl(s, status?.ebay.marketplace)}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="View live matches on eBay"
+                        className="hv-link group flex min-w-0 items-center gap-1.5 text-[15px] font-semibold text-foreground no-underline md:text-[14.5px]"
+                      >
+                        <span className="truncate">{s.q}</span>
+                        <ExternalLink className="size-3.5 shrink-0 text-[var(--eb-faint)] transition-colors group-hover:text-[var(--eb-accent-text)]" />
+                      </a>
+                      <div className="mt-0.5 truncate font-mono text-[11.5px] text-[var(--eb-faint)]">
+                        {searchSub(s)}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 empty:hidden md:empty:flex">
+                    {s.binOnly && (
+                      <Badge className="border-transparent bg-[var(--eb-accent-soft)] font-mono text-[var(--eb-accent-text)]">
+                        BIN
+                      </Badge>
+                    )}
+                    {s.priceFloor != null && (
+                      <Badge variant="secondary" className="font-mono">
+                        ≥ {money(s.priceFloor).replace(/\.00$/, "")}
+                      </Badge>
+                    )}
+                    {s.priceCap != null && (
+                      <Badge variant="secondary" className="font-mono">
+                        ≤ {money(s.priceCap).replace(/\.00$/, "")}
+                      </Badge>
+                    )}
+                    {s.includeAuctions && (
+                      <Badge variant="secondary" className="font-mono">
+                        Auctions ok
+                      </Badge>
+                    )}
+                    {s.conditions && (
+                      <Badge variant="secondary" className="font-mono">
+                        {s.conditions === "NEW" ? "New" : "Used"}
+                      </Badge>
+                    )}
+                    {s.excludeTerms && (
+                      <Badge
+                        variant="secondary"
+                        className="font-mono"
+                        title={`Excludes: ${s.excludeTerms.replace(/[,\n]+/g, ", ")}`}
+                      >
+                        −{s.excludeTerms.split(/[,\n]/).filter((t) => t.trim()).length} excluded
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs md:contents">
+                    <span
+                      className="md:text-right md:text-[13px]"
+                      style={{
+                        color: s.enabled
+                          ? s.intervalMin <= 1
+                            ? "var(--eb-amber)"
+                            : "var(--eb-text)"
+                          : "var(--eb-faint)",
+                      }}
+                    >
+                      <span className="md:hidden">every </span>
+                      {s.intervalMin}
+                      <span className="md:hidden">m</span>
+                      <span className="hidden md:inline"> min</span>
+                    </span>
+                    <span className="text-muted-foreground md:text-right md:text-[13px]">
+                      {s.enabled ? (
+                        <>
+                          {fmt(callsFor(s.intervalMin, activeMin))}
+                          <span className="md:hidden"> calls·day</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="md:hidden">paused</span>
+                          <span className="hidden md:inline">—</span>
+                        </>
+                      )}
+                    </span>
+                    <span className="md:text-right md:text-[13px]">
+                      {seeding ? (
+                        <Badge className="border-transparent bg-[color-mix(in_oklab,var(--eb-amber)_18%,transparent)] font-mono text-[var(--eb-amber)]">
+                          seed
+                        </Badge>
+                      ) : (
+                        <>
+                          <span
+                            style={{
+                              color: s.hits24 > 0 ? "var(--eb-accent-text)" : "var(--eb-faint)",
+                              fontWeight: s.hits24 > 0 ? 600 : 400,
+                            }}
+                          >
+                            {s.hits24}
+                          </span>
+                          <span className="text-muted-foreground md:hidden"> in 24h</span>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  <div className="flex gap-1.5 md:justify-self-end">
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => openEdit(s)}
+                      title="Edit search"
+                      aria-label="Edit search"
+                    >
+                      <Pencil />
+                    </Button>
+                    <Button variant="outline" size="sm" className="flex-1 md:flex-none" onClick={() => togglePause(s)}>
+                      {s.enabled ? "Pause" : "Resume"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => removeSearch(s)}
+                      title="Delete search"
+                      aria-label="Delete search"
+                    >
+                      <Trash2 />
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}

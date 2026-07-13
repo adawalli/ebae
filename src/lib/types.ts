@@ -1,6 +1,7 @@
 // User-selectable condition presets, shared so the three places that must agree can't
 // drift: the API whitelist (validate.ts), the Browse condition-ID mapping (ebay.ts
-// CONDITION_FILTER, typed by this), and the UI options (page.tsx). null = any condition.
+// CONDITION_FILTER, typed by this), and the UI options (search-form-dialog.tsx).
+// null = any condition.
 export const CONDITION_KEYS = ["NEW", "USED"] as const;
 export type ConditionKey = (typeof CONDITION_KEYS)[number];
 

@@ -41,6 +41,7 @@ All config is env vars - see [.env.example](.env.example). Searches and webhooks
 | `DISCORD_WEBHOOK_URL`                   | notification target                                  | unset                          |
 | `POLL_INTERVAL_DEFAULT`                 | fallback poll interval (min)                         | 5                              |
 | `CACHE_REFRESH_HOURS`                   | DB → cache refresh cadence                           | 12                             |
+| `SEEN_RETENTION_DAYS`                   | seen_items dedupe retention (days)                   | 90                             |
 | `MARKET_SAMPLE_HOURS`                   | market-baseline resample gap (band-limited searches) | 24                             |
 | `EBAY_DAILY_QUOTA`                      | enforced daily call budget                           | 5000                           |
 | `LOG_LEVEL`                             | `error`/`warn`/`info`/`debug`                        | `info`                         |

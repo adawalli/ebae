@@ -52,16 +52,20 @@ function embed(item: Item, search: Search, ctx?: PriceContext) {
   };
 }
 
-// Sends to every webhook; retries each a few times. Never throws - a dead
-// webhook must not stall the poll loop (DESIGN.md failure behavior).
+// Sends to every webhook; retries each a few times. Never throws - a dead webhook must not
+// stall the poll loop (DESIGN.md failure behavior). Returns `error` (the last failure, for the
+// UI log) and `anyDelivered` (at least one webhook accepted it). The caller treats anyDelivered
+// as "delivered": an alert is redelivered only while NO channel has it, so a retry can't
+// re-post to a channel that already received it.
 export async function notify(
   item: Item,
   search: Search,
   webhookUrls: string[],
   ctx?: PriceContext,
-): Promise<string | null> {
+): Promise<{ error: string | null; anyDelivered: boolean }> {
   const body = JSON.stringify(embed(item, search, ctx));
   let lastError: string | null = null;
+  let anyDelivered = false;
   // index-based: logs identify a webhook by position, never its URL (secret token)
   for (let i = 0; i < webhookUrls.length; i++) {
     const url = webhookUrls[i];
@@ -72,6 +76,7 @@ export async function notify(
         const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body });
         if (res.ok) {
           err = null;
+          anyDelivered = true;
           dlog.debug({ webhook: i, attempt }, "delivered");
           break;
         }
@@ -89,5 +94,5 @@ export async function notify(
     // logs it once at error level (recordError(..., "error")).
     if (err) lastError = err;
   }
-  return lastError;
+  return { error: lastError, anyDelivered };
 }

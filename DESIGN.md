@@ -74,7 +74,7 @@ One Bun + Next.js app, one container image.
 | `settings`   | single-row global config (currently the optional overnight poll snooze window + timezone)        |
 | `alerts`     | log of sent notifications (item snapshot: title, price, image, url) - powers the UI history view |
 
-**Failure behavior.** eBay/API errors back off exponentially per search and surface on a status page; Discord send failures retry a few times then log. Restart recovers state from Postgres (seen set persists), so crashes never re-alert old items.
+**Failure behavior.** eBay/API errors back off exponentially per search and surface on a status page. Discord send failures retry a few times; an alert that reaches no channel is left unconfirmed (`alerts.delivered_at` null) and redelivered at the next boot, unless it's over an hour old by then (a deal that stale isn't worth sending). An alert is considered delivered once any channel accepts it, so a redelivery never re-posts to a channel that already has it. Restart recovers state from Postgres (seen set persists), so crashes never re-alert old items. `GET /api/health` reports poller liveness from a scheduling heartbeat (200/503) for container and k8s probes.
 
 ## 5. Notifications
 

@@ -1,4 +1,14 @@
-import { boolean, integer, numeric, pgTable, primaryKey, serial, text, timestamp } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  integer,
+  numeric,
+  pgTable,
+  primaryKey,
+  serial,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
 
 // Source of truth for the schema and for migrations (bun run db:generate). numeric
 // columns use mode:"number" so price fields read/write as numbers (no manual
@@ -70,18 +80,30 @@ export const settings = pgTable("settings", {
   snoozeTz: text("snooze_tz"),
 });
 
-export const alerts = pgTable("alerts", {
-  id: serial("id").primaryKey(),
-  searchId: integer("search_id").references(() => searches.id, { onDelete: "set null" }),
-  searchQ: text("search_q").notNull(),
-  itemId: text("item_id").notNull(),
-  title: text("title").notNull(),
-  price: numeric("price", { mode: "number" }),
-  currency: text("currency").notNull().default("USD"),
-  shippingCost: numeric("shipping_cost", { mode: "number" }),
-  buyingOption: text("buying_option").notNull().default("FIXED_PRICE"),
-  condition: text("condition"),
-  imageUrl: text("image_url"),
-  itemUrl: text("item_url").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const alerts = pgTable(
+  "alerts",
+  {
+    id: serial("id").primaryKey(),
+    searchId: integer("search_id").references(() => searches.id, { onDelete: "set null" }),
+    searchQ: text("search_q").notNull(),
+    itemId: text("item_id").notNull(),
+    title: text("title").notNull(),
+    price: numeric("price", { mode: "number" }),
+    currency: text("currency").notNull().default("USD"),
+    shippingCost: numeric("shipping_cost", { mode: "number" }),
+    buyingOption: text("buying_option").notNull().default("FIXED_PRICE"),
+    condition: text("condition"),
+    imageUrl: text("image_url"),
+    itemUrl: text("item_url").notNull(),
+    // null = created but not yet confirmed delivered to any channel. The poller retries
+    // undelivered rows (redeliverPending) so a webhook outage doesn't lose an alert; set
+    // at insert time when there are no channels (nothing to deliver to).
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  // DB backstop for the in-memory dedupe: even if a reload race lets a tick re-process an
+  // item, the second alerts insert conflicts and is dropped (onConflictDoNothing). NULLS
+  // DISTINCT leaves orphaned alerts (search_id set null on delete) unconstrained, which is
+  // fine - they're history, never re-alerted.
+  (t) => [uniqueIndex("alerts_search_item_idx").on(t.searchId, t.itemId)],
+);

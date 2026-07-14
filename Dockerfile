@@ -27,4 +27,7 @@ COPY --from=build /app/public ./public
 COPY --from=build /app/drizzle ./drizzle
 USER node
 EXPOSE 3000
+# node has global fetch; the run image has no curl/wget. start-period covers boot + DB migrate.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
+  CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "server.js"]

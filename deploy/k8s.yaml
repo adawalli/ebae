@@ -23,6 +23,17 @@ spec:
           envFrom:
             - secretRef:
                 name: ebae-env
+          # Liveness only, no readiness: with replicas:1 + Recreate there is no second endpoint
+          # to shift traffic to, so a readiness 503 on a wedge would just black out the status
+          # UI an operator needs. Deliberately lax (~5 min of failures before a kill): a boot-time
+          # DB outage 503s while tryBoot retries every 15s, and restarting the pod won't fix that.
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 10
           resources:
             requests:
               cpu: 50m

@@ -214,17 +214,19 @@ async function tryBoot() {
       { searches: st.entries.size, channels: st.channels.length, mode: MOCK ? "mock" : "live" },
       "poller ready",
     );
-    // jitter the first ticks so N searches don't hit eBay in the same second
-    for (const e of st.entries.values()) schedule(e, 1000 + Math.random() * 5000);
     // Flush any alert left undelivered by a crash between its insert and its notify, or by a
-    // webhook outage that spanned the restart. Runs before any tick and on a row set disjoint
-    // from live polling, so it can't race the main-path delivery loop. Best-effort: on failure
+    // webhook outage that spanned the restart. Must finish BEFORE the first tick is scheduled:
+    // a tick firing mid-sweep could insert a fresh deliveredAt=null row that the sweep's SELECT
+    // then picks up and double-notifies. Awaiting it here keeps the sweep and live polling on
+    // disjoint rows. Common case is one UPDATE + an empty SELECT (fast). Best-effort: on failure
     // the rows stay null and the next boot retries them.
     try {
       await redeliverPending(db());
     } catch (err) {
       recordError(null, `redeliver on boot: ${message(err)}`);
     }
+    // jitter the first ticks so N searches don't hit eBay in the same second
+    for (const e of st.entries.values()) schedule(e, 1000 + Math.random() * 5000);
     setInterval(
       () =>
         reload()
@@ -600,7 +602,7 @@ async function pollOnce(e: Entry) {
       // Pin the channel list for this batch: reload() swaps st.channels (never mutates), so a
       // capture keeps the insert's deliveredAt seed and the notify target consistent even if a
       // reload lands mid-tick.
-      const channels = st.channels;
+      const webhooks = st.channels; // local copy; named to not shadow the `channels` schema table
       for (const item of [...fresh].reverse()) {
         if (e.seen.has(item.itemId)) continue; // reload() may have merged it in mid-loop
         // Exclude-terms hit: mark seen (so a later exclusion removal won't re-alert this
@@ -635,7 +637,7 @@ async function pollOnce(e: Entry) {
               condition: item.condition,
               imageUrl: item.imageUrl,
               itemUrl: item.itemUrl,
-              deliveredAt: channels.length ? null : new Date(),
+              deliveredAt: webhooks.length ? null : new Date(),
             })
             .onConflictDoNothing({ target: [alerts.searchId, alerts.itemId] })
             .returning({ id: alerts.id });
@@ -648,8 +650,8 @@ async function pollOnce(e: Entry) {
         e.hitTimes.push(now);
         e.lastHitAt = now;
         plog.info({ searchId: e.s.id, itemId: item.itemId, price: item.price }, "alert sent");
-        if (channels.length) {
-          const { error, anyDelivered } = await notify(item, e.s, channels, ctx);
+        if (webhooks.length) {
+          const { error, anyDelivered } = await notify(item, e.s, webhooks, ctx);
           // "Delivered" = reached at least one channel. On total failure the row stays
           // deliveredAt=null and boot redelivery retries it (never re-posting to a channel that
           // already has it, since anyDelivered would have marked it delivered here).

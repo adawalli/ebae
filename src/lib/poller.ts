@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNotNull, isNull, lt, max, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, max, sql } from "drizzle-orm";
 import pkg from "../../package.json";
 import { db, migrateToLatest } from "./db";
 import { alerts, apiUsage, channels, searches, seenItems, settings } from "./schema";
@@ -84,7 +84,7 @@ type State = {
   calls: { date: string; used: number };
   snooze: SnoozeState;
   errors: PollError[];
-  lastScheduledAt: number | null; // heartbeat: last time schedule() ran, powers /api/health
+  lastScheduledAt: number | null; // heartbeat: last time a live poll timer was set, powers /api/health
 };
 
 // globalThis so instrumentation and route-handler bundles share one instance
@@ -381,11 +381,14 @@ async function flushCalls(database: ReturnType<typeof db>, calls: State["calls"]
 }
 
 function schedule(e: Entry, delayMs: number) {
-  state().lastScheduledAt = Date.now(); // heartbeat: every loop path (tick, snooze, quota, backoff) reaches here
   if (state().entries.get(e.s.id) !== e) return; // entry deleted/replaced while a tick was in flight
   if (e.timer) clearTimeout(e.timer);
   e.timer = null;
   if (!e.s.enabled || !state().ready) return;
+  // Heartbeat: stamp only once a live timer is actually set. A disabled or deleted entry's
+  // final schedule() must not bump it, or that stale bump would mask a wedged enabled search.
+  // Snooze/quota/backoff paths keep the entry enabled+ready, so intentional idle still stamps.
+  state().lastScheduledAt = Date.now();
   e.timer = setTimeout(() => void tick(e), delayMs);
   plog.debug({ searchId: e.s.id, q: e.s.q, delayMs }, "scheduled");
 }
@@ -469,9 +472,10 @@ async function maybeSampleMarket(e: Entry, database: ReturnType<typeof db>) {
 // retired unsent (a deal that stale isn't worth sending); anything still null is retried next boot.
 async function redeliverPending(database: ReturnType<typeof db>) {
   const st = state();
+  const now = new Date(); // one stamp for the whole sweep, so the DB shows they came from one boot
   await database
     .update(alerts)
-    .set({ deliveredAt: new Date() })
+    .set({ deliveredAt: now })
     .where(
       and(
         isNull(alerts.deliveredAt),
@@ -499,15 +503,20 @@ async function redeliverPending(database: ReturnType<typeof db>) {
   if (!rows.length) return;
   // Nothing to deliver to: retire the queue so it doesn't linger across boots.
   if (!st.channels.length) {
-    await database.update(alerts).set({ deliveredAt: new Date() }).where(isNull(alerts.deliveredAt));
+    await database.update(alerts).set({ deliveredAt: now }).where(isNull(alerts.deliveredAt));
     return;
   }
 
+  // Confirm every retired/delivered row in one UPDATE after the loop instead of one round-trip
+  // per row (a boot backlog shouldn't fan out N queries against a serverless DB). A crash mid-loop
+  // just re-posts the confirmed-but-unflushed rows next boot, which is the same at-least-once
+  // window the main path already accepts.
+  const done: number[] = [];
   for (const row of rows) {
     const s = row.searchId != null ? st.entries.get(row.searchId)?.s : undefined;
     if (!s) {
       // search deleted (search_id null) or gone from cache: no criteria to attach, retire it.
-      await database.update(alerts).set({ deliveredAt: new Date() }).where(eq(alerts.id, row.id));
+      done.push(row.id);
       continue;
     }
     const item: Item = {
@@ -527,9 +536,13 @@ async function redeliverPending(database: ReturnType<typeof db>) {
     const ctx: PriceContext | undefined =
       market != null && market > 0 ? { typical: market, count: 0, basis: "market" } : undefined;
     const { error, anyDelivered } = await notify(item, s, st.channels, ctx);
-    if (anyDelivered) await database.update(alerts).set({ deliveredAt: new Date() }).where(eq(alerts.id, row.id));
-    else recordError(s.q, `redeliver: ${error ?? "no channel reachable"}`, "error"); // left null, retried next boot
+    // Log any failure even on partial success (matches the main-path notify, which records the
+    // error independently of anyDelivered); confirm the row if a channel took it, else leave it
+    // null to retry next boot.
+    if (error) recordError(s.q, `redeliver: ${error}`, "error");
+    if (anyDelivered) done.push(row.id);
   }
+  if (done.length) await database.update(alerts).set({ deliveredAt: now }).where(inArray(alerts.id, done));
 }
 
 async function pollOnce(e: Entry) {

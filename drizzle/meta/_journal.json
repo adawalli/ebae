@@ -43,6 +43,13 @@
       "when": 1783620653975,
       "tag": "0005_organic_thor_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783982056905,
+      "tag": "0006_alerts_integrity",
+      "breakpoints": true
     }
   ]
 }

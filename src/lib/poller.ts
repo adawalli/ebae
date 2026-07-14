@@ -1,11 +1,11 @@
-import { and, desc, eq, gt, isNotNull, lt, max, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, isNull, lt, max, sql } from "drizzle-orm";
 import pkg from "../../package.json";
 import { db, migrateToLatest } from "./db";
 import { alerts, apiUsage, channels, searches, seenItems, settings } from "./schema";
 import { CURRENCY, MARKETPLACE, MOCK, sampleMarket, searchNewlyListed, tokenExpiresAt } from "./ebay";
 import { notify } from "./discord";
 import { log } from "./log";
-import type { PollError, PriceContext, Search, SearchStats, SnoozeConfig, StatusInfo } from "./types";
+import type { Item, PollError, PriceContext, Search, SearchStats, SnoozeConfig, StatusInfo } from "./types";
 
 const plog = log.child({ component: "poller" });
 
@@ -15,6 +15,9 @@ const REFRESH_HOURS = Number(process.env.CACHE_REFRESH_HOURS ?? 12);
 const MARKET_SAMPLE_HOURS = Number(process.env.MARKET_SAMPLE_HOURS ?? 24);
 const SEEN_RETENTION_DAYS = Number(process.env.SEEN_RETENTION_DAYS ?? 90);
 const MAX_BACKOFF_MS = 30 * 60_000;
+// An alert that couldn't be delivered is retried at the next boot, but deals are time-sensitive:
+// past this age, retire it unsent rather than spam stale listings when the process comes back.
+const REDELIVER_MAX_AGE_MS = 60 * 60_000;
 
 // Overnight snooze (UI-configured, stored in `settings`, cached in state().snooze):
 // skip all eBay polls during a local-time window so we don't burn quota while nobody's
@@ -81,6 +84,7 @@ type State = {
   calls: { date: string; used: number };
   snooze: SnoozeState;
   errors: PollError[];
+  lastScheduledAt: number | null; // heartbeat: last time schedule() ran, powers /api/health
 };
 
 // globalThis so instrumentation and route-handler bundles share one instance
@@ -95,6 +99,7 @@ function state(): State {
     calls: { date: new Date().toDateString(), used: 0 },
     snooze: { ...SNOOZE_DEFAULT },
     errors: [],
+    lastScheduledAt: null,
   });
 }
 
@@ -211,6 +216,15 @@ async function tryBoot() {
     );
     // jitter the first ticks so N searches don't hit eBay in the same second
     for (const e of st.entries.values()) schedule(e, 1000 + Math.random() * 5000);
+    // Flush any alert left undelivered by a crash between its insert and its notify, or by a
+    // webhook outage that spanned the restart. Runs before any tick and on a row set disjoint
+    // from live polling, so it can't race the main-path delivery loop. Best-effort: on failure
+    // the rows stay null and the next boot retries them.
+    try {
+      await redeliverPending(db());
+    } catch (err) {
+      recordError(null, `redeliver on boot: ${message(err)}`);
+    }
     setInterval(
       () =>
         reload()
@@ -287,6 +301,14 @@ async function reload() {
     savedLastHitAt.set(id, e.lastHitAt);
   }
 
+  // Group the DB snapshot by search so each entry's seen set is swapped atomically.
+  const seenBySearch = new Map<number, Set<string>>();
+  for (const r of seenRows) {
+    let set = seenBySearch.get(r.searchId);
+    if (!set) seenBySearch.set(r.searchId, (set = new Set()));
+    set.add(r.itemId);
+  }
+
   for (const [id, e] of st.entries) {
     if (!fresh.has(id)) {
       if (e.timer) clearTimeout(e.timer);
@@ -294,9 +316,12 @@ async function reload() {
       continue;
     }
     e.hitTimes = [];
-    e.seen = new Set(); // rebuild from DB so the 90-day prune also reclaims memory
+    // Rebuild the dedupe set from DB so the retention prune also reclaims memory - but
+    // never mid-tick. A running tick adds items to e.seen after the snapshot above was
+    // queried; overwriting would drop those adds and re-alert them next tick. Skip it;
+    // the next reload reclaims that entry's memory once the tick has finished.
+    if (!e.running) e.seen = seenBySearch.get(id) ?? new Set();
   }
-  for (const r of seenRows) st.entries.get(r.searchId)?.seen.add(r.itemId);
   for (const r of hitRows) {
     if (r.searchId != null) st.entries.get(r.searchId)?.hitTimes.push(r.createdAt.getTime());
   }
@@ -356,6 +381,7 @@ async function flushCalls(database: ReturnType<typeof db>, calls: State["calls"]
 }
 
 function schedule(e: Entry, delayMs: number) {
+  state().lastScheduledAt = Date.now(); // heartbeat: every loop path (tick, snooze, quota, backoff) reaches here
   if (state().entries.get(e.s.id) !== e) return; // entry deleted/replaced while a tick was in flight
   if (e.timer) clearTimeout(e.timer);
   e.timer = null;
@@ -372,6 +398,12 @@ async function tick(e: Entry) {
   e.running = true;
   try {
     await pollOnce(e);
+  } catch (err) {
+    // pollOnce catches its own poll failures; reaching here means a throw before its try
+    // (e.g. an invalid snooze tz in Intl). Reschedule so one entry can't silently kill its
+    // timer - which the heartbeat would otherwise read as a wedge and 503.
+    recordError(e.s.q, `tick: ${message(err)}`);
+    schedule(e, MAX_BACKOFF_MS);
   } finally {
     e.running = false;
   }
@@ -429,6 +461,77 @@ async function maybeSampleMarket(e: Entry, database: ReturnType<typeof db>) {
   }
 }
 
+// Redeliver alerts committed but never confirmed delivered - a crash between the alerts insert
+// and the notify, or a webhook outage that spanned the last shutdown. Called once at boot, before
+// any tick fires, so it never races the main-path delivery loop (disjoint row sets, no shared
+// mutable flag). A row counts as delivered once ANY channel accepts it (notify.anyDelivered), so a
+// retry never re-posts to a channel that already has it. Rows older than REDELIVER_MAX_AGE_MS are
+// retired unsent (a deal that stale isn't worth sending); anything still null is retried next boot.
+async function redeliverPending(database: ReturnType<typeof db>) {
+  const st = state();
+  await database
+    .update(alerts)
+    .set({ deliveredAt: new Date() })
+    .where(
+      and(
+        isNull(alerts.deliveredAt),
+        lt(alerts.createdAt, sql`now() - (${REDELIVER_MAX_AGE_MS / 60_000} * interval '1 minute')`),
+      ),
+    );
+
+  const rows = await database
+    .select({
+      id: alerts.id,
+      searchId: alerts.searchId,
+      itemId: alerts.itemId,
+      title: alerts.title,
+      price: alerts.price,
+      currency: alerts.currency,
+      shippingCost: alerts.shippingCost,
+      buyingOption: alerts.buyingOption,
+      condition: alerts.condition,
+      imageUrl: alerts.imageUrl,
+      itemUrl: alerts.itemUrl,
+    })
+    .from(alerts)
+    .where(isNull(alerts.deliveredAt));
+
+  if (!rows.length) return;
+  // Nothing to deliver to: retire the queue so it doesn't linger across boots.
+  if (!st.channels.length) {
+    await database.update(alerts).set({ deliveredAt: new Date() }).where(isNull(alerts.deliveredAt));
+    return;
+  }
+
+  for (const row of rows) {
+    const s = row.searchId != null ? st.entries.get(row.searchId)?.s : undefined;
+    if (!s) {
+      // search deleted (search_id null) or gone from cache: no criteria to attach, retire it.
+      await database.update(alerts).set({ deliveredAt: new Date() }).where(eq(alerts.id, row.id));
+      continue;
+    }
+    const item: Item = {
+      itemId: row.itemId,
+      title: row.title,
+      price: row.price,
+      currency: row.currency,
+      shippingCost: row.shippingCost,
+      buyingOption: row.buyingOption as Item["buyingOption"],
+      condition: row.condition,
+      imageUrl: row.imageUrl,
+      itemUrl: row.itemUrl,
+    };
+    // Only the market baseline is reconstructable here (the recent-alert median needs the
+    // pre-batch snapshot, long gone); without one the embed just omits the deal line.
+    const market = s.marketMedian;
+    const ctx: PriceContext | undefined =
+      market != null && market > 0 ? { typical: market, count: 0, basis: "market" } : undefined;
+    const { error, anyDelivered } = await notify(item, s, st.channels, ctx);
+    if (anyDelivered) await database.update(alerts).set({ deliveredAt: new Date() }).where(eq(alerts.id, row.id));
+    else recordError(s.q, `redeliver: ${error ?? "no channel reachable"}`, "error"); // left null, retried next boot
+  }
+}
+
 async function pollOnce(e: Entry) {
   // Overnight snooze: don't touch the eBay API during the window. Re-tick at the
   // search's normal interval; the first tick after the window ends polls and picks
@@ -481,6 +584,10 @@ async function pollOnce(e: Entry) {
         market != null && market > 0
           ? { typical: market, count: 0, basis: "market" }
           : { ...(fresh.length ? await priceContext(database, e.s.id) : { typical: null, count: 0 }), basis: "recent" };
+      // Pin the channel list for this batch: reload() swaps st.channels (never mutates), so a
+      // capture keeps the insert's deliveredAt seed and the notify target consistent even if a
+      // reload lands mid-tick.
+      const channels = st.channels;
       for (const item of [...fresh].reverse()) {
         if (e.seen.has(item.itemId)) continue; // reload() may have merged it in mid-loop
         // Exclude-terms hit: mark seen (so a later exclusion removal won't re-alert this
@@ -493,32 +600,50 @@ async function pollOnce(e: Entry) {
           continue;
         }
         // Transaction: if alerts insert fails, seen_items also rolls back so the
-        // item is retried next poll instead of being permanently dropped.
+        // item is retried next poll instead of being permanently dropped. The alerts
+        // insert is conflict-guarded (see alerts_search_item_idx): a reload race that
+        // re-processes an item hits the unique index and inserts nothing, so alertId
+        // comes back null and we skip the notify. deliveredAt is stamped now only when
+        // there's nothing to deliver to; otherwise it stays null until notify succeeds.
+        let alertId: number | null = null;
         await database.transaction(async (tx) => {
           await tx.insert(seenItems).values({ searchId: e.s.id, itemId: item.itemId }).onConflictDoNothing();
-          await tx.insert(alerts).values({
-            searchId: e.s.id,
-            searchQ: e.s.q,
-            itemId: item.itemId,
-            title: item.title,
-            price: item.price,
-            currency: item.currency,
-            shippingCost: item.shippingCost,
-            buyingOption: item.buyingOption,
-            condition: item.condition,
-            imageUrl: item.imageUrl,
-            itemUrl: item.itemUrl,
-          });
+          const [inserted] = await tx
+            .insert(alerts)
+            .values({
+              searchId: e.s.id,
+              searchQ: e.s.q,
+              itemId: item.itemId,
+              title: item.title,
+              price: item.price,
+              currency: item.currency,
+              shippingCost: item.shippingCost,
+              buyingOption: item.buyingOption,
+              condition: item.condition,
+              imageUrl: item.imageUrl,
+              itemUrl: item.itemUrl,
+              deliveredAt: channels.length ? null : new Date(),
+            })
+            .onConflictDoNothing({ target: [alerts.searchId, alerts.itemId] })
+            .returning({ id: alerts.id });
+          alertId = inserted?.id ?? null;
         });
         wrote = true;
         e.seen.add(item.itemId);
+        if (alertId == null) continue; // duplicate: the row already existed, don't re-notify
         const now = Date.now();
         e.hitTimes.push(now);
         e.lastHitAt = now;
         plog.info({ searchId: e.s.id, itemId: item.itemId, price: item.price }, "alert sent");
-        if (st.channels.length) {
-          const err = await notify(item, e.s, st.channels, ctx);
-          if (err) recordError(e.s.q, err, "error");
+        if (channels.length) {
+          const { error, anyDelivered } = await notify(item, e.s, channels, ctx);
+          // "Delivered" = reached at least one channel. On total failure the row stays
+          // deliveredAt=null and boot redelivery retries it (never re-posting to a channel that
+          // already has it, since anyDelivered would have marked it delivered here).
+          if (error) recordError(e.s.q, error, "error");
+          if (anyDelivered) {
+            await database.update(alerts).set({ deliveredAt: new Date() }).where(eq(alerts.id, alertId));
+          }
         }
       }
     }
@@ -739,4 +864,27 @@ export function status(): StatusInfo {
     errors: [...st.errors].reverse().slice(0, 20),
     version: process.env.APP_VERSION || pkg.version,
   };
+}
+
+// Longest legitimate gap between two schedule() calls: the largest reschedule delay any
+// path can pick (a search's interval, the 15-min quota-skip, or the 30-min backoff cap),
+// plus a grace margin for tick duration. Beyond this the heartbeat is genuinely stale.
+// Pure + exported for tests. 15 = quota-skip floor so a all-short-interval fleet still
+// tolerates a quota pause.
+export function healthWindowMs(intervalsMin: number[]): number {
+  return Math.max(Math.max(15, ...intervalsMin) * 60_000, MAX_BACKOFF_MS) + 5 * 60_000;
+}
+
+// Liveness for /api/health. Not-ready => unhealthy (still booting / DB down). No enabled
+// searches => healthy (nothing is scheduled to run, which is not a fault). Otherwise healthy
+// iff schedule() ran within the freshness window; snooze and quota-exhausted paths both call
+// schedule(), so intentional idle still reads healthy.
+export function health(): { ok: boolean; reason: string | null } {
+  const st = state();
+  if (!st.ready) return { ok: false, reason: st.bootError ?? "booting" };
+  const enabled = [...st.entries.values()].filter((e) => e.s.enabled);
+  if (!enabled.length) return { ok: true, reason: null };
+  const window = healthWindowMs(enabled.map((e) => e.s.intervalMin));
+  const fresh = st.lastScheduledAt != null && Date.now() - st.lastScheduledAt < window;
+  return fresh ? { ok: true, reason: null } : { ok: false, reason: "heartbeat stale" };
 }

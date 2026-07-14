@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   baselineInvalidated,
   excludeMatch,
+  healthWindowMs,
   inWindow,
   matchCriteriaChanged,
   median,
@@ -175,6 +176,15 @@ test("inWindow: window crossing midnight", () => {
 // Disabled snooze must not discount the UI projection (no window silenced).
 test("snoozeMinutes: 0 when snooze disabled", () => {
   expect(snoozeMinutes()).toBe(0);
+});
+
+// healthWindowMs: the freshness bound for the liveness heartbeat. Too tight => healthy
+// pods get killed during a legitimate backoff/quota pause; too loose => a wedged poller
+// isn't caught. = max(interval, 15-min quota floor, 30-min backoff cap) + 5-min grace.
+test("healthWindowMs: backoff cap dominates short intervals", () => {
+  expect(healthWindowMs([5])).toBe(35 * 60_000); // 30-min backoff cap + 5 grace
+  expect(healthWindowMs([])).toBe(35 * 60_000); // no searches: 15-min floor still < cap
+  expect(healthWindowMs([60])).toBe(65 * 60_000); // long interval dominates: 60 + 5
 });
 
 // Snooze settings validation (the API trust boundary): HH:MM parsing, tz check,

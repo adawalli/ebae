@@ -32,7 +32,7 @@ export function ebayWebUrl(
   const p = new URLSearchParams({ _nkw: s.q, _sacat: s.categoryId ?? "0", _sop: "10" });
   const exclusions = s.excludeTerms
     ?.split(/[,\n]/)
-    .map((term) => term.trim())
+    .map((term) => term.replace(/"/g, " ").replace(/\s+/g, " ").trim())
     .filter(Boolean);
   if (exclusions?.length) p.set("_nkw", `${s.q} ${exclusions.map((term) => `-"${term}"`).join(" ")}`);
   if (!s.includeAuctions) p.set("LH_BIN", "1");

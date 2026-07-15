@@ -1,7 +1,7 @@
 "use client";
 
 import { ExternalLink, Pencil, Plus, Search, Trash2 } from "lucide-react";
-import type { SearchStats, StatusInfo } from "@/lib/types";
+import { CONDITION_BADGE, type ConditionKey, type SearchStats, type StatusInfo } from "@/lib/types";
 import { splitExcludeTerms } from "@/lib/exclude-terms";
 import { ebayWebUrl } from "@/lib/utils";
 import { ago, callsFor, fmt, money } from "@/lib/format";
@@ -167,7 +167,7 @@ export function SearchesView({
                     )}
                     {s.conditions && (
                       <Badge variant="secondary" className="font-mono">
-                        {s.conditions === "NEW" ? "New" : "Used"}
+                        {CONDITION_BADGE[s.conditions as ConditionKey] ?? s.conditions}
                       </Badge>
                     )}
                     {exclusions.length > 0 && (

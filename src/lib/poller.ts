@@ -2,7 +2,15 @@ import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, max, sql } from "dri
 import pkg from "../../package.json";
 import { db, migrateToLatest } from "./db";
 import { alerts, apiUsage, channels, searches, seenItems, settings } from "./schema";
-import { CURRENCY, MARKETPLACE, MOCK, sampleMarket, searchNewlyListed, tokenExpiresAt } from "./ebay";
+import {
+  CURRENCY,
+  MARKETPLACE,
+  MOCK,
+  conditionExcluded,
+  sampleMarket,
+  searchNewlyListed,
+  tokenExpiresAt,
+} from "./ebay";
 import { splitExcludeTerms } from "./exclude-terms";
 import { notify } from "./discord";
 import { log } from "./log";
@@ -448,7 +456,7 @@ async function maybeSampleMarket(e: Entry, database: ReturnType<typeof db>) {
     st.calls.used++;
     const items = await sampleMarket(s);
     const prices = items
-      .filter((i) => !excludeMatch(i.title, s.excludeTerms))
+      .filter((i) => !excludeMatch(i.title, s.excludeTerms) && !conditionExcluded(i, s.conditions))
       .map((i) => i.price)
       .filter((p): p is number => p != null);
     const m = median(prices);
@@ -526,6 +534,7 @@ async function redeliverPending(database: ReturnType<typeof db>) {
       shippingCost: row.shippingCost,
       buyingOption: row.buyingOption as Item["buyingOption"],
       condition: row.condition,
+      conditionId: null, // not persisted; this row already passed suppression when it was written
       imageUrl: row.imageUrl,
       itemUrl: row.itemUrl,
     };
@@ -602,9 +611,10 @@ async function pollOnce(e: Entry) {
       const webhooks = st.channels; // local copy; named to not shadow the `channels` schema table
       for (const item of [...fresh].reverse()) {
         if (e.seen.has(item.itemId)) continue; // reload() may have merged it in mid-loop
-        // Exclude-terms hit: mark seen (so a later exclusion removal won't re-alert this
-        // old listing) but send no alert. Seen set stays the full dedupe set.
-        if (excludeMatch(item.title, e.s.excludeTerms)) {
+        // Suppressed (exclude-terms hit, or the NOT_PARTS preset's for-parts tier): mark seen
+        // (so later widening the search won't re-alert this old listing) but send no alert.
+        // Seen set stays the full dedupe set.
+        if (excludeMatch(item.title, e.s.excludeTerms) || conditionExcluded(item, e.s.conditions)) {
           await database.insert(seenItems).values({ searchId: e.s.id, itemId: item.itemId }).onConflictDoNothing();
           wrote = true;
           e.seen.add(item.itemId);

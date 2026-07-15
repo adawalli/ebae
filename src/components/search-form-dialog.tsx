@@ -1,7 +1,7 @@
 "use client";
 
 import type { Dispatch, SetStateAction } from "react";
-import { CONDITION_KEYS, type ConditionKey } from "@/lib/types";
+import { CONDITION_KEYS, CONDITION_LABELS } from "@/lib/types";
 import { callsFor, fmt } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -26,11 +26,6 @@ export const emptyForm = {
 };
 
 export type SearchForm = typeof emptyForm;
-
-const CONDITION_LABELS: Record<ConditionKey, string> = {
-  NEW: "New only",
-  USED: "Used (excl. for parts)",
-};
 
 export function SearchFormDialog({
   showForm,

@@ -29,10 +29,25 @@ export const CURRENCY = MARKETPLACE_CURRENCY[MARKETPLACE] ?? "USD";
 // Keyed by ConditionKey so adding a preset to CONDITION_KEYS (types.ts) is a compile error
 // here until its ID mapping is supplied — the whitelist (validate.ts) and UI (page.tsx)
 // derive from the same source, so the three can't silently drift.
-const CONDITION_FILTER: Record<ConditionKey, string> = {
+// null = no server-side filter; see conditionExcluded below.
+const CONDITION_FILTER: Record<ConditionKey, string | null> = {
+  NOT_PARTS: null,
   NEW: "1000",
   USED: "3000|4000|5000|6000",
 };
+
+// eBay's "for parts or not working" tier (rendered "Parts Only" on the web).
+export const FOR_PARTS_ID = "7000";
+
+// NOT_PARTS keeps eBay's whole "Any condition" result set but drops the for-parts tier here
+// rather than through `conditionIds`. That filter is a whitelist with no negation, so the
+// only server-side spelling of "everything but 7000" is to name the other 15 IDs - which
+// would drop listings whose category specifies no condition at all, and would rot every time
+// eBay adds an ID (2990/3010 arrived for apparel, 2010-2030 for refurb tiers). Naming the one
+// ID we actually exclude can't rot. Pure + exported for tests.
+export function conditionExcluded(item: Item, conditions: string | null): boolean {
+  return conditions === "NOT_PARTS" && item.conditionId === FOR_PARTS_ID;
+}
 
 const SANDBOX = process.env.EBAY_ENV === "sandbox";
 const AUTH_HOST = SANDBOX ? "https://api.sandbox.ebay.com" : "https://api.ebay.com";
@@ -144,6 +159,7 @@ type EbaySummary = {
   shippingOptions?: { shippingCost?: { value: string } }[];
   buyingOptions?: string[];
   condition?: string;
+  conditionId?: string;
   image?: { imageUrl: string };
   thumbnailImages?: { imageUrl: string }[];
   itemWebUrl: string;
@@ -159,6 +175,7 @@ function normalize(i: EbaySummary): Item {
     shippingCost: ship != null ? parseFloat(ship) : null,
     buyingOption: i.buyingOptions?.includes("FIXED_PRICE") ? "FIXED_PRICE" : "AUCTION",
     condition: i.condition ?? null,
+    conditionId: i.conditionId ?? null,
     imageUrl: i.image?.imageUrl ?? i.thumbnailImages?.[0]?.imageUrl ?? null,
     itemUrl: i.itemWebUrl,
   };
@@ -181,19 +198,30 @@ const VARIANTS = [
   "recent service, receipts included",
   "rare variant, collector owned",
 ];
-const CONDITIONS = ["New", "Open box", "Excellent", "Used", "Pre-owned", "For parts or not working"];
+// [display name, condition ID] - IDs let the mock mirror the real filters exactly.
+const CONDITIONS: [string, string][] = [
+  ["New", "1000"],
+  ["Open box", "1500"],
+  ["Excellent", "4000"],
+  ["Used", "3000"],
+  ["Pre-owned", "3000"],
+  ["For parts or not working", FOR_PARTS_ID],
+];
 
-// Mirror the live `conditions` filter in mock mode so the feature is exercisable
-// without eBay credentials. NEW = brand new only; USED = anything used-ish except
-// the for-parts tier (matching CONDITION_FILTER's omission of ID 7000).
-function mockConditionOk(condition: string | null, conditions: string | null): boolean {
+// Mirror the live condition filtering in mock mode so the feature is exercisable without
+// eBay credentials. Derived from CONDITION_FILTER rather than matching display strings, so
+// a preset's ID mapping can't drift from what mock mode shows. Note "Open box" (1500)
+// matches neither NEW nor USED here, which is faithful: it doesn't live-either.
+function mockConditionOk(conditionId: string | null, conditions: string | null): boolean {
   if (!conditions) return true;
-  if (conditions === "NEW") return condition === "New";
-  return condition != null && condition !== "New" && condition !== "For parts or not working";
+  if (conditions === "NOT_PARTS") return conditionId !== FOR_PARTS_ID;
+  const ids = CONDITION_FILTER[conditions as ConditionKey];
+  return ids != null && conditionId != null && ids.split("|").includes(conditionId);
 }
 
 function mockItem(s: Search, n: number): Item {
   const id = `v1|mock-${s.id}-${n}|0`;
+  const [condition, conditionId] = CONDITIONS[n % CONDITIONS.length];
   // mirror the live price:[floor..cap] filter so mock alerts respect both bounds
   const lo = s.priceFloor ?? 0;
   const hi = Math.max(s.priceCap ?? 500, lo + 50);
@@ -206,7 +234,8 @@ function mockItem(s: Search, n: number): Item {
     currency: "USD",
     shippingCost: n % 4 === 0 ? 0 : Math.round((5 + (n % 30)) * 100) / 100,
     buyingOption: auction ? "AUCTION" : "FIXED_PRICE",
-    condition: CONDITIONS[n % CONDITIONS.length],
+    condition,
+    conditionId,
     imageUrl: `https://picsum.photos/seed/ebae-${s.id}-${n}/264/264`,
     itemUrl: `https://www.ebay.com/itm/mock-${s.id}-${n}`,
   };
@@ -226,7 +255,7 @@ function mockSearch(s: Search): Item[] {
     if (pool.length > 50) pool.pop();
   }
   // condition filter is server-side for the live API, so mirror it here
-  return pool.filter((i: Item) => mockConditionOk(i.condition, s.conditions));
+  return pool.filter((i: Item) => mockConditionOk(i.conditionId, s.conditions));
 }
 
 // Mock market sample: prices centered ~$500 regardless of the search's band, so the

@@ -1,9 +1,24 @@
-// User-selectable condition presets, shared so the three places that must agree can't
-// drift: the API whitelist (validate.ts), the Browse condition-ID mapping (ebay.ts
-// CONDITION_FILTER, typed by this), and the UI options (search-form-dialog.tsx).
-// null = any condition.
-export const CONDITION_KEYS = ["NEW", "USED"] as const;
+// User-selectable condition presets, shared so the places that must agree can't drift:
+// the API whitelist (validate.ts), the Browse condition-ID mapping (ebay.ts
+// CONDITION_FILTER, typed by this), and the UI labels below. null = any condition.
+// Order drives the select's option order, so NOT_PARTS sits next to "Any condition".
+export const CONDITION_KEYS = ["NOT_PARTS", "NEW", "USED"] as const;
 export type ConditionKey = (typeof CONDITION_KEYS)[number];
+
+// Keyed by ConditionKey so a new preset is a compile error here rather than a silently
+// mislabelled option or badge.
+export const CONDITION_LABELS: Record<ConditionKey, string> = {
+  NOT_PARTS: "Any (excl. for parts)",
+  NEW: "New only",
+  USED: "Used (excl. for parts)",
+};
+
+// Short forms for the list-view chip, where the select's labels don't fit.
+export const CONDITION_BADGE: Record<ConditionKey, string> = {
+  NOT_PARTS: "No parts",
+  NEW: "New",
+  USED: "Used",
+};
 
 export type Search = {
   id: number;
@@ -13,7 +28,7 @@ export type Search = {
   priceCap: number | null;
   binOnly: boolean;
   includeAuctions: boolean;
-  conditions: string | null; // "NEW" | "USED" | null (any)
+  conditions: string | null; // ConditionKey | null (any)
   excludeTerms: string | null; // comma/newline-separated title exclusions
   marketMedian: number | null; // daily unfiltered market baseline (poller-managed)
   marketSampledAt: string | null;
@@ -39,7 +54,8 @@ export type Item = {
   currency: string;
   shippingCost: number | null; // null = unknown, 0 = free
   buyingOption: "FIXED_PRICE" | "AUCTION";
-  condition: string | null;
+  condition: string | null; // display text, varies by surface ("Parts Only" vs "For parts or not working")
+  conditionId: string | null; // eBay's stable numeric id; null when the category doesn't specify one
   imageUrl: string | null;
   itemUrl: string;
 };
@@ -49,7 +65,9 @@ export type Item = {
 // for the search (in-band fallback, gated on `count` >= a real sample).
 export type PriceContext = { typical: number | null; count: number; basis: "market" | "recent" };
 
-export type Alert = Item & {
+// conditionId is dropped: it exists only to decide suppression while polling, which happens
+// before an alert row is written, so the alerts table has no column for it.
+export type Alert = Omit<Item, "conditionId"> & {
   id: number;
   searchId: number | null;
   searchQ: string;

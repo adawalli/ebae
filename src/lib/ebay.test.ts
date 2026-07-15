@@ -1,7 +1,20 @@
 import { expect, test } from "bun:test";
-import { browseFilters, marketSampleSearch, sampleMarket } from "./ebay";
+import { browseFilters, conditionExcluded, marketSampleSearch, sampleMarket } from "./ebay";
 import { median } from "./poller";
-import type { Search } from "./types";
+import type { Item, Search } from "./types";
+
+const item: Item = {
+  itemId: "v1|1|0",
+  title: "Sonos Era 300",
+  price: 179.95,
+  currency: "USD",
+  shippingCost: 0,
+  buyingOption: "FIXED_PRICE",
+  condition: "Parts Only",
+  conditionId: "7000",
+  imageUrl: null,
+  itemUrl: "https://www.ebay.com/itm/1",
+};
 
 const base: Search = {
   id: 1,
@@ -47,6 +60,26 @@ test("browseFilters: condition presets emit conditionIds, never conditions:{<id>
   for (const f of [...neu, ...used]) expect(f.startsWith("conditions:{")).toBe(false);
   // null conditions adds no condition filter at all
   expect(browseFilters(base).some((f) => f.includes("condition"))).toBe(false);
+});
+
+// NOT_PARTS deliberately sends no condition filter: `conditionIds` is a whitelist with no
+// negation, so the only server-side spelling of "everything but 7000" is the other 15 IDs -
+// which would drop unspecified-condition listings and rot each time eBay adds an ID.
+test("browseFilters: NOT_PARTS sends no condition filter (suppression is client-side)", () => {
+  expect(browseFilters({ ...base, conditions: "NOT_PARTS" }).some((f) => f.includes("condition"))).toBe(false);
+});
+
+test("conditionExcluded: NOT_PARTS drops only the for-parts tier", () => {
+  expect(conditionExcluded(item, "NOT_PARTS")).toBe(true);
+  expect(conditionExcluded({ ...item, conditionId: "3000" }, "NOT_PARTS")).toBe(false);
+  expect(conditionExcluded(item, null)).toBe(false); // "Any condition" keeps for-parts
+  expect(conditionExcluded(item, "USED")).toBe(false); // eBay's conditionIds already excluded it
+});
+
+// The whole point of suppressing one ID instead of whitelisting the other 15: a listing whose
+// category doesn't require a condition must still alert.
+test("conditionExcluded: an unspecified conditionId is never dropped", () => {
+  expect(conditionExcluded({ ...item, conditionId: null }, "NOT_PARTS")).toBe(false);
 });
 
 test("browseFilters: all clauses compose in order", () => {

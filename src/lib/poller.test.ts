@@ -132,6 +132,7 @@ test("parseSearchBody: conditions whitelist and excludeTerms trim/cap", () => {
   >;
   expect(ok.conditions).toBe("NEW");
   expect(ok.excludeTerms).toBe("for parts, repro");
+  expect((parseSearchBody({ conditions: "NOT_PARTS" }, true) as Record<string, unknown>).conditions).toBe("NOT_PARTS");
   expect(typeof parseSearchBody({ q: "x", conditions: "1000|3000" }, false)).toBe("string"); // injection rejected
   expect((parseSearchBody({ conditions: "" }, true) as Record<string, unknown>).conditions).toBeNull();
   expect(parseSearchBody({ excludeTerms: '13" display' }, true)).toBe("excludeTerms cannot contain double quotes");

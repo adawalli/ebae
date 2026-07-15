@@ -39,9 +39,14 @@ test("comma and newline exclusion phrases become quoted negative eBay terms", ()
   expect(u.searchParams.get("_nkw")).toBe('mac mini m4 -"16gb" -"256gb" -"for parts"');
 });
 
-test("quotes in exclusions cannot close eBay phrases", () => {
-  const u = new URL(ebayWebUrl({ ...base, q: "mac mini m4", excludeTerms: '13" display' }));
-  expect(u.searchParams.get("_nkw")).toBe('mac mini m4 -"13 display"');
+test("legacy quote exclusions are omitted without changing valid phrases", () => {
+  const u = new URL(ebayWebUrl({ ...base, q: "mac mini m4", excludeTerms: '13" display, 16gb' }));
+  expect(u.searchParams.get("_nkw")).toBe('mac mini m4 -"16gb"');
+});
+
+test("exclusion phrase whitespace is preserved after trimming", () => {
+  const u = new URL(ebayWebUrl({ ...base, q: "mac mini m4", excludeTerms: "  for  parts  " }));
+  expect(u.searchParams.get("_nkw")).toBe('mac mini m4 -"for  parts"');
 });
 
 test("blank exclusions preserve the no-exclusion link", () => {

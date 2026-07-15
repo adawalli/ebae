@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
 import { ebayWebUrl } from "./utils";
 
-const base = { q: "mac mini m4 -parts", categoryId: null, priceFloor: null, priceCap: null, includeAuctions: false };
+const base = {
+  q: "mac mini m4 -parts",
+  categoryId: null,
+  priceFloor: null,
+  priceCap: null,
+  includeAuctions: false,
+  excludeTerms: null,
+};
 
 test("BIN-only, newest-first, all categories on ebay.com", () => {
   const u = new URL(ebayWebUrl(base));
@@ -25,4 +32,9 @@ test("auctions allowed drops LH_BIN; price bounds, category, and marketplace dom
 
 test("unmapped marketplace degrades to a working ebay.com link", () => {
   expect(new URL(ebayWebUrl(base, "EBAY_XX")).host).toBe("www.ebay.com");
+});
+
+test("comma and newline exclusion phrases become quoted negative eBay terms", () => {
+  const u = new URL(ebayWebUrl({ ...base, q: "mac mini m4", excludeTerms: " 16gb, 256gb\nfor parts " }));
+  expect(u.searchParams.get("_nkw")).toBe('mac mini m4 -"16gb" -"256gb" -"for parts"');
 });

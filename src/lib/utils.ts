@@ -25,11 +25,16 @@ const EBAY_DOMAIN: Record<string, string> = {
 // auctions are allowed). Kept client-safe (no env/token code) so page.tsx can
 // import it. ponytail: US web params; other marketplaces map by domain only.
 export function ebayWebUrl(
-  s: Pick<Search, "q" | "categoryId" | "priceFloor" | "priceCap" | "includeAuctions">,
+  s: Pick<Search, "q" | "categoryId" | "priceFloor" | "priceCap" | "includeAuctions" | "excludeTerms">,
   marketplace = "EBAY_US",
 ): string {
   const domain = EBAY_DOMAIN[marketplace] ?? "ebay.com";
   const p = new URLSearchParams({ _nkw: s.q, _sacat: s.categoryId ?? "0", _sop: "10" });
+  const exclusions = s.excludeTerms
+    ?.split(/[,\n]/)
+    .map((term) => term.trim())
+    .filter(Boolean);
+  if (exclusions?.length) p.set("_nkw", `${s.q} ${exclusions.map((term) => `-"${term}"`).join(" ")}`);
   if (!s.includeAuctions) p.set("LH_BIN", "1");
   if (s.priceFloor != null) p.set("_udlo", String(s.priceFloor));
   if (s.priceCap != null) p.set("_udhi", String(s.priceCap));

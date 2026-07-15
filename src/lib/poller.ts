@@ -534,7 +534,11 @@ async function redeliverPending(database: ReturnType<typeof db>) {
       shippingCost: row.shippingCost,
       buyingOption: row.buyingOption as Item["buyingOption"],
       condition: row.condition,
-      conditionId: null, // not persisted; this row already passed suppression when it was written
+      // Not persisted (no column), so suppression can't be re-evaluated here - this row already
+      // passed it under the settings in force when it was written. A pending for-parts alert
+      // therefore still sends if the search switched to NOT_PARTS before this boot; that needs a
+      // condition_id column to fix, which isn't worth a migration for a <1h redelivery window.
+      conditionId: null,
       imageUrl: row.imageUrl,
       itemUrl: row.itemUrl,
     };

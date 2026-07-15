@@ -212,11 +212,14 @@ const CONDITIONS: [string, string][] = [
 // eBay credentials. Derived from CONDITION_FILTER rather than matching display strings, so
 // a preset's ID mapping can't drift from what mock mode shows. Note "Open box" (1500)
 // matches neither NEW nor USED here, which is faithful: it doesn't live-either.
-function mockConditionOk(conditionId: string | null, conditions: string | null): boolean {
+// Takes the whole Item, not a field: `condition` (display text) and `conditionId` are both
+// string | null, so a field parameter lets a caller pass the wrong one with no type error -
+// which silently empties the sample, since no display name matches a numeric ID.
+function mockConditionOk(item: Item, conditions: string | null): boolean {
   if (!conditions) return true;
-  if (conditions === "NOT_PARTS") return conditionId !== FOR_PARTS_ID;
+  if (conditions === "NOT_PARTS") return !conditionExcluded(item, conditions);
   const ids = CONDITION_FILTER[conditions as ConditionKey];
-  return ids != null && conditionId != null && ids.split("|").includes(conditionId);
+  return ids != null && item.conditionId != null && ids.split("|").includes(item.conditionId);
 }
 
 function mockItem(s: Search, n: number): Item {
@@ -255,7 +258,7 @@ function mockSearch(s: Search): Item[] {
     if (pool.length > 50) pool.pop();
   }
   // condition filter is server-side for the live API, so mirror it here
-  return pool.filter((i: Item) => mockConditionOk(i.conditionId, s.conditions));
+  return pool.filter((i: Item) => mockConditionOk(i, s.conditions));
 }
 
 // Mock market sample: prices centered ~$500 regardless of the search's band, so the
@@ -265,5 +268,5 @@ function mockMarket(s: Search): Item[] {
   return Array.from({ length: 40 }, (_, n) => ({
     ...mockItem(s, n),
     price: 400 + ((n * 16) % 21) * 10, // 400..600, median ~500 — independent of the price band
-  })).filter((i) => mockConditionOk(i.condition, s.conditions));
+  })).filter((i) => mockConditionOk(i, s.conditions));
 }

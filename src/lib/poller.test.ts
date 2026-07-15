@@ -84,6 +84,7 @@ const mkItem = (price: number | null): Item => ({
   shippingCost: null,
   buyingOption: "FIXED_PRICE",
   condition: null,
+  conditionId: null,
   imageUrl: null,
   itemUrl: "u",
 });

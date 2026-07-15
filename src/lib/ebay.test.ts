@@ -102,6 +102,19 @@ test("marketSampleSearch keeps the floor, drops the cap", () => {
   expect(f).toContain("conditionIds:{3000|4000|5000|6000}"); // other constraints preserved
 });
 
+// The mock market sample must apply the same condition filter as the mock search: they call
+// the same helper, and passing it the display string instead of the ID silently empties the
+// sample (no display name matches a numeric ID), storing a null baseline. Both fields are
+// string | null, so only a test catches the mix-up.
+test("sampleMarket (mock): the condition preset filters the sample by ID", async () => {
+  const neu = await sampleMarket({ ...base, conditions: "NEW" });
+  expect(neu.length).toBeGreaterThan(0);
+  expect(neu.every((i) => i.conditionId === "1000")).toBe(true);
+  const notParts = await sampleMarket({ ...base, conditions: "NOT_PARTS" });
+  expect(notParts.length).toBeGreaterThan(0);
+  expect(notParts.every((i) => i.conditionId !== "7000")).toBe(true); // junk can't drag the median
+});
+
 // Mock market sample must center well above a deal-hunt band so the feature is visibly
 // exercisable (and the median helper agrees on the figure the poller would store).
 test("sampleMarket (mock): median sits ~500, independent of the search band", async () => {

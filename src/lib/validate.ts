@@ -1,4 +1,5 @@
 import { DEFAULT_INTERVAL } from "./poller";
+import { splitExcludeTerms } from "./exclude-terms";
 import { CONDITION_KEYS, type ConditionKey } from "./types";
 
 // Returns an error string, or the cleaned fields. partial=true (PATCH) only
@@ -55,7 +56,7 @@ export function parseSearchBody(b: any, partial: boolean): string | Record<strin
     if (v.includes('"')) return "excludeTerms cannot contain double quotes";
     // Store null unless there's a real term: all-punctuation input like ",," matches
     // nothing yet would render a misleading "−0 excluded" badge if kept as a string.
-    const hasTerm = (v as string).split(/[,\n]/).some((t) => t.trim());
+    const hasTerm = splitExcludeTerms(v).length > 0;
     out.excludeTerms = hasTerm ? v.slice(0, 500) : null; // cap: a title has nothing to match beyond this
   }
   if (partial && b.enabled !== undefined) out.enabled = !!b.enabled;

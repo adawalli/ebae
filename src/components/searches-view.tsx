@@ -2,6 +2,7 @@
 
 import { ExternalLink, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import type { SearchStats, StatusInfo } from "@/lib/types";
+import { splitExcludeTerms } from "@/lib/exclude-terms";
 import { ebayWebUrl } from "@/lib/utils";
 import { ago, callsFor, fmt, money } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
@@ -111,6 +112,7 @@ export function SearchesView({
           )}
           {searches.map((s) => {
             const seeding = s.enabled && !s.seeded;
+            const exclusions = splitExcludeTerms(s.excludeTerms);
             return (
               <Card key={s.id} className="gap-0 py-0" style={{ opacity: s.enabled ? 1 : 0.62 }}>
                 <CardContent className="flex flex-col gap-2.5 p-3.5 md:grid md:grid-cols-[18px_minmax(0,1fr)_150px_62px_76px_40px_132px] md:items-center md:gap-2">
@@ -168,13 +170,9 @@ export function SearchesView({
                         {s.conditions === "NEW" ? "New" : "Used"}
                       </Badge>
                     )}
-                    {s.excludeTerms && (
-                      <Badge
-                        variant="secondary"
-                        className="font-mono"
-                        title={`Excludes: ${s.excludeTerms.replace(/[,\n]+/g, ", ")}`}
-                      >
-                        −{s.excludeTerms.split(/[,\n]/).filter((t) => t.trim()).length} excluded
+                    {exclusions.length > 0 && (
+                      <Badge variant="secondary" className="font-mono" title={`Excludes: ${exclusions.join(", ")}`}>
+                        −{exclusions.length} excluded
                       </Badge>
                     )}
                   </div>

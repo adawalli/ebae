@@ -3,6 +3,7 @@ import pkg from "../../package.json";
 import { db, migrateToLatest } from "./db";
 import { alerts, apiUsage, channels, searches, seenItems, settings } from "./schema";
 import { CURRENCY, MARKETPLACE, MOCK, sampleMarket, searchNewlyListed, tokenExpiresAt } from "./ebay";
+import { splitExcludeTerms } from "./exclude-terms";
 import { notify } from "./discord";
 import { log } from "./log";
 import type { Item, PollError, PriceContext, Search, SearchStats, SnoozeConfig, StatusInfo } from "./types";
@@ -114,11 +115,7 @@ function message(e: unknown) {
 export function excludeMatch(title: string, excludeTerms: string | null): boolean {
   if (!excludeTerms) return false;
   const t = title.toLowerCase();
-  return excludeTerms
-    .split(/[,\n]/)
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean)
-    .some((term) => t.includes(term));
+  return splitExcludeTerms(excludeTerms).some((term) => t.includes(term.toLowerCase()));
 }
 
 // Median of a numeric list (mean of the two middles on an even count); null on

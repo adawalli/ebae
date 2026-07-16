@@ -11,6 +11,9 @@ const SECRETS: RegExp[] = [
   /postgres(?:ql)?:\/\/[^\s"']*@/gi, // connection string with credentials
   /https:\/\/discord(?:app)?\.com\/api\/webhooks\/\S+/gi, // webhook URL (its token)
   /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, // auth headers / bearer tokens
+  // Push endpoints: bearer-equivalent, same as a webhook URL - whoever holds one can
+  // push to that device. The hosts mirror validate.ts's allowlist.
+  /https:\/\/(?:fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com|web\.push\.apple\.com|[a-z0-9-]+\.notify\.windows\.com)\/\S+/gi,
 ];
 
 export function redact(s: string): string {

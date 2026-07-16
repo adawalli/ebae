@@ -21,7 +21,7 @@ Use TypeScript with `strict` enabled and prefer imports through the `@/*` alias 
 
 ## Testing Guidelines
 
-No automated test framework is currently configured. For now, run `bun run lint` and `bun run build` before opening a PR. When adding tests, colocate them with the related module using a clear suffix such as `poller.test.ts` or place broader integration tests under `src/__tests__/`. Prefer focused tests around polling, validation, quota behavior, and API route responses.
+Tests run under `bun test` (Bun's built-in runner - there is no npm script). Run `bun run lint`, `bun run build`, and `bun test` before opening a PR. Colocate tests with the related module using a clear suffix such as `poller.test.ts`, or place broader integration tests under `src/__tests__/`. Prefer focused tests around polling, validation, quota behavior, and API route responses. Tests have no `DATABASE_URL`, so stick to the pure units (see `auth.test.ts`, which exercises only the JWT half for exactly that reason).
 
 ## Commit & Pull Request Guidelines
 

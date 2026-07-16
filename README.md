@@ -1,5 +1,7 @@
 # ebae
 
+<img src="public/logo.png" alt="ebae - eBay Before Anyone Else" width="420">
+
 _eBay, before anyone else._
 
 Self-hosted eBay alerting. Polls your saved searches every 1-15 minutes via the official Browse API and pings Discord the moment a matching item lists - fast enough to catch Buy It Now drops before they're gone. One container, egress-only, nothing on your network exposed.
@@ -28,36 +30,56 @@ In a multi-user mode the env vars are ignored: each user enters their own App ID
 
 Browse API default quota is 5,000 calls/day per eBay app, so `EBAY_DAILY_QUOTA` is a per-user ceiling. The UI projects your daily usage as you add searches and the poller enforces the budget.
 
-## Discord notifications
+## Notifications
+
+Alerts go to Discord webhooks, push notifications on your own devices, or both. Every target that accepts an alert gets it; an alert is retried after a restart only while no target has taken it.
+
+### Discord
 
 Create a webhook in your Discord channel (channel settings → Integrations → Webhooks) and set `DISCORD_WEBHOOK_URL`. More targets can be added on the Status & Settings page.
 
 In a multi-user mode `DISCORD_WEBHOOK_URL` is ignored (it would fan everyone's alerts into one channel) - each user adds their own webhooks in the UI.
 
+### Push
+
+ebae is an installable PWA, so alerts can arrive as ordinary phone or desktop notifications with no Discord involved. Install it (Chrome: the address-bar install button; iPhone: Share → Add to Home Screen), open Status & Settings, and turn on **Push to this device**. It is per device - turn it on wherever you want alerts.
+
+No configuration: the VAPID keypair is generated on first use and kept in the database. `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` override it if you would rather pin the keys, and `VAPID_SUBJECT` sets the contact URI the push services see (it defaults to this project's repo).
+
+The toggle only appears where a browser can actually do push, which needs a **secure context**:
+
+- **`http://localhost` counts as secure**, so push works out of the box in dev.
+- **`http://<lan-ip>:3000` does not.** Browsers refuse service workers there, so no push - put ebae behind TLS, or use Discord.
+- **iPhone/iPad additionally require Add to Home Screen first.** Safari tabs cannot receive push at all; the toggle appears only in the installed app.
+
+Subscriptions expire on their own (iOS drops them after a week or two of inactivity, and Chrome revokes permission for sites you rarely open). ebae re-registers the current device every time you open it, and drops subscriptions the push service reports as gone, so this mostly takes care of itself - but if push goes quiet, opening the app is the fix.
+
 ## Configuration
 
 Config is env vars - see [.env.example](.env.example). Searches, webhooks and (in multi-user modes) each user's eBay keys live in Postgres and are managed in the UI.
 
-| var                                     | purpose                                                  | default                        |
-| --------------------------------------- | -------------------------------------------------------- | ------------------------------ |
-| `DATABASE_URL`                          | Postgres connection string                               | required                       |
-| `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | eBay app credentials (single mode only)                  | unset = mock mode              |
-| `EBAY_ENV`                              | `production` or `sandbox` (single mode only)             | production                     |
-| `EBAY_MARKETPLACE`                      | marketplace id (single mode only)                        | `EBAY_US`                      |
-| `DISCORD_WEBHOOK_URL`                   | notification target (single mode only)                   | unset                          |
-| `AUTH_MODE`                             | `single`, `cloudflare` or `proxy`                        | `single`                       |
-| `CF_ACCESS_TEAM_DOMAIN`                 | `<team>.cloudflareaccess.com` (required in `cloudflare`) | unset                          |
-| `CF_ACCESS_AUD`                         | Access app Audience tag (required in `cloudflare`)       | unset                          |
-| `AUTH_TRUSTED_HEADER`                   | header carrying the email (required in `proxy`)          | unset                          |
-| `ENCRYPTION_KEY`                        | base64 32 bytes; encrypts eBay secrets saved in the UI   | unset                          |
-| `LEGACY_OWNER_EMAIL`                    | one-time claim of pre-multi-user rows                    | unset                          |
-| `POLL_INTERVAL_DEFAULT`                 | fallback poll interval (min)                             | 5                              |
-| `CACHE_REFRESH_HOURS`                   | DB → cache refresh cadence                               | 12                             |
-| `SEEN_RETENTION_DAYS`                   | seen_items dedupe retention (days)                       | 90                             |
-| `MARKET_SAMPLE_HOURS`                   | market-baseline resample gap (band-limited searches)     | 24                             |
-| `EBAY_DAILY_QUOTA`                      | enforced daily call budget, per user                     | 5000                           |
-| `LOG_LEVEL`                             | `error`/`warn`/`info`/`debug`                            | `info`                         |
-| `LOG_FORMAT`                            | `json` or `pretty`                                       | `pretty` on a TTY, else `json` |
+| var                                      | purpose                                                  | default                        |
+| ---------------------------------------- | -------------------------------------------------------- | ------------------------------ |
+| `DATABASE_URL`                           | Postgres connection string                               | required                       |
+| `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET`  | eBay app credentials (single mode only)                  | unset = mock mode              |
+| `EBAY_ENV`                               | `production` or `sandbox` (single mode only)             | production                     |
+| `EBAY_MARKETPLACE`                       | marketplace id (single mode only)                        | `EBAY_US`                      |
+| `DISCORD_WEBHOOK_URL`                    | notification target (single mode only)                   | unset                          |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | pin the push keypair instead of generating one           | unset = generated on first use |
+| `VAPID_SUBJECT`                          | `mailto:`/`https:` contact URI sent to the push services | this project's repo            |
+| `AUTH_MODE`                              | `single`, `cloudflare` or `proxy`                        | `single`                       |
+| `CF_ACCESS_TEAM_DOMAIN`                  | `<team>.cloudflareaccess.com` (required in `cloudflare`) | unset                          |
+| `CF_ACCESS_AUD`                          | Access app Audience tag (required in `cloudflare`)       | unset                          |
+| `AUTH_TRUSTED_HEADER`                    | header carrying the email (required in `proxy`)          | unset                          |
+| `ENCRYPTION_KEY`                         | base64 32 bytes; encrypts eBay secrets saved in the UI   | unset                          |
+| `LEGACY_OWNER_EMAIL`                     | one-time claim of pre-multi-user rows                    | unset                          |
+| `POLL_INTERVAL_DEFAULT`                  | fallback poll interval (min)                             | 5                              |
+| `CACHE_REFRESH_HOURS`                    | DB → cache refresh cadence                               | 12                             |
+| `SEEN_RETENTION_DAYS`                    | seen_items dedupe retention (days)                       | 90                             |
+| `MARKET_SAMPLE_HOURS`                    | market-baseline resample gap (band-limited searches)     | 24                             |
+| `EBAY_DAILY_QUOTA`                       | enforced daily call budget, per user                     | 5000                           |
+| `LOG_LEVEL`                              | `error`/`warn`/`info`/`debug`                            | `info`                         |
+| `LOG_FORMAT`                             | `json` or `pretty`                                       | `pretty` on a TTY, else `json` |
 
 Everything above the log vars except `DATABASE_URL` is optional. The single-mode-only vars are ignored in `cloudflare`/`proxy` mode (the poller warns at boot if they are set).
 

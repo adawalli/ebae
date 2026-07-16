@@ -1,7 +1,7 @@
 import { MARKETPLACES } from "./ebay";
 import { DEFAULT_INTERVAL } from "./poller";
 import { splitExcludeTerms } from "./exclude-terms";
-import { CONDITION_KEYS, type ConditionKey, type EbayCredsInput } from "./types";
+import { CONDITION_KEYS, type ConditionKey, type EbayCredsInput, type PushSub } from "./types";
 
 // Returns an error string, or the cleaned fields. partial=true (PATCH) only
 // validates the keys that are present.
@@ -114,5 +114,40 @@ export function parseChannelBody(b: any): string | { webhookUrl: string } {
   if (!webhookUrl.startsWith("https://discord.com/api/webhooks/"))
     return "webhookUrl must start with https://discord.com/api/webhooks/";
   return { webhookUrl };
+}
+
+// The known push services. Exact hosts, except WNS: Microsoft documents the wns2-*
+// subdomain as subject to change, so that one is a suffix match. endsWith(".host") and
+// never includes() - includes() would happily accept evil-fcm.googleapis.com.attacker.com.
+const PUSH_HOSTS = ["fcm.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com"];
+const PUSH_HOST_SUFFIX = ".notify.windows.com"; // WNS (Edge on Windows)
+
+export function pushHostAllowed(endpoint: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "https:" || u.port !== "") return false;
+  return PUSH_HOSTS.includes(u.hostname) || u.hostname.endsWith(PUSH_HOST_SUFFIX);
+}
+
+// Validates a POST /api/push body, shaped like PushSubscription.toJSON(). The endpoint is
+// attacker-controlled input and the poller POSTs to whatever is stored, so the host
+// allowlist is the same load-bearing SSRF guard as parseChannelBody's prefix check - it
+// just has to run here, at subscribe time, because that's where the untrusted URL enters.
+// The key bounds are a sanity ceiling, not a format check: RFC 8291 fixes these at 87 and
+// 22 chars, but web-push rejects a malformed key on its own, so this only stops something
+// absurd reaching the column.
+export function parsePushBody(b: any): string | PushSub {
+  const endpoint = typeof b?.endpoint === "string" ? b.endpoint.trim() : "";
+  if (!endpoint) return "endpoint is required";
+  if (!pushHostAllowed(endpoint)) return "endpoint is not a recognized push service";
+  const p256dh = typeof b?.keys?.p256dh === "string" ? b.keys.p256dh.trim() : "";
+  const auth = typeof b?.keys?.auth === "string" ? b.keys.auth.trim() : "";
+  if (!p256dh || !auth) return "keys.p256dh and keys.auth are required";
+  if (p256dh.length > 200 || auth.length > 100) return "keys are malformed";
+  return { endpoint, p256dh, auth };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */

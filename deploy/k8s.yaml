@@ -52,8 +52,25 @@ spec:
     - port: 80
       targetPort: 3000
 ---
+# Single-user, no auth (the default). EBAY_* and DISCORD_WEBHOOK_URL are single-mode only.
 # kubectl create secret generic ebae-env \
 #   --from-literal=DATABASE_URL=postgres://... \
 #   --from-literal=EBAY_CLIENT_ID=... \
 #   --from-literal=EBAY_CLIENT_SECRET=... \
 #   --from-literal=DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+#
+# Shared with other people, behind Cloudflare Access (see README's Multi-user section).
+# ENCRYPTION_KEY belongs in this Secret, not a ConfigMap: it decrypts every user's eBay
+# secret. Drop the EBAY_*/DISCORD_WEBHOOK_URL literals above - they're ignored here, and
+# users enter their own keys in the UI. Upgrading an existing single-user database is the
+# one exception: keep DISCORD_WEBHOOK_URL for the LEGACY_OWNER_EMAIL boot, which imports
+# it as the owner's first channel, and drop both afterwards. See README's LEGACY_OWNER_EMAIL.
+# kubectl create secret generic ebae-env \
+#   --from-literal=DATABASE_URL=postgres://... \
+#   --from-literal=AUTH_MODE=cloudflare \
+#   --from-literal=CF_ACCESS_TEAM_DOMAIN=yourteam.cloudflareaccess.com \
+#   --from-literal=CF_ACCESS_AUD=<application audience tag> \
+#   --from-literal=ENCRYPTION_KEY="$(openssl rand -base64 32)"
+#
+# Migrating an existing single-user database: add --from-literal=LEGACY_OWNER_EMAIL=you@example.com
+# for one boot to claim the existing rows, then drop it.

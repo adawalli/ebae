@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { browseFilters, conditionExcluded, marketSampleSearch, sampleMarket } from "./ebay";
+import { browseFilters, conditionExcluded, currencyFor, marketSampleSearch, mockMarket } from "./ebay";
 import { median } from "./poller";
 import type { Item, Search } from "./types";
 
@@ -18,6 +18,7 @@ const item: Item = {
 
 const base: Search = {
   id: 1,
+  userId: 1,
   q: "Leica M6",
   categoryId: null,
   priceFloor: null,
@@ -34,19 +35,33 @@ const base: Search = {
   createdAt: "",
 };
 
+// The currency the price filter is denominated in follows the user's marketplace, so a GB
+// user's price band isn't quietly compared against USD.
+test("currencyFor: maps known marketplaces, falls back to USD", () => {
+  expect(currencyFor("EBAY_GB")).toBe("GBP");
+  expect(currencyFor("EBAY_DE")).toBe("EUR");
+  expect(currencyFor("EBAY_US")).toBe("USD");
+  expect(currencyFor("EBAY_NOPE")).toBe("USD");
+});
+
 // The eBay Browse filter contract. Mock mode bypasses this path entirely, so without a
 // unit test a wrong field name (conditions vs conditionIds) 400s only in production.
 test("browseFilters: buying options default to BIN, auctions when included", () => {
-  expect(browseFilters(base)).toEqual(["buyingOptions:{FIXED_PRICE}"]);
-  expect(browseFilters({ ...base, includeAuctions: true })).toEqual(["buyingOptions:{FIXED_PRICE|AUCTION}"]);
+  expect(browseFilters(base, "USD")).toEqual(["buyingOptions:{FIXED_PRICE}"]);
+  expect(browseFilters({ ...base, includeAuctions: true }, "USD")).toEqual(["buyingOptions:{FIXED_PRICE|AUCTION}"]);
 });
 
 test("browseFilters: price bounds build [lo..hi], [..hi], [lo..] with a currency", () => {
-  const both = browseFilters({ ...base, priceFloor: 100, priceCap: 500 });
+  const both = browseFilters({ ...base, priceFloor: 100, priceCap: 500 }, "USD");
   expect(both).toContain("price:[100..500]");
   expect(both.some((f) => f.startsWith("priceCurrency:"))).toBe(true);
-  expect(browseFilters({ ...base, priceCap: 500 })).toContain("price:[..500]");
-  expect(browseFilters({ ...base, priceFloor: 100 })).toContain("price:[100..]");
+  expect(browseFilters({ ...base, priceCap: 500 }, "USD")).toContain("price:[..500]");
+  expect(browseFilters({ ...base, priceFloor: 100 }, "USD")).toContain("price:[100..]");
+});
+
+// The currency clause comes from the caller's marketplace, not a module-global.
+test("browseFilters: priceCurrency follows the passed currency", () => {
+  expect(browseFilters({ ...base, priceFloor: 100 }, "GBP")).toContain("priceCurrency:GBP");
 });
 
 // No preset may send a condition clause: `conditionIds` is a keep-list with no negation, so it
@@ -55,7 +70,7 @@ test("browseFilters: price bounds build [lo..hi], [..hi], [lo..] with a currency
 // numeric IDs in the enum-only `conditions` field - we now send neither.)
 test("browseFilters: no preset emits a condition clause", () => {
   for (const c of [null, "NOT_PARTS", "NEW", "USED"]) {
-    expect(browseFilters({ ...base, conditions: c }).some((f) => f.includes("condition"))).toBe(false);
+    expect(browseFilters({ ...base, conditions: c }, "USD").some((f) => f.includes("condition"))).toBe(false);
   }
 });
 
@@ -94,7 +109,7 @@ test("conditionExcluded: an unknown future condition ID survives NOT_PARTS and U
 });
 
 test("browseFilters: all clauses compose in order", () => {
-  const f = browseFilters({ ...base, includeAuctions: true, priceFloor: 50, priceCap: 900, conditions: "NEW" });
+  const f = browseFilters({ ...base, includeAuctions: true, priceFloor: 50, priceCap: 900, conditions: "NEW" }, "USD");
   expect(f[0]).toBe("buyingOptions:{FIXED_PRICE|AUCTION}");
   expect(f).toContain("price:[50..900]");
 });
@@ -106,7 +121,7 @@ test("marketSampleSearch keeps the floor, drops the cap", () => {
   const m = marketSampleSearch({ ...base, priceFloor: 150, priceCap: 800, conditions: "USED" });
   expect(m.priceFloor).toBe(150);
   expect(m.priceCap).toBeNull();
-  const f = browseFilters(m);
+  const f = browseFilters(m, "USD");
   expect(f).toContain("price:[150..]"); // floor kept, open-ended top
   expect(f.some((c) => c.includes("800"))).toBe(false); // cap gone
   expect(m.conditions).toBe("USED"); // other constraints preserved (applied via conditionExcluded)
@@ -116,20 +131,20 @@ test("marketSampleSearch keeps the floor, drops the cap", () => {
 // the same helper, and passing it the display string instead of the ID silently empties the
 // sample (no display name matches a numeric ID), storing a null baseline. Both fields are
 // string | null, so only a test catches the mix-up.
-test("sampleMarket (mock): the condition preset filters the sample by ID", async () => {
-  const neu = await sampleMarket({ ...base, conditions: "NEW" });
+test("mockMarket: the condition preset filters the sample by ID", () => {
+  const neu = mockMarket({ ...base, conditions: "NEW" });
   expect(neu.length).toBeGreaterThan(0);
   // new family, plus unspecified-condition listings, which no preset may drop
   expect(neu.every((i) => i.conditionId == null || ["1000", "1500", "1750"].includes(i.conditionId!))).toBe(true);
-  const notParts = await sampleMarket({ ...base, conditions: "NOT_PARTS" });
+  const notParts = mockMarket({ ...base, conditions: "NOT_PARTS" });
   expect(notParts.length).toBeGreaterThan(0);
   expect(notParts.every((i) => i.conditionId !== "7000")).toBe(true); // junk can't drag the median
 });
 
 // Mock market sample must center well above a deal-hunt band so the feature is visibly
 // exercisable (and the median helper agrees on the figure the poller would store).
-test("sampleMarket (mock): median sits ~500, independent of the search band", async () => {
-  const items = await sampleMarket({ ...base, priceFloor: 100, priceCap: 300 });
+test("mockMarket: median sits ~500, independent of the search band", () => {
+  const items = mockMarket({ ...base, priceFloor: 100, priceCap: 300 });
   const m = median(items.map((i) => i.price).filter((p): p is number => p != null));
   expect(m).not.toBeNull();
   expect(m!).toBeGreaterThan(300); // above the 100-300 band its own listings would sit in

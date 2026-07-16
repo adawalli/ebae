@@ -50,6 +50,13 @@
       "when": 1783982056905,
       "tag": "0006_alerts_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784209581089,
+      "tag": "0007_slimy_albert_cleary",
+      "breakpoints": true
     }
   ]
 }

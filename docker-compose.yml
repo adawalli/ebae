@@ -20,6 +20,12 @@ services:
     # Neon or any external Postgres: set DATABASE_URL in .env and you're done.
     # No external Postgres? Uncomment db below and use:
     # DATABASE_URL=postgres://ebae:ebae@db:5432/ebae
+    #
+    # Defaults to single-user, no auth: safe on a LAN, do not expose it publicly as is.
+    # To share it with other people, add to .env.local (see README's Multi-user section):
+    #   AUTH_MODE=cloudflare, CF_ACCESS_TEAM_DOMAIN, CF_ACCESS_AUD   (Cloudflare Access)
+    #   AUTH_MODE=proxy, AUTH_TRUSTED_HEADER                         (other SSO proxies)
+    #   ENCRYPTION_KEY  - openssl rand -base64 32, encrypts each user's eBay secret
 
   # db:
   #   image: postgres:17-alpine

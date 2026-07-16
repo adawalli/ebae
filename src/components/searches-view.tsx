@@ -20,6 +20,7 @@ export function SearchesView({
   quotaPct,
   running,
   mock,
+  noCreds,
   status,
   openCreate,
   openEdit,
@@ -34,6 +35,7 @@ export function SearchesView({
   quotaPct: number;
   running: boolean;
   mock: boolean;
+  noCreds: boolean;
   status: StatusInfo | null;
   openCreate: () => void;
   openEdit: (s: SearchStats) => void;
@@ -58,12 +60,18 @@ export function SearchesView({
             <span
               className="size-1.5 rounded-full"
               style={{
-                background: running ? "var(--eb-green)" : "var(--eb-amber)",
-                animation: running ? "ebPulse 2.4s ease-in-out infinite" : undefined,
+                background: running && !noCreds ? "var(--eb-green)" : "var(--eb-amber)",
+                animation: running && !noCreds ? "ebPulse 2.4s ease-in-out infinite" : undefined,
               }}
             />
             {searches.length} searches · {active.length} active ·{" "}
-            {running ? (mock ? "polling (mock mode)" : "polling live") : "poller down"}
+            {!running
+              ? "poller down"
+              : noCreds
+                ? "paused — no eBay keys"
+                : mock
+                  ? "polling (mock mode)"
+                  : "polling live"}
           </div>
         </div>
         <Button onClick={openCreate} className="justify-center md:justify-start">

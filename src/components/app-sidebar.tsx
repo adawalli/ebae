@@ -75,6 +75,12 @@ export function AppSidebar({
       </SidebarContent>
       <SidebarFooter className="gap-3">
         <ThemeToggle />
+        {/* empty until the poller's cache has the user (see status()), so guard rather than assume */}
+        {status?.user.email && (
+          <div className="truncate px-1 font-mono text-[10.5px] text-muted-foreground" title={status.user.email}>
+            {status.user.email}
+          </div>
+        )}
         <div className="flex items-center gap-2 px-1 font-mono text-[10.5px] text-muted-foreground">
           <span
             className="size-1.5 shrink-0 rounded-full"

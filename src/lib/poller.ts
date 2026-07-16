@@ -1,15 +1,20 @@
 import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, max, sql } from "drizzle-orm";
 import pkg from "../../package.json";
 import { db, migrateToLatest } from "./db";
-import { alerts, apiUsage, channels, searches, seenItems, settings } from "./schema";
+import { alerts, apiUsage, channels, searches, seenItems, users } from "./schema";
+import { SINGLE_USER_EMAIL, assertAuthEnv, authMode } from "./authmode";
+import { claimLegacyRows } from "./claim";
+import { decryptSecret } from "./crypto";
 import {
-  CURRENCY,
-  MARKETPLACE,
-  MOCK,
   conditionExcluded,
+  currencyFor,
+  invalidateToken,
+  mockMarket,
+  mockSearch,
   sampleMarket,
   searchNewlyListed,
   tokenExpiresAt,
+  type EbayCreds,
 } from "./ebay";
 import { splitExcludeTerms } from "./exclude-terms";
 import { notify } from "./discord";
@@ -18,6 +23,8 @@ import type { Item, PollError, PriceContext, Search, SearchStats, SnoozeConfig, 
 
 const plog = log.child({ component: "poller" });
 
+// A per-user ceiling, not a per-deployment one: each user brings their own eBay app, so each
+// gets their own 5000/day to spend.
 const QUOTA_CEILING = Number(process.env.EBAY_DAILY_QUOTA ?? 5000);
 export const DEFAULT_INTERVAL = Number(process.env.POLL_INTERVAL_DEFAULT ?? 5);
 const REFRESH_HOURS = Number(process.env.CACHE_REFRESH_HOURS ?? 12);
@@ -28,10 +35,10 @@ const MAX_BACKOFF_MS = 30 * 60_000;
 // past this age, retire it unsent rather than spam stale listings when the process comes back.
 const REDELIVER_MAX_AGE_MS = 60 * 60_000;
 
-// Overnight snooze (UI-configured, stored in `settings`, cached in state().snooze):
-// skip all eBay polls during a local-time window so we don't burn quota while nobody's
-// watching. Items listed during the window still alert on the first poll after it ends,
-// via the same newly-listed dedupe (subject to page-1/200-item coverage; a long snooze
+// Overnight snooze (UI-configured, stored on the user's row, cached in UserCtx.snooze):
+// skip that user's eBay polls during a local-time window so we don't burn their quota while
+// nobody's watching. Items listed during the window still alert on the first poll after it
+// ends, via the same newly-listed dedupe (subject to page-1/200-item coverage; a long snooze
 // can push very old listings off page 1). start/end = minutes from midnight in `tz`.
 type SnoozeState = { enabled: boolean; start: number; end: number; tz: string | null };
 const SNOOZE_DEFAULT: SnoozeState = { enabled: false, start: 60, end: 420, tz: null };
@@ -54,22 +61,19 @@ function localMinutes(tz: string | null, now: Date): number {
   return h * 60 + Number(p.find((x) => x.type === "minute")?.value);
 }
 
-function snoozing(now = new Date()): boolean {
-  const sn = state().snooze;
+function snoozing(sn: SnoozeState, now = new Date()): boolean {
   return sn.enabled && inWindow(sn.start, sn.end, localMinutes(sn.tz, now));
 }
 
 const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 
-function snoozeWindow(): string | null {
-  const sn = state().snooze;
+function snoozeWindow(sn: SnoozeState): string | null {
   return sn.enabled ? `${hhmm(sn.start)}–${hhmm(sn.end)}${sn.tz ? ` ${sn.tz}` : ""}` : null;
 }
 
 // Minutes silenced per day (0 when disabled). start !== end is enforced at
 // validation, so an enabled window is always 1..1439. Feeds the UI projection.
-export function snoozeMinutes(): number {
-  const sn = state().snooze;
+export function snoozeMinutes(sn: SnoozeState): number {
   return sn.enabled ? (sn.end - sn.start + 1440) % 1440 : 0;
 }
 
@@ -84,14 +88,31 @@ type Entry = {
   running: boolean; // a tick is in flight; blocks overlapping ticks
 };
 
+// Everything a poll needs about the owner of the search it's about to run: their keys, where
+// their alerts go, what they've spent, when they're asleep. Rebuilt from the DB by reload();
+// `calls` is the one field the poll loop mutates (see mergeCalls).
+type UserCtx = {
+  id: number;
+  email: string;
+  ebay: EbayCreds | null; // null = mock (single mode) or paused (multi-user); see pollMode
+  // Kept beside `ebay` rather than read off it, because they outlive the keys: removing creds
+  // deliberately leaves both columns behind as the defaults if keys return, and single mode
+  // has them from .env even in mock, where there are no creds to read them from at all.
+  env: EbayCreds["env"];
+  marketplace: string;
+  channels: string[];
+  calls: { date: string; used: number };
+  snooze: SnoozeState;
+};
+
 type State = {
   ready: boolean;
   bootError: string | null;
   bootedAt: number | null;
+  // Keyed by search id, not per user: ids are serial, so they're unique across owners and the
+  // scheduler stays one flat set of timers.
   entries: Map<number, Entry>;
-  channels: string[];
-  calls: { date: string; used: number };
-  snooze: SnoozeState;
+  users: Map<number, UserCtx>;
   errors: PollError[];
   lastScheduledAt: number | null; // heartbeat: last time a live poll timer was set, powers /api/health
 };
@@ -104,9 +125,7 @@ function state(): State {
     bootError: null,
     bootedAt: null,
     entries: new Map(),
-    channels: [],
-    calls: { date: new Date().toDateString(), used: 0 },
-    snooze: { ...SNOOZE_DEFAULT },
+    users: new Map(),
     errors: [],
     lastScheduledAt: null,
   });
@@ -137,17 +156,22 @@ export function median(nums: number[]): number | null {
 
 // Single chokepoint for poll-loop failures: keeps the Status-page ring buffer
 // and stdout in sync. level defaults to warn (transient/self-healing); pass
-// "error" for terminal failures (e.g. a webhook dead after all retries).
-function recordError(searchQ: string | null, msg: string, level: "warn" | "error" = "warn") {
+// "error" for terminal failures (e.g. a webhook dead after all retries). userId scopes
+// the entry to one owner's Status page; null = a failure with no owner (boot, refresh),
+// which everyone sees.
+function recordError(userId: number | null, searchQ: string | null, msg: string, level: "warn" | "error" = "warn") {
   const st = state();
-  st.errors.push({ time: new Date().toISOString(), searchQ, message: msg });
+  st.errors.push({ time: new Date().toISOString(), searchQ, message: msg, userId });
   if (st.errors.length > 100) st.errors.shift();
-  plog[level]({ searchQ }, msg);
+  plog[level]({ userId, searchQ }, msg);
 }
 
-function rowToSearch(r: typeof searches.$inferSelect): Search {
+// userId is a parameter because the column is nullable in the DB (claim.ts backfills it) while
+// Search.userId is not: the caller proves the owner, then builds the search.
+function rowToSearch(r: typeof searches.$inferSelect, userId: number): Search {
   return {
     id: r.id,
+    userId,
     q: r.q,
     categoryId: r.categoryId,
     priceFloor: r.priceFloor, // numeric mode:"number" -> already number | null
@@ -189,12 +213,17 @@ async function shutdownFlush(signal: NodeJS.Signals) {
   shuttingDown = true;
   const st = state();
   try {
-    if (st.ready && st.calls.used > 0) {
+    const pending = [...st.users.values()].filter((u) => u.calls.used > 0);
+    if (st.ready && pending.length) {
       // Cap the wait so a suspended/hung Neon can't hold the process past the
-      // container's shutdown grace period; the count is best-effort anyway.
-      await Promise.race([flushCalls(db(), st.calls), new Promise((r) => setTimeout(r, 3000))]);
+      // container's shutdown grace period; the count is best-effort anyway. One flush per
+      // user: their counters are separate rows.
+      await Promise.race([
+        Promise.all(pending.map((u) => flushCalls(db(), u.id, u.calls))),
+        new Promise((r) => setTimeout(r, 3000)),
+      ]);
       // console.error (sync) not plog: a buffered pino write can be dropped by process.exit.
-      console.error(`[poller] flushed call count on ${signal}: used=${st.calls.used} day="${st.calls.date}"`);
+      console.error(`[poller] flushed call counts on ${signal}: users=${pending.length}`);
     }
   } catch (err) {
     console.error(`[poller] shutdown flush failed on ${signal}:`, err);
@@ -211,14 +240,27 @@ async function shutdownFlush(signal: NodeJS.Signals) {
 async function tryBoot() {
   const st = state();
   try {
+    // Fail closed before anything can serve: a multi-user mode missing its config would 401
+    // every request, or worse, trust an unverifiable header. Surfaces through the same
+    // bootError path as a DB outage - the retry loop just keeps re-throwing until it's fixed.
+    assertAuthEnv();
     await migrateToLatest();
+    // Adopt pre-multi-user rows before the first reload, which skips null-owner searches.
+    await claimLegacyRows(db());
     await reload();
+    // Config audit, once per boot (a retry only reaches here on success): single mode's lack
+    // of auth has to be loud, and the multi-user modes must not look like they still honour
+    // the global eBay/webhook vars.
+    if (authMode() === "single") {
+      plog.warn("single-user mode, no authentication - do not expose publicly without your own auth");
+    } else if (process.env.EBAY_CLIENT_ID || process.env.DISCORD_WEBHOOK_URL) {
+      plog.warn(
+        "EBAY_CLIENT_ID and DISCORD_WEBHOOK_URL are ignored in multi-user mode - creds and channels are per-user",
+      );
+    }
     st.ready = true;
     st.bootError = null;
-    plog.info(
-      { searches: st.entries.size, channels: st.channels.length, mode: MOCK ? "mock" : "live" },
-      "poller ready",
-    );
+    plog.info({ searches: st.entries.size, users: st.users.size }, "poller ready");
     // Flush any alert left undelivered by a crash between its insert and its notify, or by a
     // webhook outage that spanned the restart. Must finish BEFORE the first tick is scheduled:
     // a tick firing mid-sweep could insert a fresh deliveredAt=null row that the sweep's SELECT
@@ -228,22 +270,62 @@ async function tryBoot() {
     try {
       await redeliverPending(db());
     } catch (err) {
-      recordError(null, `redeliver on boot: ${message(err)}`);
+      recordError(null, null, `redeliver on boot: ${message(err)}`);
     }
     // jitter the first ticks so N searches don't hit eBay in the same second
     for (const e of st.entries.values()) schedule(e, 1000 + Math.random() * 5000);
     setInterval(
       () =>
         reload()
-          .then(() => plog.info({ searches: st.entries.size, channels: st.channels.length }, "cache refreshed"))
-          .catch((err) => recordError(null, `cache refresh: ${message(err)}`)),
+          .then(() => plog.info({ searches: st.entries.size, users: st.users.size }, "cache refreshed"))
+          .catch((err) => recordError(null, null, `cache refresh: ${message(err)}`)),
       REFRESH_HOURS * 3600_000,
     );
   } catch (err) {
     st.bootError = message(err);
-    recordError(null, `boot failed, retrying: ${st.bootError}`);
+    recordError(null, null, `boot failed, retrying: ${st.bootError}`);
     setTimeout(() => void tryBoot(), BOOT_RETRY_MS);
   }
+}
+
+// Decrypt one user's saved eBay secret. A failure here (wrong or rotated ENCRYPTION_KEY, a
+// hand-edited row) must never kill boot: record it against that user and leave them
+// credential-less, so their searches idle and everyone else keeps polling.
+function credsFor(row: typeof users.$inferSelect): EbayCreds | null {
+  if (!row.ebayClientId || !row.ebayClientSecretEnc) return null;
+  try {
+    return {
+      userId: row.id,
+      clientId: row.ebayClientId,
+      clientSecret: decryptSecret(row.ebayClientSecretEnc, String(row.id)),
+      env: envOf(row.ebayEnv),
+      marketplace: row.ebayMarketplace,
+    };
+  } catch (err) {
+    recordError(row.id, null, `eBay credentials could not be decrypted: ${message(err)}`);
+    return null;
+  }
+}
+
+// Both the column and the env var are free text; only an explicit "sandbox" is sandbox.
+function envOf(raw: string | null | undefined): EbayCreds["env"] {
+  return raw === "sandbox" ? "sandbox" : "production";
+}
+
+// Single mode's eBay preferences, straight off .env. Read apart from the keys because they
+// apply with or without them: EBAY_MARKETPLACE still decides the currency and links the UI
+// renders in mock mode, as it did before multi-user, when it was a module global.
+function envPrefs(): Pick<EbayCreds, "env" | "marketplace"> {
+  return { env: envOf(process.env.EBAY_ENV), marketplace: process.env.EBAY_MARKETPLACE ?? "EBAY_US" };
+}
+
+// Single mode's implicit user runs on .env alone: no creds stored, no ENCRYPTION_KEY needed.
+// EBAY_CLIENT_ID alone decides live vs mock, exactly as it did before multi-user - a
+// half-configured pair must fail loudly at the token request, not silently serve mock listings.
+function envCreds(userId: number): EbayCreds | null {
+  const clientId = process.env.EBAY_CLIENT_ID;
+  if (!clientId) return null;
+  return { userId, clientId, clientSecret: process.env.EBAY_CLIENT_SECRET ?? "", ...envPrefs() };
 }
 
 // Full DB → cache load. Runs at boot and every CACHE_REFRESH_HOURS; between
@@ -255,7 +337,7 @@ async function reload() {
   await database
     .delete(seenItems)
     .where(lt(seenItems.seenAt, sql`now() - (${SEEN_RETENTION_DAYS} * interval '1 day')`));
-  const [searchRows, seenRows, hitRows, lastHitRows, channelRows, settingsRows] = await Promise.all([
+  const [searchRows, seenRows, hitRows, lastHitRows, channelRows, userRows] = await Promise.all([
     database.select().from(searches),
     database.select({ searchId: seenItems.searchId, itemId: seenItems.itemId }).from(seenItems),
     database
@@ -266,14 +348,62 @@ async function reload() {
       .select({ searchId: alerts.searchId, last: max(alerts.createdAt) })
       .from(alerts)
       .groupBy(alerts.searchId),
-    database.select({ webhookUrl: channels.webhookUrl }).from(channels).where(eq(channels.enabled, true)),
-    database.select().from(settings).where(eq(settings.id, 1)),
+    database
+      .select({ userId: channels.userId, webhookUrl: channels.webhookUrl })
+      .from(channels)
+      .where(eq(channels.enabled, true)),
+    database.select().from(users),
   ]);
 
   const st = state();
+  const webhooksByUser = new Map<number, string[]>();
+  for (const r of channelRows) {
+    if (r.userId == null) continue; // unclaimed, same as a null-owner search below
+    const list = webhooksByUser.get(r.userId);
+    if (list) list.push(r.webhookUrl);
+    else webhooksByUser.set(r.userId, [r.webhookUrl]);
+  }
+  // Swap the map (and each user's channel list) rather than mutate: a tick mid-flight keeps
+  // polling against the context it captured instead of seeing half of a reload. `calls` is
+  // carried by reference so an increment landing during the swap isn't lost.
+  const nextUsers = new Map<number, UserCtx>();
+  for (const row of userRows) {
+    nextUsers.set(row.id, {
+      id: row.id,
+      email: row.email,
+      ebay: credsFor(row),
+      env: envOf(row.ebayEnv),
+      marketplace: row.ebayMarketplace,
+      channels: webhooksByUser.get(row.id) ?? [],
+      calls: st.users.get(row.id)?.calls ?? { date: today, used: 0 },
+      snooze: { enabled: row.snoozeEnabled, start: row.snoozeStart, end: row.snoozeEnd, tz: row.snoozeTz },
+    });
+  }
+  // The env vars are single mode's whole eBay/Discord config, and an existing deployment must
+  // upgrade to multi-user code without touching them. DB creds still win (the UI can save some
+  // even here); no creds at all leaves ebay null, which pollMode reads as mock - today's
+  // behaviour. Multi-user modes ignore both vars (warned about at boot): one global webhook
+  // would fan every user's alerts into one channel.
+  if (authMode() === "single") {
+    const u = [...nextUsers.values()].find((x) => x.email === SINGLE_USER_EMAIL);
+    if (u) {
+      // Nothing saved through the UI leaves .env as the whole eBay config, keys and
+      // preferences alike - the state an upgrading deployment arrives in.
+      if (!u.ebay) {
+        u.ebay = envCreds(u.id);
+        Object.assign(u, envPrefs());
+      }
+      if (process.env.DISCORD_WEBHOOK_URL) u.channels.push(process.env.DISCORD_WEBHOOK_URL);
+    }
+  }
+  st.users = nextUsers;
+
   const fresh = new Set<number>();
   for (const row of searchRows) {
-    const s = rowToSearch(row);
+    // No owner means no keys to poll with, no channel to notify and no quota to bill: leave
+    // the row inert until the boot claim adopts it, rather than guess at one.
+    if (row.userId == null) continue;
+    const s = rowToSearch(row, row.userId);
     fresh.add(s.id);
     const existing = st.entries.get(s.id);
     if (existing) {
@@ -346,23 +476,18 @@ async function reload() {
     const memLast = savedLastHitAt.get(id);
     if (memLast != null && (e.lastHitAt == null || memLast > e.lastHitAt)) e.lastHitAt = memLast;
   }
-  st.channels = channelRows.map((r) => r.webhookUrl);
-  if (process.env.DISCORD_WEBHOOK_URL) st.channels.push(process.env.DISCORD_WEBHOOK_URL);
-  const snRow = settingsRows[0];
-  st.snooze = snRow
-    ? { enabled: snRow.snoozeEnabled, start: snRow.snoozeStart, end: snRow.snoozeEnd, tz: snRow.snoozeTz }
-    : { ...SNOOZE_DEFAULT };
-
-  // Reconcile the daily quota counter. Flush our in-memory value and read back
+  // Reconcile each user's daily quota counter. Flush our in-memory value and read back
   // what greatest() resolved to — one round-trip that handles both directions:
   // dying-process race (DB has more than we just read) and concurrent polls
-  // (we have more than DB). Guard midnight twice: a poll tick can reset st.calls
+  // (we have more than DB). Guard midnight twice: a poll tick can reset a counter
   // during the await, and if that happens we must not stamp it backward.
   if (new Date().toDateString() === today) {
-    const inMem = st.calls.date === today ? st.calls.used : 0;
-    const reconciled = await flushCalls(database, { date: today, used: inMem });
-    if (new Date().toDateString() === today) {
-      st.calls = mergeCalls(st.calls, today, reconciled);
+    for (const u of st.users.values()) {
+      const inMem = u.calls.date === today ? u.calls.used : 0;
+      const reconciled = await flushCalls(database, u.id, { date: today, used: inMem });
+      if (new Date().toDateString() === today) {
+        u.calls = mergeCalls(u.calls, today, reconciled);
+      }
     }
   }
 }
@@ -371,18 +496,21 @@ async function reload() {
 // mid-run (it holds increments not yet flushed), so on a live refresh keep the
 // larger; a fresh boot has memory 0 and adopts the DB value; a day rollover
 // discards a stale prior-day DB count. Pure + exported so it's unit-testable.
-export function mergeCalls(cur: State["calls"], today: string, dbUsed: number): State["calls"] {
+export function mergeCalls(cur: UserCtx["calls"], today: string, dbUsed: number): UserCtx["calls"] {
   if (cur.date === today) return { date: today, used: Math.max(cur.used, dbUsed) };
   return { date: today, used: dbUsed };
 }
 
-// Persists the daily eBay call count. Returns the greatest()-reconciled value from
+// Persists one user's daily eBay call count. Returns the greatest()-reconciled value from
 // the DB so callers can sync in-memory state without a separate SELECT.
-async function flushCalls(database: ReturnType<typeof db>, calls: State["calls"]): Promise<number> {
+async function flushCalls(database: ReturnType<typeof db>, userId: number, calls: UserCtx["calls"]): Promise<number> {
   const [row] = await database
     .insert(apiUsage)
-    .values({ day: calls.date, used: calls.used })
-    .onConflictDoUpdate({ target: apiUsage.day, set: { used: sql`greatest(${apiUsage.used}, ${calls.used})` } })
+    .values({ userId, day: calls.date, used: calls.used })
+    .onConflictDoUpdate({
+      target: [apiUsage.userId, apiUsage.day],
+      set: { used: sql`greatest(${apiUsage.used}, ${calls.used})` },
+    })
     .returning({ used: apiUsage.used });
   return row?.used ?? calls.used;
 }
@@ -412,7 +540,7 @@ async function tick(e: Entry) {
     // pollOnce catches its own poll failures; reaching here means a throw before its try
     // (e.g. an invalid snooze tz in Intl). Reschedule so one entry can't silently kill its
     // timer - which the heartbeat would otherwise read as a wedge and 503.
-    recordError(e.s.q, `tick: ${message(err)}`);
+    recordError(e.s.userId, e.s.q, `tick: ${message(err)}`);
     schedule(e, MAX_BACKOFF_MS);
   } finally {
     e.running = false;
@@ -442,7 +570,7 @@ async function priceContext(
 // instead of only its own in-band alerts. Self-throttled to once/MARKET_SAMPLE_HOURS per
 // search, quota-guarded, and fully isolated (own try/catch) so a failure here never backs
 // off the main poll.
-async function maybeSampleMarket(e: Entry, database: ReturnType<typeof db>) {
+async function maybeSampleMarket(e: Entry, u: UserCtx, database: ReturnType<typeof db>) {
   const s = e.s;
   // Only searches with BOTH a floor and a cap get a baseline. The floor filters accessory
   // noise out of the sample (see marketSampleSearch); the cap is the ceiling the sample exists
@@ -450,11 +578,12 @@ async function maybeSampleMarket(e: Entry, database: ReturnType<typeof db>) {
   // upper market via their in-band alerts, so a sample would just burn quota.
   if (s.priceFloor == null || s.priceCap == null) return;
   if (s.marketSampledAt && Date.now() - Date.parse(s.marketSampledAt) < MARKET_SAMPLE_HOURS * 3600_000) return;
-  const st = state();
-  if (st.calls.used >= QUOTA_CEILING) return; // don't spend the last of the budget on a baseline
+  if (u.calls.used >= QUOTA_CEILING) return; // don't spend the last of the owner's budget on a baseline
   try {
-    st.calls.used++;
-    const items = await sampleMarket(s);
+    u.calls.used++;
+    // Same mode gate as the poll that called us: pollOnce already returned for a user with
+    // nothing to poll with, so this is live-or-mock.
+    const items = u.ebay ? await sampleMarket(u.ebay, s) : mockMarket(s);
     const prices = items
       .filter((i) => !excludeMatch(i.title, s.excludeTerms) && !conditionExcluded(i, s.conditions))
       .map((i) => i.price)
@@ -464,10 +593,10 @@ async function maybeSampleMarket(e: Entry, database: ReturnType<typeof db>) {
     await database.update(searches).set({ marketMedian: m, marketSampledAt: sampledAt }).where(eq(searches.id, s.id));
     s.marketMedian = m;
     s.marketSampledAt = sampledAt.toISOString();
-    await flushCalls(database, st.calls); // piggyback the +1 eBay call we just spent
+    await flushCalls(database, u.id, u.calls); // piggyback the +1 eBay call we just spent
     plog.info({ searchId: s.id, q: s.q, sample: prices.length, marketMedian: m }, "market sampled");
   } catch (err) {
-    recordError(s.q, `market sample: ${message(err)}`); // warn only; the main poll keeps its cadence
+    recordError(u.id, s.q, `market sample: ${message(err)}`); // warn only; the main poll keeps its cadence
   }
 }
 
@@ -508,11 +637,6 @@ async function redeliverPending(database: ReturnType<typeof db>) {
     .where(isNull(alerts.deliveredAt));
 
   if (!rows.length) return;
-  // Nothing to deliver to: retire the queue so it doesn't linger across boots.
-  if (!st.channels.length) {
-    await database.update(alerts).set({ deliveredAt: now }).where(isNull(alerts.deliveredAt));
-    return;
-  }
 
   // Confirm every retired/delivered row in one UPDATE after the loop instead of one round-trip
   // per row (a boot backlog shouldn't fan out N queries against a serverless DB). A crash mid-loop
@@ -523,6 +647,14 @@ async function redeliverPending(database: ReturnType<typeof db>) {
     const s = row.searchId != null ? st.entries.get(row.searchId)?.s : undefined;
     if (!s) {
       // search deleted (search_id null) or gone from cache: no criteria to attach, retire it.
+      done.push(row.id);
+      continue;
+    }
+    // The alert belongs to the search's owner, so it goes to their channels and nobody else's.
+    // Nothing to deliver to (no channels, or the owner is gone): retire the row so it doesn't
+    // linger across boots.
+    const u = st.users.get(s.userId);
+    if (!u?.channels.length) {
       done.push(row.id);
       continue;
     }
@@ -547,40 +679,66 @@ async function redeliverPending(database: ReturnType<typeof db>) {
     const market = s.marketMedian;
     const ctx: PriceContext | undefined =
       market != null && market > 0 ? { typical: market, count: 0, basis: "market" } : undefined;
-    const { error, anyDelivered } = await notify(item, s, st.channels, ctx);
+    const { error, anyDelivered } = await notify(item, s, u.channels, ctx);
     // Log any failure even on partial success (matches the main-path notify, which records the
     // error independently of anyDelivered); confirm the row if a channel took it, else leave it
     // null to retry next boot.
-    if (error) recordError(s.q, `redeliver: ${error}`, "error");
+    if (error) recordError(u.id, s.q, `redeliver: ${error}`, "error");
     if (anyDelivered) done.push(row.id);
   }
   if (done.length) await database.update(alerts).set({ deliveredAt: now }).where(inArray(alerts.id, done));
 }
 
+// What a user's next poll will actually do. Live needs their own keys; mock is single mode's
+// credential-less path (the zero-config quick start), which multi-user modes deliberately don't
+// have - fake listings in a shared deployment would look real to the friend seeing them. Shared
+// with status() so the UI's "polling paused" banner can't disagree with the poll loop.
+function pollMode(u: UserCtx): "live" | "mock" | "no-creds" {
+  if (u.ebay) return "live";
+  return authMode() === "single" ? "mock" : "no-creds";
+}
+
 async function pollOnce(e: Entry) {
-  // Overnight snooze: don't touch the eBay API during the window. Re-tick at the
+  const st = state();
+  const u = st.users.get(e.s.userId);
+  if (!u) {
+    // Owner isn't cached (a row created since the last reload). Nothing to bill or notify
+    // against, so idle at the normal cadence rather than let the timer die - a dead timer
+    // reads as a wedge to the heartbeat.
+    recordError(e.s.userId, e.s.q, "search owner is not loaded - poll skipped");
+    schedule(e, e.s.intervalMin * 60_000);
+    return;
+  }
+  // Overnight snooze: don't touch the eBay API during the owner's window. Re-tick at the
   // search's normal interval; the first tick after the window ends polls and picks
   // up anything listed meanwhile (still-available items alert then, not never).
-  if (snoozing()) {
+  if (snoozing(u.snooze)) {
     plog.debug({ searchId: e.s.id, q: e.s.q }, "snoozed - poll skipped");
     schedule(e, e.s.intervalMin * 60_000);
     return;
   }
-  const st = state();
   const today = new Date().toDateString();
-  if (st.calls.date !== today) st.calls = { date: today, used: 0 };
-  if (st.calls.used >= QUOTA_CEILING) {
-    recordError(e.s.q, "daily API budget exhausted - poll skipped");
+  if (u.calls.date !== today) u.calls = { date: today, used: 0 };
+  if (u.calls.used >= QUOTA_CEILING) {
+    recordError(u.id, e.s.q, "daily API budget exhausted - poll skipped");
     schedule(e, 15 * 60_000);
+    return;
+  }
+  // No keys and no mock to fall back on: there is nothing to poll with. Stay idle - no eBay
+  // call, no quota spent, no error every tick - until the user saves creds, which re-kicks
+  // this search (setUserCreds). The UI shows the paused banner off the same mode.
+  if (pollMode(u) === "no-creds") {
+    plog.debug({ searchId: e.s.id, q: e.s.q, userId: u.id }, "no credentials - polling paused");
+    schedule(e, e.s.intervalMin * 60_000);
     return;
   }
 
   plog.debug({ searchId: e.s.id, q: e.s.q }, "polling");
   try {
-    st.calls.used++;
-    const items = await searchNewlyListed(e.s);
+    u.calls.used++;
+    const items = u.ebay ? await searchNewlyListed(u.ebay, e.s) : mockSearch(e.s);
     e.lastPolledAt = Date.now();
-    plog.info({ q: e.s.q, count: items.length, quotaUsed: st.calls.used }, "eBay poll");
+    plog.info({ q: e.s.q, count: items.length, quotaUsed: u.calls.used }, "eBay poll");
     const database = db();
     const fresh = items.filter((i) => !e.seen.has(i.itemId));
     plog.debug({ searchId: e.s.id, fresh: fresh.length, of: items.length }, "dedup");
@@ -609,10 +767,10 @@ async function pollOnce(e: Entry) {
         market != null && market > 0
           ? { typical: market, count: 0, basis: "market" }
           : { ...(fresh.length ? await priceContext(database, e.s.id) : { typical: null, count: 0 }), basis: "recent" };
-      // Pin the channel list for this batch: reload() swaps st.channels (never mutates), so a
-      // capture keeps the insert's deliveredAt seed and the notify target consistent even if a
-      // reload lands mid-tick.
-      const webhooks = st.channels; // local copy; named to not shadow the `channels` schema table
+      // Pin the owner's channel list for this batch: reload() swaps the UserCtx and its
+      // channel list (never mutates), so a capture keeps the insert's deliveredAt seed and the
+      // notify target consistent even if a reload lands mid-tick.
+      const webhooks = u.channels; // local copy; named to not shadow the `channels` schema table
       for (const item of [...fresh].reverse()) {
         if (e.seen.has(item.itemId)) continue; // reload() may have merged it in mid-loop
         // Suppressed (exclude-terms hit, or the NOT_PARTS preset's for-parts tier): mark seen
@@ -637,6 +795,7 @@ async function pollOnce(e: Entry) {
           const [inserted] = await tx
             .insert(alerts)
             .values({
+              userId: e.s.userId,
               searchId: e.s.id,
               searchQ: e.s.q,
               itemId: item.itemId,
@@ -666,7 +825,7 @@ async function pollOnce(e: Entry) {
           // "Delivered" = reached at least one channel. On total failure the row stays
           // deliveredAt=null and boot redelivery retries it (never re-posting to a channel that
           // already has it, since anyDelivered would have marked it delivered here).
-          if (error) recordError(e.s.q, error, "error");
+          if (error) recordError(u.id, e.s.q, error, "error");
           if (anyDelivered) {
             await database.update(alerts).set({ deliveredAt: new Date() }).where(eq(alerts.id, alertId));
           }
@@ -677,26 +836,38 @@ async function pollOnce(e: Entry) {
     // Piggyback the daily-call-count persist on the connection these writes already
     // opened. Empty polls (seeded, nothing new) skip it and stay DB-free, so a
     // reboot loses at most the calls counted since the last write - by design.
-    if (wrote) await flushCalls(database, st.calls);
+    if (wrote) await flushCalls(database, u.id, u.calls);
     // Refresh the market baseline at most once/day per band-limited search. Self-throttled
     // and isolated: it opens a connection only when actually due, so steady-state empty
     // polls stay DB-free, and its own try/catch keeps a sample failure off the main poll.
-    await maybeSampleMarket(e, database);
+    await maybeSampleMarket(e, u, database);
     e.backoffMs = 0;
     schedule(e, e.s.intervalMin * 60_000);
   } catch (err) {
     plog.error({ err, searchId: e.s.id, q: e.s.q }, "poll failed"); // stack goes to stdout; recordError keeps only the message for the UI
-    recordError(e.s.q, message(err));
+    recordError(u.id, e.s.q, message(err));
     e.backoffMs = Math.min(e.backoffMs ? e.backoffMs * 2 : e.s.intervalMin * 60_000, MAX_BACKOFF_MS);
     schedule(e, e.backoffMs);
   }
 }
 
 // ---------- read/write API used by the route handlers (write-through: DB and cache in the same call) ----------
+// Every entry point takes the caller's user id and answers only for that user's rows. A search
+// owned by someone else is treated as nonexistent (null/false -> the route 404s), so probing
+// ids can't reveal which ones exist.
 
-export function listSearches(): SearchStats[] {
+// auth.ts provisions a users row on first login, but the cache only rebuilds every
+// CACHE_REFRESH_HOURS - far too late for a new user's first save to take effect. Pull the whole
+// cache forward instead of a bespoke one-user load: it happens once per new user.
+async function userCtx(userId: number): Promise<UserCtx | undefined> {
+  if (!state().users.has(userId)) await reload();
+  return state().users.get(userId);
+}
+
+export function listSearches(userId: number): SearchStats[] {
   const cutoff = Date.now() - 24 * 3600_000;
   return [...state().entries.values()]
+    .filter((e) => e.s.userId === userId)
     .sort((a, b) => b.s.createdAt.localeCompare(a.s.createdAt) || b.s.id - a.s.id)
     .map((e) => {
       e.hitTimes = e.hitTimes.filter((t) => t > cutoff);
@@ -722,10 +893,12 @@ export type SearchInput = {
   intervalMin: number;
 };
 
-export async function createSearch(input: SearchInput): Promise<SearchStats> {
+export async function createSearch(userId: number, input: SearchInput): Promise<SearchStats> {
+  await userCtx(userId); // without a cached owner the search would idle until the next reload
   const [row] = await db()
     .insert(searches)
     .values({
+      userId,
       q: input.q,
       categoryId: input.categoryId,
       priceFloor: input.priceFloor,
@@ -738,7 +911,7 @@ export async function createSearch(input: SearchInput): Promise<SearchStats> {
     })
     .returning();
   const e: Entry = {
-    s: rowToSearch(row),
+    s: rowToSearch(row, userId),
     seen: new Set(),
     hitTimes: [],
     lastHitAt: null,
@@ -749,7 +922,7 @@ export async function createSearch(input: SearchInput): Promise<SearchStats> {
   };
   state().entries.set(e.s.id, e);
   schedule(e, 0); // seed immediately
-  plog.info({ searchId: e.s.id, q: e.s.q }, "search created");
+  plog.info({ searchId: e.s.id, q: e.s.q, userId }, "search created");
   return { ...e.s, seenCount: 0, hits24: 0, lastHitAt: null, lastPolledAt: null };
 }
 
@@ -778,10 +951,14 @@ export function baselineInvalidated(cur: Record<string, unknown> | undefined, pa
 }
 
 export async function updateSearch(
+  userId: number,
   id: number,
   patch: Partial<SearchInput> & { enabled?: boolean },
 ): Promise<SearchStats | null> {
   const cur = state().entries.get(id)?.s;
+  // Ownership first, off the cache: someone else's search must be indistinguishable from one
+  // that never existed, so both leave here as null and the route 404s.
+  if (cur?.userId !== userId) return null;
   const row: Partial<typeof searches.$inferInsert> = {};
   if (patch.q !== undefined) row.q = patch.q;
   if (patch.categoryId !== undefined) row.categoryId = patch.categoryId;
@@ -812,14 +989,14 @@ export async function updateSearch(
     if (!updated) return null; // deleted concurrently
     const e = state().entries.get(id);
     if (e) {
-      const s = rowToSearch(updated);
+      const s = rowToSearch(updated, userId);
       // seeded only goes false→true on its own (a concurrent tick); preserve that,
       // unless this edit intentionally reset it to re-seed the new criteria.
       if (e.s.seeded && !criteriaChanged) s.seeded = true;
       e.s = s;
     } else {
-      // not in cache yet (boot window): DB was updated, return stub stats
-      return { ...rowToSearch(updated), seenCount: 0, hits24: 0, lastHitAt: null, lastPolledAt: null };
+      // dropped from the cache by a concurrent reload: DB was updated, return stub stats
+      return { ...rowToSearch(updated, userId), seenCount: 0, hits24: 0, lastHitAt: null, lastPolledAt: null };
     }
   }
   const e = state().entries.get(id);
@@ -831,10 +1008,11 @@ export async function updateSearch(
     e.timer = null;
   }
   plog.info({ searchId: id, enabled: e.s.enabled }, "search updated");
-  return listSearches().find((s) => s.id === id) ?? null;
+  return listSearches(userId).find((s) => s.id === id) ?? null;
 }
 
-export async function deleteSearch(id: number): Promise<boolean> {
+export async function deleteSearch(userId: number, id: number): Promise<boolean> {
+  if (state().entries.get(id)?.s.userId !== userId) return false; // wrong owner reads as gone (see updateSearch)
   const [row] = await db().delete(searches).where(eq(searches.id, id)).returning({ id: searches.id });
   if (!row) return false;
   const e = state().entries.get(id);
@@ -844,50 +1022,106 @@ export async function deleteSearch(id: number): Promise<boolean> {
   return true;
 }
 
-export function getSnooze(): SnoozeConfig {
-  const sn = state().snooze;
+// Defaults, not an error, for a user the cache hasn't loaded yet: they match the users-table
+// defaults, so a first-login read is honest rather than empty.
+export function getSnooze(userId: number): SnoozeConfig {
+  const sn = state().users.get(userId)?.snooze ?? SNOOZE_DEFAULT;
   return { enabled: sn.enabled, start: hhmm(sn.start), end: hhmm(sn.end), tz: sn.tz };
 }
 
-// Persist + write-through the snooze config, then re-kick enabled searches so the
+// Persist + write-through one user's snooze config, then re-kick their enabled searches so the
 // change lands now, not at each timer's next tick (disable → poll promptly again).
-export async function setSnooze(sn: SnoozeState): Promise<SnoozeConfig> {
-  const values = {
-    snoozeEnabled: sn.enabled,
-    snoozeStart: sn.start,
-    snoozeEnd: sn.end,
-    snoozeTz: sn.tz,
-  };
+export async function setSnooze(userId: number, sn: SnoozeState): Promise<SnoozeConfig> {
   await db()
-    .insert(settings)
-    .values({ id: 1, ...values })
-    .onConflictDoUpdate({ target: settings.id, set: values });
-  state().snooze = sn;
-  for (const e of state().entries.values()) if (e.s.enabled) schedule(e, 1000 + Math.random() * 3000);
-  plog.info({ enabled: sn.enabled, start: sn.start, end: sn.end, tz: sn.tz }, "snooze updated");
-  return getSnooze();
+    .update(users)
+    .set({ snoozeEnabled: sn.enabled, snoozeStart: sn.start, snoozeEnd: sn.end, snoozeTz: sn.tz })
+    .where(eq(users.id, userId));
+  const u = await userCtx(userId);
+  if (u) u.snooze = sn;
+  kick(userId);
+  plog.info({ userId, enabled: sn.enabled, start: sn.start, end: sn.end, tz: sn.tz }, "snooze updated");
+  return getSnooze(userId);
 }
 
-export function status(): StatusInfo {
+// Write-through for the credentials route, which owns the DB side (validate → encrypt → save).
+// Without this a save would sit inert until the next reload; the token cache must go with it,
+// or a token minted from the old keys outlives them.
+export async function setUserCreds(userId: number, creds: EbayCreds | null): Promise<void> {
+  const u = await userCtx(userId);
+  if (u) {
+    u.ebay = creds;
+    // Only a save moves the preferences; a removal keeps the last ones, matching the columns
+    // the route leaves behind, so re-adding keys starts from the marketplace they picked.
+    if (creds) {
+      u.env = creds.env;
+      u.marketplace = creds.marketplace;
+    }
+  }
+  invalidateToken(userId);
+  kick(userId);
+  plog.info({ userId, creds: creds ? "saved" : "removed" }, "eBay credentials updated");
+}
+
+// Write-throughs for the channels routes, which own the DB side. Reassign rather than mutate the
+// list, matching reload's swap discipline: a tick mid-flight keeps notifying the set it captured.
+// An incremental edit is also what keeps single mode's DISCORD_WEBHOOK_URL alive - it exists only
+// in this list, so rebuilding channels from the DB here would drop it until the next reload.
+export async function addUserChannel(userId: number, webhookUrl: string): Promise<void> {
+  const u = await userCtx(userId);
+  // Skip one already there: a first-login user isn't cached yet, so userCtx reloads and picks
+  // the row the route just inserted straight out of the DB. Appending blind would post every
+  // alert to it twice until the next refresh.
+  if (u && !u.channels.includes(webhookUrl)) u.channels = [...u.channels, webhookUrl];
+}
+
+export async function removeUserChannel(userId: number, webhookUrl: string): Promise<void> {
+  const u = await userCtx(userId);
+  if (u) u.channels = u.channels.filter((c) => c !== webhookUrl);
+}
+
+// Re-kick one user's searches after a change that decides whether/how they poll. Jittered so a
+// user with many searches doesn't hit eBay in one burst.
+function kick(userId: number) {
+  for (const e of state().entries.values()) {
+    if (e.s.userId === userId && e.s.enabled) schedule(e, 1000 + Math.random() * 3000);
+  }
+}
+
+// One user's view of the poller: their quota, their snooze, their errors (plus the ownerless
+// ones, which are everyone's), their eBay mode. ready/bootError/bootedAt/version are process
+// facts and stay global. Nothing here is derived from the client secret.
+export function status(userId: number): StatusInfo {
   const st = state();
+  const u = st.users.get(userId);
   const today = new Date().toDateString();
+  const sn = u?.snooze ?? SNOOZE_DEFAULT;
+  // clientId/env/marketplace ride on status because the credentials route has no GET (the
+  // secret never leaves the server). env/marketplace come off the user rather than their keys:
+  // they outlive a Remove, and in mock mode there are no keys to read them from.
+  const marketplace = u?.marketplace ?? "EBAY_US";
   return {
     ready: st.ready,
     bootError: st.bootError,
     poller: {
       running: st.ready,
       bootedAt: st.bootedAt ? new Date(st.bootedAt).toISOString() : null,
-      timers: [...st.entries.values()].filter((e) => e.s.enabled).length,
+      timers: [...st.entries.values()].filter((e) => e.s.enabled && e.s.userId === userId).length,
     },
     ebay: {
-      mode: MOCK ? "mock" : "live",
-      marketplace: MARKETPLACE,
-      currency: CURRENCY,
-      tokenExpiresAt: tokenExpiresAt(),
+      mode: u ? pollMode(u) : "no-creds",
+      clientId: u?.ebay?.clientId ?? null,
+      env: u?.env ?? "production",
+      marketplace,
+      currency: currencyFor(marketplace),
+      tokenExpiresAt: tokenExpiresAt(userId),
     },
-    quota: { used: st.calls.date === today ? st.calls.used : 0, ceiling: QUOTA_CEILING },
-    snooze: { active: snoozing(), window: snoozeWindow(), dailyMinutes: snoozeMinutes() },
-    errors: [...st.errors].reverse().slice(0, 20),
+    quota: { used: u?.calls.date === today ? u.calls.used : 0, ceiling: QUOTA_CEILING },
+    snooze: { active: snoozing(sn), window: snoozeWindow(sn), dailyMinutes: snoozeMinutes(sn) },
+    errors: [...st.errors]
+      .filter((e) => e.userId === userId || e.userId == null)
+      .reverse()
+      .slice(0, 20),
+    user: { email: u?.email ?? "" },
     version: process.env.APP_VERSION || pkg.version,
   };
 }

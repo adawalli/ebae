@@ -20,8 +20,24 @@ export const CONDITION_BADGE: Record<ConditionKey, string> = {
   USED: "Used",
 };
 
+// The marketplaces a user may save, with the currency each prices in. Lives here rather than
+// ebay.ts because the credentials select needs it in the browser and ebay.ts is server-only
+// (it pulls in pino via log.ts). ebay.ts and validate.ts read this same map, so the select's
+// options and the API's whitelist can't drift apart.
+export const MARKETPLACE_CURRENCY: Record<string, string> = {
+  EBAY_US: "USD",
+  EBAY_CA: "CAD",
+  EBAY_GB: "GBP",
+  EBAY_AU: "AUD",
+  EBAY_DE: "EUR",
+  EBAY_FR: "EUR",
+  EBAY_IT: "EUR",
+  EBAY_ES: "EUR",
+};
+
 export type Search = {
   id: number;
+  userId: number;
   q: string;
   categoryId: string | null;
   priceFloor: number | null;
@@ -74,7 +90,21 @@ export type Alert = Omit<Item, "conditionId"> & {
   createdAt: string;
 };
 
-export type PollError = { time: string; searchQ: string | null; message: string };
+// userId is null for errors raised before an owner is known (e.g. a cred decrypt failure
+// during reload), so status() can still surface them.
+export type PollError = { time: string; searchQ: string | null; message: string; userId: number | null };
+
+// A delivery target. webhookUrl is masked to its tail by the API - the full URL is a
+// secret and is never returned once saved.
+export type Channel = { id: number; kind: string; webhookUrl: string };
+
+// Body of PUT /api/ebay-credentials. clientSecret is write-only: no API returns it.
+export type EbayCredsInput = {
+  clientId: string;
+  clientSecret: string;
+  env: "production" | "sandbox";
+  marketplace: string;
+};
 
 // Snooze config as sent over the wire / edited in the UI. start/end are "HH:MM"
 // local times in `tz` (IANA; null = server timezone). The poller stores them as
@@ -85,9 +115,19 @@ export type StatusInfo = {
   ready: boolean;
   bootError: string | null;
   poller: { running: boolean; bootedAt: string | null; timers: number };
-  ebay: { mode: "mock" | "live"; marketplace: string; currency: string; tokenExpiresAt: string | null };
+  // "no-creds" = polling paused until the user saves eBay keys. clientId/env ride here
+  // because there is no GET on /api/ebay-credentials; the secret never leaves the server.
+  ebay: {
+    mode: "live" | "mock" | "no-creds";
+    clientId: string | null;
+    env: string;
+    marketplace: string;
+    currency: string;
+    tokenExpiresAt: string | null;
+  };
   quota: { used: number; ceiling: number };
   snooze: { active: boolean; window: string | null; dailyMinutes: number };
   errors: PollError[];
+  user: { email: string };
   version: string;
 };

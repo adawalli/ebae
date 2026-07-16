@@ -12,7 +12,7 @@ eBay's native saved-search alerts are slow - often hours behind. For sought-afte
 
 - **No sniping or auto-buying.** Alerting only; the human clicks Buy.
 - **No scraping.** Official eBay developer API only - keeps the project ToS-clean and stable.
-- **No multi-user / SaaS.** Single-tenant, one household. Auth beyond what your reverse proxy (e.g. cloudflared) provides is out of scope for MVP.
+- **No SaaS / consumer scale.** A handful of people sharing one deployment is in (see §4); signup flows, billing, roles and horizontal scale are not. Identity comes from an auth proxy in front of the app - ebae never handles passwords. Multi-user does **not** relax the single-replica constraint: poll timers and the seen cache are in process memory, so it stays one instance.
 - **No auction bid tracking.** New-listing detection is the product; price-drop and ending-soon alerts are future maybes.
 
 ## 3. eBay API Approach
@@ -32,7 +32,7 @@ eBay's native saved-search alerts are slow - often hours behind. For sought-afte
 - 3 searches at 2 min ≈ 2,160/day - comfortable.
 - 6 searches at 2 min ≈ 4,320/day - near the ceiling.
 
-The scaling lever is a **per-search poll interval**: hot searches at 1-2 min, casual ones at 10-15 min. The UI shows projected daily call usage as searches are added, and the poller enforces a global budget so a misconfiguration can't blow the quota.
+The scaling lever is a **per-search poll interval**: hot searches at 1-2 min, casual ones at 10-15 min. The UI shows projected daily call usage as searches are added, and the poller enforces the budget so a misconfiguration can't blow the quota. Each user brings their own eBay app, so the budget is counted and enforced per user.
 
 **First poll of a new search** seeds the seen set without alerting (otherwise you'd get spammed with every existing listing).
 
@@ -66,13 +66,16 @@ One Bun + Next.js app, one container image.
 
 **Data model** (small, boring):
 
-| table        | purpose                                                                                          |
-| ------------ | ------------------------------------------------------------------------------------------------ |
-| `searches`   | query terms, filters (BIN-only, price cap, category), poll interval, enabled flag                |
-| `seen_items` | `(search_id, item_id)` - the dedupe set; prunable after N days                                   |
-| `channels`   | notification targets (MVP: Discord webhook URL, one or more)                                     |
-| `settings`   | single-row global config (currently the optional overnight poll snooze window + timezone)        |
-| `alerts`     | log of sent notifications (item snapshot: title, price, image, url) - powers the UI history view |
+| table        | purpose                                                                                                                    |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `users`      | one row per person: email (identity anchor), `sub` from the IdP, their eBay keys (secret AES-GCM encrypted), snooze window |
+| `searches`   | query terms, filters (BIN-only, price cap, category), poll interval, enabled flag, `user_id`                               |
+| `seen_items` | `(search_id, item_id)` - the dedupe set; prunable after N days. Scoped via the search FK, no `user_id` of its own          |
+| `channels`   | notification targets (MVP: Discord webhook URL, one or more), `user_id`                                                    |
+| `alerts`     | log of sent notifications (item snapshot: title, price, image, url) - powers the UI history view, `user_id`                |
+| `api_usage`  | daily eBay call counter, PK `(user_id, day)` - the quota is per user, since each user brings their own eBay app            |
+
+`user_id` is a cascading FK, nullable in the DB only because rows predating multi-user are backfilled at boot (`claim.ts`); the app always writes it and the poller skips a search that somehow has none. The old single-row `settings` table is gone - snooze moved onto `users`. Single mode is not a special case: it has exactly one implicit user row (`local@localhost`), so every query is user-scoped in all modes.
 
 **Failure behavior.** eBay/API errors back off exponentially per search and surface on a status page. Discord send failures retry a few times; an alert that reaches no channel is left unconfirmed (`alerts.delivered_at` null) and redelivered at the next boot, unless it's over an hour old by then (a deal that stale isn't worth sending). An alert is considered delivered once any channel accepts it, so a redelivery never re-posts to a channel that already has it. Restart recovers state from Postgres (seen set persists), so crashes never re-alert old items. `GET /api/health` reports poller liveness from a scheduling heartbeat (200/503) for container and k8s probes.
 
@@ -94,18 +97,23 @@ One `notify(item, search)` function with Discord as the only implementation. Del
 
 **Image:** single public image on docker.io (OSS, no private-repo limits). Multi-arch (amd64/arm64).
 
-**Config is env-only** - no config files to mount:
+**No config files to mount** - env vars plus the database:
 
-| var                                     | purpose                                                 |
-| --------------------------------------- | ------------------------------------------------------- |
-| `DATABASE_URL`                          | Postgres connection string (Neon, local, anything)      |
-| `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | eBay app credentials                                    |
-| `EBAY_MARKETPLACE`                      | e.g. `EBAY_US` (default)                                |
-| `POLL_INTERVAL_DEFAULT`                 | fallback per-search interval (default 5 min)            |
-| `CACHE_REFRESH_HOURS`                   | DB→cache refresh cadence (default 12)                   |
-| `SEEN_RETENTION_DAYS`                   | how long `seen_items` dedupe rows are kept (default 90) |
+| var                                      | purpose                                                     |
+| ---------------------------------------- | ----------------------------------------------------------- |
+| `DATABASE_URL`                           | Postgres connection string (Neon, local, anything)          |
+| `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET`  | eBay app credentials (single mode only)                     |
+| `EBAY_MARKETPLACE`                       | e.g. `EBAY_US` (default; single mode only)                  |
+| `AUTH_MODE`                              | `single` (default, no auth) / `cloudflare` / `proxy`        |
+| `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` | Access app identity, required in `cloudflare` mode          |
+| `AUTH_TRUSTED_HEADER`                    | email-bearing header, required in `proxy` mode              |
+| `ENCRYPTION_KEY`                         | base64 32 bytes; encrypts eBay secrets saved through the UI |
+| `LEGACY_OWNER_EMAIL`                     | one-time owner for pre-multi-user rows                      |
+| `POLL_INTERVAL_DEFAULT`                  | fallback per-search interval (default 5 min)                |
+| `CACHE_REFRESH_HOURS`                    | DB→cache refresh cadence (default 12)                       |
+| `SEEN_RETENTION_DAYS`                    | how long `seen_items` dedupe rows are kept (default 90)     |
 
-Everything else (searches, webhooks) is managed in the UI and lives in Postgres.
+Config stopped being strictly env-only with multi-user: a shared deployment can't ship per-user eBay keys in the container's environment, so in `cloudflare`/`proxy` mode each user enters their own keys in the UI and they live encrypted in Postgres (the `EBAY_*` and `DISCORD_WEBHOOK_URL` vars are ignored there). Single mode keeps the env-only story intact - nothing is stored, no `ENCRYPTION_KEY` needed. Searches and webhooks were always UI-managed and in Postgres. `AUTH_MODE` and the vars it requires are resolved once at boot and fail closed.
 
 **Targets:**
 
@@ -113,7 +121,7 @@ Everything else (searches, webhooks) is managed in the UI and lives in Postgres.
 - **Proxmox LXC** - runs the image via Docker-in-LXC or as a plain Bun process; README notes, nothing special required since all traffic is outbound.
 - **Kubernetes** - a single Deployment (one replica - the in-memory seen-cache and poll timers assume one instance) + Secret. Example manifest in `deploy/`.
 
-**Recommended: home host + Cloudflare Tunnel.** Run the container on a home box (Proxmox LXC or Docker) and expose the UI through a Cloudflare Tunnel gated behind Cloudflare Access. The tunnel is outbound-only, so zero inbound ports are open and nothing on your LAN is reachable from the internet; Access provides auth in front. Tailscale or LAN-only work too - the app never requires inbound internet either way.
+**Recommended: home host + Cloudflare Tunnel.** Run the container on a home box (Proxmox LXC or Docker) and expose the UI through a Cloudflare Tunnel gated behind Cloudflare Access. The tunnel is outbound-only, so zero inbound ports are open and nothing on your LAN is reachable from the internet; Access provides auth in front, and `AUTH_MODE=cloudflare` makes the app verify Access's signed JWT itself rather than trust whatever reaches the origin. Tailscale or LAN-only work too - the app never requires inbound internet either way.
 
 ## 7. Roadmap
 

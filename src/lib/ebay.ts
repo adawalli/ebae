@@ -1,25 +1,27 @@
 import { log } from "./log";
-import type { Item, Search } from "./types";
+import { MARKETPLACE_CURRENCY, type Item, type Search } from "./types";
 
 const elog = log.child({ component: "ebay" });
 
-export const MOCK = !process.env.EBAY_CLIENT_ID;
-export const MARKETPLACE = process.env.EBAY_MARKETPLACE ?? "EBAY_US";
+// A marketplace's currency, surfaced to the UI (via /api/status) so figures the poller
+// computes server-side (e.g. the market-median badge) render with the right symbol.
+export function currencyFor(marketplace: string): string {
+  return MARKETPLACE_CURRENCY[marketplace] ?? "USD";
+}
 
-const MARKETPLACE_CURRENCY: Record<string, string> = {
-  EBAY_US: "USD",
-  EBAY_CA: "CAD",
-  EBAY_GB: "GBP",
-  EBAY_AU: "AUD",
-  EBAY_DE: "EUR",
-  EBAY_FR: "EUR",
-  EBAY_IT: "EUR",
-  EBAY_ES: "EUR",
+// The marketplaces a user may save (validate.ts). currencyFor falls back to USD, so membership
+// has to be asked explicitly - otherwise a typo'd marketplace would price a UK search in dollars.
+export const MARKETPLACES = Object.keys(MARKETPLACE_CURRENCY);
+
+// One user's eBay developer keys. clientSecret is plaintext: the poller decrypts it once at
+// reload and holds it in-process only, so it never sits in a module global or a log line.
+export type EbayCreds = {
+  userId: number;
+  clientId: string;
+  clientSecret: string;
+  env: "production" | "sandbox";
+  marketplace: string;
 };
-
-// The active marketplace's currency, surfaced to the UI (via /api/status) so figures the
-// poller computes server-side (e.g. the market-median badge) render with the right symbol.
-export const CURRENCY = MARKETPLACE_CURRENCY[MARKETPLACE] ?? "USD";
 
 // eBay's "for parts or not working" tier (rendered "Parts Only" on the web).
 export const FOR_PARTS_ID = "7000";
@@ -47,40 +49,60 @@ export function conditionExcluded(item: Item, conditions: string | null): boolea
   return false; // null = any condition, nothing dropped
 }
 
-const SANDBOX = process.env.EBAY_ENV === "sandbox";
-const AUTH_HOST = SANDBOX ? "https://api.sandbox.ebay.com" : "https://api.ebay.com";
-const API_HOST = AUTH_HOST;
-
-type Token = { value: string; expiresAt: number };
-const g = globalThis as typeof globalThis & { __ebaeToken?: Token; __ebaeMock?: MockState };
-
-export function tokenExpiresAt(): string | null {
-  return g.__ebaeToken ? new Date(g.__ebaeToken.expiresAt).toISOString() : null;
+function hostFor(env: EbayCreds["env"]): string {
+  return env === "sandbox" ? "https://api.sandbox.ebay.com" : "https://api.ebay.com";
 }
 
-async function token(): Promise<string> {
-  const cached = g.__ebaeToken;
-  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.value;
-  const res = await fetch(`${AUTH_HOST}/identity/v1/oauth2/token`, {
+type Token = { value: string; expiresAt: number };
+const g = globalThis as typeof globalThis & { __ebaeTokens?: Map<number, Token>; __ebaeMock?: MockState };
+
+// Tokens are per-user: each user brings their own eBay app, so one cache slot can't be shared.
+function tokens(): Map<number, Token> {
+  return (g.__ebaeTokens ??= new Map());
+}
+
+export function tokenExpiresAt(userId: number): string | null {
+  const t = tokens().get(userId);
+  return t ? new Date(t.expiresAt).toISOString() : null;
+}
+
+// Called when a user's creds change: a token minted from the old keys must not outlive them.
+export function invalidateToken(userId: number): void {
+  tokens().delete(userId);
+}
+
+// The raw client-credentials POST, uncached. Also the credentials route's live check on save:
+// proving the keys mint a token before we encrypt and store them turns a typo into a message in
+// the UI instead of a search that silently never polls. token() is the caching path - a
+// validation is not a poll, and the caller invalidates on save anyway.
+export async function requestToken(creds: EbayCreds): Promise<Token> {
+  const res = await fetch(`${hostFor(creds.env)}/identity/v1/oauth2/token`, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
-      Authorization:
-        "Basic " + Buffer.from(`${process.env.EBAY_CLIENT_ID}:${process.env.EBAY_CLIENT_SECRET}`).toString("base64"),
+      Authorization: "Basic " + Buffer.from(`${creds.clientId}:${creds.clientSecret}`).toString("base64"),
     },
+    // the scope is an eBay-wide identifier, not a host - it stays api.ebay.com in sandbox too
     body: "grant_type=client_credentials&scope=" + encodeURIComponent("https://api.ebay.com/oauth/api_scope"),
   });
   if (!res.ok) throw new Error(`eBay token request failed: ${res.status} ${await res.text()}`);
   const data = (await res.json()) as { access_token: string; expires_in: number };
-  g.__ebaeToken = { value: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 };
-  elog.info({ expiresIn: data.expires_in }, "token acquired"); // never log the token value
-  return data.access_token;
+  elog.info({ userId: creds.userId, expiresIn: data.expires_in }, "token acquired"); // never log the token value
+  return { value: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 };
+}
+
+async function token(creds: EbayCreds): Promise<string> {
+  const cached = tokens().get(creds.userId);
+  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.value;
+  const t = await requestToken(creds);
+  tokens().set(creds.userId, t);
+  return t.value;
 }
 
 // Browse `filter` clauses for a search. Pure + exported so the exact contract (field
 // names, condition-ID mapping, price-bound syntax) is unit-tested — mock mode bypasses
 // this whole path, which is how a `conditions` vs `conditionIds` mistake could ship.
-export function browseFilters(s: Search): string[] {
+export function browseFilters(s: Search, currency: string): string[] {
   const filters = [
     // always constrain buying options: without a filter eBay returns auctions too.
     // includeAuctions is the source of truth (binOnly is its UI inverse); default is BIN-only.
@@ -90,7 +112,7 @@ export function browseFilters(s: Search): string[] {
   if (s.priceFloor != null || s.priceCap != null) {
     const lo = s.priceFloor ?? "";
     const hi = s.priceCap ?? "";
-    filters.push(`price:[${lo}..${hi}]`, `priceCurrency:${CURRENCY}`);
+    filters.push(`price:[${lo}..${hi}]`, `priceCurrency:${currency}`);
   }
   // No condition clause, by design: every preset is enforced in the poller via
   // conditionExcluded (see there for why a server-side conditionIds keep-list loses listings).
@@ -110,14 +132,14 @@ export function marketSampleSearch(s: Search): Search {
 // Shared Browse item_summary/search call. searchNewlyListed and sampleMarket differ only in
 // page size and (via marketSampleSearch) the price bounds, so auth/params/error-handling/
 // parsing live here once — a fix to any of those can't land in one path and miss the other.
-async function browseSearch(s: Search, limit: number): Promise<Item[]> {
-  const filters = browseFilters(s);
+async function browseSearch(creds: EbayCreds, s: Search, limit: number): Promise<Item[]> {
+  const filters = browseFilters(s, currencyFor(creds.marketplace));
   const params = new URLSearchParams({ q: s.q, sort: "newlyListed", limit: String(limit) });
   if (s.categoryId) params.set("category_ids", s.categoryId);
   if (filters.length) params.set("filter", filters.join(","));
-  elog.debug({ q: s.q, filters: filters.join(","), marketplace: MARKETPLACE, limit }, "eBay request");
-  const res = await fetch(`${API_HOST}/buy/browse/v1/item_summary/search?${params}`, {
-    headers: { Authorization: `Bearer ${await token()}`, "X-EBAY-C-MARKETPLACE-ID": MARKETPLACE },
+  elog.debug({ q: s.q, filters: filters.join(","), marketplace: creds.marketplace, limit }, "eBay request");
+  const res = await fetch(`${hostFor(creds.env)}/buy/browse/v1/item_summary/search?${params}`, {
+    headers: { Authorization: `Bearer ${await token(creds)}`, "X-EBAY-C-MARKETPLACE-ID": creds.marketplace },
   });
   if (!res.ok) throw new Error(`eBay search failed (${s.q}): ${res.status} ${await res.text()}`);
   const data = (await res.json()) as { itemSummaries?: EbaySummary[] };
@@ -128,24 +150,16 @@ async function browseSearch(s: Search, limit: number): Promise<Item[]> {
 // call but covers 200 newly-listed items per poll, so a hot search or a long snooze can't
 // silently drop new listings off a 50-item page 1.
 // ponytail: single page; if 200 new between two polls ever happens, add offset paging.
-export async function searchNewlyListed(s: Search): Promise<Item[]> {
-  if (MOCK) {
-    elog.debug({ q: s.q }, "mock search");
-    return mockSearch(s);
-  }
-  return browseSearch(s, 200);
+export async function searchNewlyListed(creds: EbayCreds, s: Search): Promise<Item[]> {
+  return browseSearch(creds, s, 200);
 }
 
 // Market sample: same item criteria (q, category, condition, price floor) but with the cap
 // removed, so its median reflects the true going rate even for a deal-hunt search whose cap
 // would clip it — while the kept floor keeps sub-band accessories out of the median. Newest
 // 100; active asking prices only (Browse has no sold data).
-export async function sampleMarket(s: Search): Promise<Item[]> {
-  if (MOCK) {
-    elog.debug({ q: s.q }, "mock market sample");
-    return mockMarket(s);
-  }
-  return browseSearch(marketSampleSearch(s), 100);
+export async function sampleMarket(creds: EbayCreds, s: Search): Promise<Item[]> {
+  return browseSearch(creds, marketSampleSearch(s), 100);
 }
 
 type EbaySummary = {
@@ -177,10 +191,10 @@ function normalize(i: EbaySummary): Item {
   };
 }
 
-// ---------- mock mode (no EBAY_CLIENT_ID set) ----------
+// ---------- mock mode ----------
 // Fakes a live marketplace so the whole poll → dedupe → alert pipeline runs
 // without developer credentials: a stable pool per search, plus occasional
-// brand-new listings so alerts keep flowing.
+// brand-new listings so alerts keep flowing. The poller decides when to use it.
 
 type MockState = { pools: Map<number, Item[]>; counter: number };
 
@@ -228,7 +242,7 @@ function mockItem(s: Search, n: number): Item {
   };
 }
 
-function mockSearch(s: Search): Item[] {
+export function mockSearch(s: Search): Item[] {
   // time-seeded counter: ids stay unique across restarts even though seen_items persist
   const st = (g.__ebaeMock ??= { pools: new Map(), counter: Math.floor(Date.now() / 1000) });
   let pool = st.pools.get(s.id);
@@ -248,7 +262,7 @@ function mockSearch(s: Search): Item[] {
 // Mock market sample: prices centered ~$500 regardless of the search's band, so the
 // market-baseline feature is exercisable without eBay creds. Deterministic per index so a
 // band-limited (e.g. 100-300) mock search visibly shows a higher "market" figure.
-function mockMarket(s: Search): Item[] {
+export function mockMarket(s: Search): Item[] {
   return Array.from({ length: 40 }, (_, n) => ({
     ...mockItem(s, n),
     price: 400 + ((n * 16) % 21) * 10, // 400..600, median ~500 — independent of the price band

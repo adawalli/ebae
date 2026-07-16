@@ -176,9 +176,12 @@ test("inWindow: window crossing midnight", () => {
   expect(inWindow(1320, 360, 720)).toBe(false); // @ 12:00
 });
 
-// Disabled snooze must not discount the UI projection (no window silenced).
-test("snoozeMinutes: 0 when snooze disabled", () => {
-  expect(snoozeMinutes()).toBe(0);
+// Feeds the UI's "silenced per day" projection: a disabled snooze must discount nothing, and
+// an enabled one reports its true length even when the window crosses midnight.
+test("snoozeMinutes: 0 when disabled, window length when enabled", () => {
+  expect(snoozeMinutes({ enabled: false, start: 60, end: 420, tz: null })).toBe(0);
+  expect(snoozeMinutes({ enabled: true, start: 60, end: 420, tz: null })).toBe(360); // 01:00-07:00
+  expect(snoozeMinutes({ enabled: true, start: 1320, end: 360, tz: null })).toBe(480); // 22:00-06:00
 });
 
 // healthWindowMs: the freshness bound for the liveness heartbeat. Too tight => healthy

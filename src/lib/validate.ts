@@ -1,6 +1,7 @@
+import { MARKETPLACES } from "./ebay";
 import { DEFAULT_INTERVAL } from "./poller";
 import { splitExcludeTerms } from "./exclude-terms";
-import { CONDITION_KEYS, type ConditionKey } from "./types";
+import { CONDITION_KEYS, type ConditionKey, type EbayCredsInput } from "./types";
 
 // Returns an error string, or the cleaned fields. partial=true (PATCH) only
 // validates the keys that are present.
@@ -88,5 +89,30 @@ export function parseSnoozeBody(b: any): string | { enabled: boolean; start: num
     }
   }
   return { enabled: !!b.enabled, start, end, tz };
+}
+
+// Validates a PUT /api/ebay-credentials body. env and marketplace are whitelisted rather than
+// passed through: they pick the host the poller then sends the user's keys to, and the currency
+// its price bands are expressed in. The secret is only shape-checked here - eBay itself is the
+// judge of whether it's real (the route live-validates before storing).
+export function parseEbayCredsBody(b: any): string | EbayCredsInput {
+  const clientId = typeof b?.clientId === "string" ? b.clientId.trim() : "";
+  if (!clientId) return "clientId is required";
+  const clientSecret = typeof b.clientSecret === "string" ? b.clientSecret.trim() : "";
+  if (!clientSecret) return "clientSecret is required";
+  if (b.env !== "production" && b.env !== "sandbox") return "env must be production or sandbox";
+  const marketplace = typeof b.marketplace === "string" ? b.marketplace.trim() : "";
+  if (!MARKETPLACES.includes(marketplace)) return `marketplace must be one of ${MARKETPLACES.join(", ")}`;
+  return { clientId, clientSecret, env: b.env, marketplace };
+}
+
+// Validates a POST /api/channels body. Discord is the only kind, and the prefix is a real
+// constraint, not cosmetic: the poller POSTs to whatever is stored here, so an arbitrary URL
+// would make it a request forwarder aimed at anything the pod can reach.
+export function parseChannelBody(b: any): string | { webhookUrl: string } {
+  const webhookUrl = typeof b?.webhookUrl === "string" ? b.webhookUrl.trim() : "";
+  if (!webhookUrl.startsWith("https://discord.com/api/webhooks/"))
+    return "webhookUrl must start with https://discord.com/api/webhooks/";
+  return { webhookUrl };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */

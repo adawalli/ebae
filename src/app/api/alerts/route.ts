@@ -1,5 +1,6 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { log } from "@/lib/log";
 import { alerts as alertsTable } from "@/lib/schema";
@@ -10,13 +11,20 @@ const alog = log.child({ component: "api" });
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+  const user = await requireUser(req);
+  if (user instanceof NextResponse) return user;
   const sp = new URL(req.url).searchParams;
   const searchId = sp.get("searchId") ? Number(sp.get("searchId")) : null;
   if (searchId !== null && !Number.isFinite(searchId))
     return NextResponse.json({ error: "invalid searchId" }, { status: 400 });
   const limit = Math.min(Math.max(Number(sp.get("limit")) || 100, 1), 500);
   try {
-    const where = searchId != null && Number.isFinite(searchId) ? eq(alertsTable.searchId, searchId) : undefined;
+    // The owner clause is unconditional; searchId only narrows within it, so passing someone
+    // else's id reads as an empty history rather than theirs.
+    const where = and(
+      eq(alertsTable.userId, user.id),
+      searchId != null ? eq(alertsTable.searchId, searchId) : undefined,
+    );
     const rows = await db().select().from(alertsTable).where(where).orderBy(desc(alertsTable.createdAt)).limit(limit);
     const alerts: Alert[] = rows.map((r) => ({
       id: r.id,
@@ -41,14 +49,22 @@ export async function GET(req: Request) {
 }
 
 // Clears alert history (the display log only). Leaves seen_items untouched so the
-// poller does NOT re-alert on those listings. searchId scopes the clear; omit for all.
+// poller does NOT re-alert on those listings. searchId scopes the clear; omit for all
+// of the caller's own.
 export async function DELETE(req: Request) {
+  const user = await requireUser(req);
+  if (user instanceof NextResponse) return user;
   const sp = new URL(req.url).searchParams;
   const searchId = sp.get("searchId") ? Number(sp.get("searchId")) : null;
   if (searchId !== null && !Number.isFinite(searchId))
     return NextResponse.json({ error: "invalid searchId" }, { status: 400 });
   try {
-    const where = searchId != null ? eq(alertsTable.searchId, searchId) : undefined;
+    // "omit searchId = clear all" means all of THIS user's: the owner clause is what stops a
+    // bare DELETE from wiping the table for everyone.
+    const where = and(
+      eq(alertsTable.userId, user.id),
+      searchId != null ? eq(alertsTable.searchId, searchId) : undefined,
+    );
     await db().delete(alertsTable).where(where);
     return NextResponse.json({ ok: true });
   } catch (e) {

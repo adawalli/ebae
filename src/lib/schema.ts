@@ -14,8 +14,38 @@ import {
 // columns use mode:"number" so price fields read/write as numbers (no manual
 // coercion); the generated SQL type is still NUMERIC.
 
+// One row per person. email is the identity anchor (lowercased by callers) rather than
+// sub, because the Cloudflare Access policy allowlists emails and single mode has no
+// IdP at all; sub is null until an IdP-backed first login stamps it. eBay creds and
+// snooze live here as columns, not side tables: one set per user, no independent
+// lifecycle.
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  sub: text("sub").unique(),
+  email: text("email").notNull().unique(),
+  ebayClientId: text("ebay_client_id"),
+  // AES-256-GCM, "v1:<iv>:<ct+tag>" (see crypto.ts). Write-only: no API ever returns it.
+  ebayClientSecretEnc: text("ebay_client_secret_enc"),
+  ebayEnv: text("ebay_env").notNull().default("production"),
+  ebayMarketplace: text("ebay_marketplace").notNull().default("EBAY_US"),
+  // Last time these creds minted a token, stamped on save after live validation.
+  ebayVerifiedAt: timestamp("ebay_verified_at", { withTimezone: true }),
+  // Optional overnight poll snooze, per user. start/end are minutes-from-midnight in
+  // `snooze_tz` (IANA; null = server timezone). Loaded into the poller cache and written
+  // through on UI change, same as searches/channels.
+  snoozeEnabled: boolean("snooze_enabled").notNull().default(false),
+  snoozeStart: integer("snooze_start").notNull().default(60), // 01:00
+  snoozeEnd: integer("snooze_end").notNull().default(420), // 07:00
+  snoozeTz: text("snooze_tz"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// user_id is nullable across searches/channels/alerts only because the boot-time claim
+// (claim.ts) backfills pre-multi-user rows; the app always writes it, and the poller
+// skips null-owner searches so unclaimed rows stay inert.
 export const searches = pgTable("searches", {
   id: serial("id").primaryKey(),
+  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
   q: text("q").notNull(),
   categoryId: text("category_id"),
   priceFloor: numeric("price_floor", { mode: "number" }),
@@ -54,6 +84,7 @@ export const seenItems = pgTable(
 
 export const channels = pgTable("channels", {
   id: serial("id").primaryKey(),
+  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
   kind: text("kind").notNull().default("discord"),
   webhookUrl: text("webhook_url").notNull(),
   enabled: boolean("enabled").notNull().default(true),
@@ -63,27 +94,25 @@ export const channels = pgTable("channels", {
 // zero. Written opportunistically (piggybacks on poll writes + the 12h reload) so
 // it never opens a connection just for this; a reboot loses at most the calls
 // since the last write. day = new Date().toDateString(), matching the in-memory key.
-export const apiUsage = pgTable("api_usage", {
-  day: text("day").primaryKey(),
-  used: integer("used").notNull().default(0),
-});
-
-// Single-row global settings (id is always 1). Currently just the optional
-// overnight poll snooze; start/end are minutes-from-midnight in `snooze_tz`
-// (IANA; null = server timezone). Loaded into the poller cache and written
-// through on UI change, same as searches/channels.
-export const settings = pgTable("settings", {
-  id: integer("id").primaryKey().default(1),
-  snoozeEnabled: boolean("snooze_enabled").notNull().default(false),
-  snoozeStart: integer("snooze_start").notNull().default(60), // 01:00
-  snoozeEnd: integer("snooze_end").notNull().default(420), // 07:00
-  snoozeTz: text("snooze_tz"),
-});
+// Keyed by (user_id, day): each user brings their own eBay app, so each has their own
+// daily ceiling to track.
+export const apiUsage = pgTable(
+  "api_usage",
+  {
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    day: text("day").notNull(),
+    used: integer("used").notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.day] })],
+);
 
 export const alerts = pgTable(
   "alerts",
   {
     id: serial("id").primaryKey(),
+    userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
     searchId: integer("search_id").references(() => searches.id, { onDelete: "set null" }),
     searchQ: text("search_q").notNull(),
     itemId: text("item_id").notNull(),

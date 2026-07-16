@@ -17,6 +17,7 @@ export default function Home() {
   const [alertsBadge, setAlertsBadge] = useState(0);
   const [alertFilter, setAlertFilter] = useState<"all" | number>("all");
   const [status, setStatus] = useState<StatusInfo | null>(null);
+  const [expired, setExpired] = useState(false);
   const [snooze, setSnoozeState] = useState<SnoozeConfig | null>(null);
   const [snoozeSaving, setSnoozeSaving] = useState(false);
   const [snoozeError, setSnoozeError] = useState<string | null>(null);
@@ -33,6 +34,9 @@ export default function Home() {
     const alertsUrl = alertFilter === "all" ? "/api/alerts" : `/api/alerts?searchId=${alertFilter}`;
     try {
       const [sRes, aRes, stRes] = await Promise.all([fetch("/api/searches"), fetch(alertsUrl), fetch("/api/status")]);
+      // In cloudflare mode the Access cookie normally expires at the edge and the redirect
+      // never reaches us, so this is the fallback for the modes where it doesn't.
+      setExpired([sRes, aRes, stRes].some((r) => r.status === 401));
       if (sRes.ok) setSearches((await sRes.json()).searches);
       if (aRes.ok) {
         const list = (await aRes.json()).alerts;
@@ -187,6 +191,7 @@ export default function Home() {
   const running = status?.poller.running ?? false;
   const snoozed = status?.snooze.active ?? false;
   const mock = status?.ebay.mode === "mock";
+  const noCreds = status?.ebay.mode === "no-creds";
 
   const navItems = [
     { key: "searches" as const, label: "Searches", badge: null },
@@ -210,6 +215,19 @@ export default function Home() {
             title={running ? "poller running" : "poller down"}
           />
         </header>
+        {expired && (
+          <div className="border-b bg-[color-mix(in_oklab,var(--eb-amber)_14%,transparent)] px-4 py-2 text-[12.5px] text-[var(--eb-amber)] md:px-[30px]">
+            session expired — reload
+          </div>
+        )}
+        {noCreds && view !== "status" && (
+          <button
+            onClick={() => setView("status")}
+            className="border-b bg-[color-mix(in_oklab,var(--eb-amber)_14%,transparent)] px-4 py-2 text-left text-[12.5px] text-[var(--eb-amber)] hover:underline md:px-[30px]"
+          >
+            polling paused — add your eBay keys
+          </button>
+        )}
         <div className="flex min-h-0 flex-1 flex-col">
           {view === "searches" && (
             <SearchesView
@@ -221,6 +239,7 @@ export default function Home() {
               quotaPct={quotaPct}
               running={running}
               mock={mock}
+              noCreds={noCreds}
               status={status}
               openCreate={openCreate}
               openEdit={openEdit}
@@ -251,6 +270,7 @@ export default function Home() {
               snoozeSaving={snoozeSaving}
               snoozeError={snoozeError}
               saveSnooze={saveSnooze}
+              refresh={refresh}
             />
           )}
         </div>

@@ -1,6 +1,6 @@
 // User-selectable condition presets, shared so the places that must agree can't drift:
-// the API whitelist (validate.ts), the Browse condition-ID mapping (ebay.ts
-// CONDITION_FILTER, typed by this), and the UI labels below. null = any condition.
+// the API whitelist (validate.ts), the condition-ID suppression rules (ebay.ts
+// conditionExcluded), and the UI labels below. null = any condition.
 // Order drives the select's option order, so NOT_PARTS sits next to "Any condition".
 export const CONDITION_KEYS = ["NOT_PARTS", "NEW", "USED"] as const;
 export type ConditionKey = (typeof CONDITION_KEYS)[number];

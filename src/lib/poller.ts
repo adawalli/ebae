@@ -1,7 +1,7 @@
 import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, max, sql } from "drizzle-orm";
 import pkg from "../../package.json";
 import { db, migrateToLatest } from "./db";
-import { alerts, apiUsage, channels, searches, seenItems, users } from "./schema";
+import { alerts, apiUsage, channels, pushSubs, searches, seenItems, users } from "./schema";
 import { SINGLE_USER_EMAIL, assertAuthEnv, authMode } from "./authmode";
 import { claimLegacyRows } from "./claim";
 import { decryptSecret } from "./crypto";
@@ -18,8 +18,9 @@ import {
 } from "./ebay";
 import { splitExcludeTerms } from "./exclude-terms";
 import { notify } from "./discord";
-import { log } from "./log";
-import type { Item, PollError, PriceContext, Search, SearchStats, SnoozeConfig, StatusInfo } from "./types";
+import { notifyPush } from "./push";
+import { log, redact } from "./log";
+import type { Item, PollError, PriceContext, PushSub, Search, SearchStats, SnoozeConfig, StatusInfo } from "./types";
 
 const plog = log.child({ component: "poller" });
 
@@ -101,6 +102,9 @@ type UserCtx = {
   env: EbayCreds["env"];
   marketplace: string;
   channels: string[];
+  // A sibling of `channels` rather than a widening of it: every consumer of that list
+  // assumes a URL string, and a push target is three values. Two lists, two senders.
+  push: PushSub[];
   calls: { date: string; used: number };
   snooze: SnoozeState;
 };
@@ -131,8 +135,12 @@ function state(): State {
   });
 }
 
+// redact() because these strings are user-visible, not just logged: this feeds both
+// recordError (the Status page's error list) and bootError (served by /api/status). A
+// failing drizzle query puts its bound params in the error message, so an insert of a
+// webhook URL or a VAPID key would otherwise surface the secret in the UI.
 function message(e: unknown) {
-  return e instanceof Error ? e.message : String(e);
+  return redact(e instanceof Error ? e.message : String(e));
 }
 
 // A listing's title matches one of the search's exclude terms (comma/newline
@@ -337,7 +345,7 @@ async function reload() {
   await database
     .delete(seenItems)
     .where(lt(seenItems.seenAt, sql`now() - (${SEEN_RETENTION_DAYS} * interval '1 day')`));
-  const [searchRows, seenRows, hitRows, lastHitRows, channelRows, userRows] = await Promise.all([
+  const [searchRows, seenRows, hitRows, lastHitRows, channelRows, pushRows, userRows] = await Promise.all([
     database.select().from(searches),
     database.select({ searchId: seenItems.searchId, itemId: seenItems.itemId }).from(seenItems),
     database
@@ -352,6 +360,9 @@ async function reload() {
       .select({ userId: channels.userId, webhookUrl: channels.webhookUrl })
       .from(channels)
       .where(eq(channels.enabled, true)),
+    database
+      .select({ userId: pushSubs.userId, endpoint: pushSubs.endpoint, p256dh: pushSubs.p256dh, auth: pushSubs.auth })
+      .from(pushSubs),
     database.select().from(users),
   ]);
 
@@ -362,6 +373,13 @@ async function reload() {
     const list = webhooksByUser.get(r.userId);
     if (list) list.push(r.webhookUrl);
     else webhooksByUser.set(r.userId, [r.webhookUrl]);
+  }
+  const pushByUser = new Map<number, PushSub[]>();
+  for (const r of pushRows) {
+    const sub = { endpoint: r.endpoint, p256dh: r.p256dh, auth: r.auth };
+    const list = pushByUser.get(r.userId);
+    if (list) list.push(sub);
+    else pushByUser.set(r.userId, [sub]);
   }
   // Swap the map (and each user's channel list) rather than mutate: a tick mid-flight keeps
   // polling against the context it captured instead of seeing half of a reload. `calls` is
@@ -375,6 +393,7 @@ async function reload() {
       env: envOf(row.ebayEnv),
       marketplace: row.ebayMarketplace,
       channels: webhooksByUser.get(row.id) ?? [],
+      push: pushByUser.get(row.id) ?? [],
       calls: st.users.get(row.id)?.calls ?? { date: today, used: 0 },
       snooze: { enabled: row.snoozeEnabled, start: row.snoozeStart, end: row.snoozeEnd, tz: row.snoozeTz },
     });
@@ -606,6 +625,26 @@ async function maybeSampleMarket(e: Entry, u: UserCtx, database: ReturnType<type
 // mutable flag). A row counts as delivered once ANY channel accepts it (notify.anyDelivered), so a
 // retry never re-posts to a channel that already has it. Rows older than REDELIVER_MAX_AGE_MS are
 // retired unsent (a deal that stale isn't worth sending); anything still null is retried next boot.
+// Stand-ins for a sender with nothing to send, so the two delivery paths can always be
+// awaited as a pair without branching the result handling.
+const NOTHING_SENT = { error: null, anyDelivered: false } as const;
+const NOTHING_PUSHED = { error: null, anyDelivered: false, dead: [] as string[] } as const;
+
+// Drop subscriptions the push service says are gone for good (404/410 only - see push.ts).
+// Reassigns u.push rather than mutating it, matching reload's swap discipline; callers
+// holding a pinned copy of the list have to narrow it themselves. Never throws: losing a
+// reap is a retry next tick, not a lost alert.
+async function reapPush(database: ReturnType<typeof db>, u: UserCtx, dead: string[]) {
+  const gone = new Set(dead);
+  u.push = u.push.filter((p) => !gone.has(p.endpoint));
+  try {
+    await database.delete(pushSubs).where(inArray(pushSubs.endpoint, dead));
+    plog.info({ userId: u.id, count: dead.length }, "reaped expired push subscriptions");
+  } catch (err) {
+    plog.warn({ err, userId: u.id }, "push reap failed");
+  }
+}
+
 async function redeliverPending(database: ReturnType<typeof db>) {
   const st = state();
   const now = new Date(); // one stamp for the whole sweep, so the DB shows they came from one boot
@@ -654,7 +693,7 @@ async function redeliverPending(database: ReturnType<typeof db>) {
     // Nothing to deliver to (no channels, or the owner is gone): retire the row so it doesn't
     // linger across boots.
     const u = st.users.get(s.userId);
-    if (!u?.channels.length) {
+    if (!u || (!u.channels.length && !u.push.length)) {
       done.push(row.id);
       continue;
     }
@@ -679,12 +718,17 @@ async function redeliverPending(database: ReturnType<typeof db>) {
     const market = s.marketMedian;
     const ctx: PriceContext | undefined =
       market != null && market > 0 ? { typical: market, count: 0, basis: "market" } : undefined;
-    const { error, anyDelivered } = await notify(item, s, u.channels, ctx);
+    const [d, p] = await Promise.all([
+      u.channels.length ? notify(item, s, u.channels, ctx) : NOTHING_SENT,
+      u.push.length ? notifyPush(item, s, u.push) : NOTHING_PUSHED,
+    ]);
     // Log any failure even on partial success (matches the main-path notify, which records the
-    // error independently of anyDelivered); confirm the row if a channel took it, else leave it
+    // error independently of anyDelivered); confirm the row if a target took it, else leave it
     // null to retry next boot.
-    if (error) recordError(u.id, s.q, `redeliver: ${error}`, "error");
-    if (anyDelivered) done.push(row.id);
+    if (d.error) recordError(u.id, s.q, `redeliver: ${d.error}`, "error");
+    if (p.error) recordError(u.id, s.q, `redeliver: ${p.error}`, "error");
+    if (p.dead.length) await reapPush(database, u, p.dead);
+    if (d.anyDelivered || p.anyDelivered) done.push(row.id);
   }
   if (done.length) await database.update(alerts).set({ deliveredAt: now }).where(inArray(alerts.id, done));
 }
@@ -771,7 +815,15 @@ async function pollOnce(e: Entry) {
       // channel list (never mutates), so a capture keeps the insert's deliveredAt seed and the
       // notify target consistent even if a reload lands mid-tick.
       const webhooks = u.channels; // local copy; named to not shadow the `channels` schema table
+      // Pinned for the same reason as `webhooks`, but narrowed as endpoints die: reapPush
+      // reassigns u.push rather than mutating it, so this alias would otherwise keep handing
+      // a reaped endpoint to every later item in the batch.
+      let subs = u.push;
       for (const item of [...fresh].reverse()) {
+        // Recomputed per item, not once per batch: reaping the last subscription has to be
+        // able to take this to zero, or the rows below would seed deliveredAt=null for a
+        // target that no longer exists and never be delivered by anyone.
+        const targets = webhooks.length + subs.length;
         if (e.seen.has(item.itemId)) continue; // reload() may have merged it in mid-loop
         // Suppressed (exclude-terms hit, or the NOT_PARTS preset's for-parts tier): mark seen
         // (so later widening the search won't re-alert this old listing) but send no alert.
@@ -807,7 +859,7 @@ async function pollOnce(e: Entry) {
               condition: item.condition,
               imageUrl: item.imageUrl,
               itemUrl: item.itemUrl,
-              deliveredAt: webhooks.length ? null : new Date(),
+              deliveredAt: targets ? null : new Date(),
             })
             .onConflictDoNothing({ target: [alerts.searchId, alerts.itemId] })
             .returning({ id: alerts.id });
@@ -820,13 +872,25 @@ async function pollOnce(e: Entry) {
         e.hitTimes.push(now);
         e.lastHitAt = now;
         plog.info({ searchId: e.s.id, itemId: item.itemId, price: item.price }, "alert sent");
-        if (webhooks.length) {
-          const { error, anyDelivered } = await notify(item, e.s, webhooks, ctx);
-          // "Delivered" = reached at least one channel. On total failure the row stays
-          // deliveredAt=null and boot redelivery retries it (never re-posting to a channel that
+        if (targets) {
+          const [d, p] = await Promise.all([
+            webhooks.length ? notify(item, e.s, webhooks, ctx) : NOTHING_SENT,
+            subs.length ? notifyPush(item, e.s, subs) : NOTHING_PUSHED,
+          ]);
+          // Recorded separately, never `d.error ?? p.error`: this list is the only place a
+          // self-hoster sees an outage, so collapsing the two would hide a dead webhook
+          // behind a push failure (and vice versa).
+          if (d.error) recordError(u.id, e.s.q, d.error, "error");
+          if (p.error) recordError(u.id, e.s.q, p.error, "error");
+          if (p.dead.length) {
+            await reapPush(database, u, p.dead);
+            const gone = new Set(p.dead);
+            subs = subs.filter((s) => !gone.has(s.endpoint)); // keep the pinned copy in step
+          }
+          // "Delivered" = reached at least one target. On total failure the row stays
+          // deliveredAt=null and boot redelivery retries it (never re-posting to a target that
           // already has it, since anyDelivered would have marked it delivered here).
-          if (error) recordError(u.id, e.s.q, error, "error");
-          if (anyDelivered) {
+          if (d.anyDelivered || p.anyDelivered) {
             await database.update(alerts).set({ deliveredAt: new Date() }).where(eq(alerts.id, alertId));
           }
         }
@@ -1077,6 +1141,21 @@ export async function addUserChannel(userId: number, webhookUrl: string): Promis
 export async function removeUserChannel(userId: number, webhookUrl: string): Promise<void> {
   const u = await userCtx(userId);
   if (u) u.channels = u.channels.filter((c) => c !== webhookUrl);
+}
+
+// Replace, not append-if-absent like addUserChannel: the route upserts p256dh/auth, and a
+// device that re-subscribes keeps its endpoint while rotating its keys. Skipping the
+// already-present endpoint would leave the cache encrypting against the old key until the
+// next reload - which the push service answers with a 400, and 400 isn't reaped, so the
+// subscription would be a permanent zero-delivery zombie.
+export async function addUserPush(userId: number, sub: PushSub): Promise<void> {
+  const u = await userCtx(userId);
+  if (u) u.push = [...u.push.filter((p) => p.endpoint !== sub.endpoint), sub];
+}
+
+export async function removeUserPush(userId: number, endpoint: string): Promise<void> {
+  const u = await userCtx(userId);
+  if (u) u.push = u.push.filter((p) => p.endpoint !== endpoint);
 }
 
 // Re-kick one user's searches after a change that decides whether/how they poll. Jittered so a

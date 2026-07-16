@@ -91,7 +91,11 @@ Embed layout per new item:
 - Deal context: a **Market** field comparing the price to a daily market baseline (median asking price of the same criteria with the price **cap removed but the floor kept** — the floor keeps sub-band accessories that share the query's keywords out of the median, the removed cap reveals the true going rate above the deal-hunt ceiling). Falls back to a **Typical** field (median of recent alerts for the search) when no market baseline exists yet, shown once ≥3 priced alerts exist. Poller-managed on `searches.market_median` / `market_sampled_at`, refreshed once/day for searches with both a floor and a cap (`MARKET_SAMPLE_HOURS`); asking prices only (Browse has no sold data)
 - Footer: which saved search matched
 
-One `notify(item, search)` function with Discord as the only implementation. Deliberately no channel-plugin framework yet - a `Notifier` interface gets extracted when the second channel (Telegram) actually lands.
+Two senders: `notify()` (Discord, `discord.ts`) and `notifyPush()` (Web Push, `push.ts`). The poller awaits both and ORs the results. Still deliberately no channel-plugin framework - a `Notifier` interface over two concrete functions is more code than calling both, so it waits for a third channel (Telegram) to actually land.
+
+`deliveredAt` means "at least one target accepted", unchanged now that there are two kinds. A restart redelivers an alert only while **no** target has it, so a target that already got one can never be re-sent at the cost of one that failed alongside it never getting a retry. That trade predates push (it is already the case for two Discord webhooks); push joins the same set under the same rule.
+
+**Push** is per device, not per user: subscriptions live in `push_subs`, keyed by an endpoint the browser mints. The VAPID keypair is generated on first use into `vapid_keys` rather than required as config, because the image is built once and a `NEXT_PUBLIC_*` key could never be set by anyone running the published container - so the public key is served from `/api/push` at runtime. The VAPID subject is a constant, never derived from the deployment URL: a localhost subject makes Apple return 403 BadJwtToken, which breaks every iPhone while Chrome keeps working. Endpoints are attacker-controlled input, so `validate.ts` allowlists the known push hosts at subscribe time for the same reason `parseChannelBody` pins Discord's prefix. Subscriptions are dropped on 404/410 only - every other status is transient, and reaping on 403 would delete every iOS subscriber at once.
 
 ## 6. Deployment
 
@@ -143,7 +147,7 @@ Config stopped being strictly env-only with multi-user: a shared deployment can'
 
 **Phase 3 - Nice-to-haves**
 
-- PWA with web push notifications
+- ~~PWA with web push notifications~~ ✅
 - Two-way Telegram commands (/pause, /list, /add)
 - Price-drop alerts on watched items
 - Multi-marketplace (eBay UK/DE/etc. per search)

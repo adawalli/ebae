@@ -90,6 +90,36 @@ export const channels = pgTable("channels", {
   enabled: boolean("enabled").notNull().default(true),
 });
 
+// Web Push targets. A separate table rather than a `channels` row: webhook_url is NOT
+// NULL and a subscription carries three values, so overloading it would mean JSON in a
+// URL column - which breaks the API's tail-masking and the SSRF allowlist alike.
+// user_id is notNull here, unlike searches/channels/alerts: this table postdates
+// multi-user, so claim.ts has no legacy rows to backfill.
+export const pushSubs = pgTable("push_subs", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  // text, never varchar(n): the push services reserve the right to change the shape of
+  // these URLs, and lengths already vary by vendor (FCM ~200, Apple ~400, WNS 500+).
+  // Unique so a re-subscribe upserts instead of accumulating a row per browser launch -
+  // iOS silently rotates endpoints, so the same device re-subscribes often.
+  endpoint: text("endpoint").notNull().unique(),
+  p256dh: text("p256dh").notNull(), // 87 chars: a P-256 point (RFC 8291)
+  auth: text("auth").notNull(), // 22 chars: 16 octets
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// The VAPID keypair, generated on first use when the env vars aren't set (id is always
+// 1). Generated once and reused forever: rotating it silently invalidates every push_subs
+// row, since a subscription is bound to the key that created it.
+export const vapidKeys = pgTable("vapid_keys", {
+  id: integer("id").primaryKey(),
+  publicKey: text("public_key").notNull(),
+  privateKey: text("private_key").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // Daily eBay API call counter, persisted so a restart doesn't reset tracking to
 // zero. Written opportunistically (piggybacks on poll writes + the 12h reload) so
 // it never opens a connection just for this; a reboot loses at most the calls

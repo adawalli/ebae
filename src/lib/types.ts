@@ -98,6 +98,12 @@ export type PollError = { time: string; searchQ: string | null; message: string;
 // secret and is never returned once saved.
 export type Channel = { id: number; kind: string; webhookUrl: string };
 
+// A Web Push target, as the browser's PushSubscription.toJSON() gives it. endpoint is
+// bearer-equivalent (anyone holding it can push to the device), so no API returns it.
+// Shaped like the browser's payload rather than the DB row so the subscribe route can
+// hand it straight to web-push.
+export type PushSub = { endpoint: string; p256dh: string; auth: string };
+
 // Body of PUT /api/ebay-credentials. clientSecret is write-only: no API returns it.
 export type EbayCredsInput = {
   clientId: string;

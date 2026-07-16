@@ -4,6 +4,7 @@ import { type Dispatch, type SetStateAction, useCallback, useEffect, useState } 
 import { Check, Trash2 } from "lucide-react";
 import { MARKETPLACE_CURRENCY, type Channel, type SnoozeConfig, type StatusInfo } from "@/lib/types";
 import { ago, duration, fmt, until } from "@/lib/format";
+import { currentSubscription, disablePush, enablePush, pushSupported } from "@/lib/push-client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -334,6 +335,66 @@ function EbayCredsCard({ status, refresh }: { status: StatusInfo; refresh: () =>
   );
 }
 
+// This device's push state. Rendered only where push can actually work: an insecure
+// origin or a browser without PushManager gets nothing rather than a button that can't
+// succeed. On iOS that also means it appears only once the app is on the Home Screen,
+// since Safari tabs don't expose PushManager at all.
+function PushSection() {
+  const [supported, setSupported] = useState(false);
+  const [on, setOn] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Both flags are set from the async continuation so the toggle appears once, already
+    // showing its real state, instead of rendering as off and then correcting itself.
+    if (!pushSupported()) return;
+    currentSubscription()
+      .then((s) => {
+        setSupported(true);
+        setOn(!!s);
+      })
+      .catch(() => setSupported(true));
+  }, []);
+
+  async function toggle(next: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      if (next) {
+        const err = await enablePush();
+        if (err) setError(err);
+        else setOn(true);
+      } else {
+        await disablePush();
+        setOn(false);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!supported) return null;
+  return (
+    <div className="flex items-center justify-between gap-4 border-t pt-4">
+      <div>
+        <div className="text-[13px] font-medium">Push to this device</div>
+        <div className="mt-[3px] max-w-[440px] text-[12.5px] text-muted-foreground">
+          Alerts as system notifications, no Discord needed. Per device - turn it on wherever you want them.
+        </div>
+        {error && (
+          <span className="mt-1 block font-mono text-[12.5px] text-[var(--eb-amber)] [overflow-wrap:anywhere]">
+            {error}
+          </span>
+        )}
+      </div>
+      <Switch checked={on} disabled={busy} onCheckedChange={toggle} aria-label="Push to this device" />
+    </div>
+  );
+}
+
 function NotificationsCard() {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [webhookUrl, setWebhookUrl] = useState("");
@@ -389,8 +450,8 @@ function NotificationsCard() {
         <div>
           <div className="text-sm font-semibold">Notifications</div>
           <div className="mt-[3px] max-w-[440px] text-[12.5px] text-muted-foreground">
-            Discord webhooks your alerts are posted to. A saved webhook only ever reads back as its tail - it&apos;s a
-            credential, so the full URL never leaves the server again.
+            Where your alerts go. A saved webhook only ever reads back as its tail - it&apos;s a credential, so the full
+            URL never leaves the server again.
           </div>
         </div>
 
@@ -433,6 +494,8 @@ function NotificationsCard() {
         {error && (
           <span className="font-mono text-[12.5px] text-[var(--eb-amber)] [overflow-wrap:anywhere]">{error}</span>
         )}
+
+        <PushSection />
       </CardContent>
     </Card>
   );

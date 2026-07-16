@@ -57,6 +57,13 @@
       "when": 1784209581089,
       "tag": "0007_slimy_albert_cleary",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1784237097925,
+      "tag": "0008_young_rhino",
+      "breakpoints": true
     }
   ]
 }

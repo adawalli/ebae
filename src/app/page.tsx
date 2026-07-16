@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Alert, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
 import { callsFor } from "@/lib/format";
+import { refreshPush } from "@/lib/push-client";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SearchesView } from "@/components/searches-view";
 import { AlertsView } from "@/components/alerts-view";
@@ -56,6 +57,14 @@ export default function Home() {
     const t = setInterval(refresh, 10_000);
     return () => clearInterval(t);
   }, [refresh]);
+
+  useEffect(() => {
+    // Re-assert this device's push subscription on every app load. It lives here rather
+    // than in the Notifications card because that card only mounts on the Status tab,
+    // and someone who just checks their alerts would never run it - meanwhile iOS expires
+    // endpoints after a week or two, silently, with no event to listen for.
+    void refreshPush();
+  }, []);
 
   useEffect(() => {
     // snooze config: load once, not in the 10s loop (the form binds to this state,

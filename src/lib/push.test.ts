@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { markStalePush, pushIsStale } from "./poller";
+import { evictPushElsewhere, markStalePush, pushIsStale } from "./poller";
 import { parsePushBody, pushHostAllowed } from "./validate";
 
 // The allowlist is an SSRF guard, not a formality: the poller POSTs to whatever endpoint
@@ -119,4 +119,25 @@ test("the stale set is bounded and evicts the coldest endpoint first", () => {
   markStalePush([survivor]);
   markStalePush(Array.from({ length: 200 }, (_, i) => at(1000 + i)));
   expect(pushIsStale(survivor)).toBe(true);
+});
+
+// A device that moves between accounts must leave the old owner's cache, or that user's
+// alerts keep pushing to a phone that is now someone else's.
+test("subscribing a device evicts it from every other user's cache", () => {
+  type Cached = { users: Map<number, { push: { endpoint: string }[] }> };
+  pushIsStale("init"); // the state is lazy; force it to exist before reaching for it
+  const users = (globalThis as unknown as { __ebaeState: Cached }).__ebaeState.users;
+
+  const shared = "https://web.push.apple.com/shared-device";
+  const own = "https://web.push.apple.com/alice-only";
+  users.set(1, { push: [{ endpoint: shared }, { endpoint: own }] });
+  users.set(2, { push: [] });
+
+  evictPushElsewhere(2, shared); // user 2 just subscribed the same device
+
+  expect(users.get(1)!.push.map((p) => p.endpoint)).toEqual([own]); // shared gone, own kept
+  expect(users.get(2)!.push).toEqual([]); // the new owner's cache is addUserPush's job
+
+  users.delete(1);
+  users.delete(2);
 });

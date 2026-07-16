@@ -42,6 +42,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             means no push at all. Next only emits crossOrigin on Vercel preview deploys
             (lib/metadata/metadata.js), so the attribute has to be set here. */}
         <link rel="manifest" href="/manifest.webmanifest" crossOrigin="use-credentials" />
+        {/* No <link rel="apple-touch-icon">: Safari falls back to /apple-touch-icon.png at
+            the origin root on its own, and public/ serves exactly that. A link tag here
+            would be redundant, not a fix. */}
       </head>
       <body>
         <Providers>{children}</Providers>

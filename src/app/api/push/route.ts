@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { log } from "@/lib/log";
-import { addUserPush, pushIsStale, removeUserPush } from "@/lib/poller";
+import { addUserPush, evictPushElsewhere, pushIsStale, removeUserPush } from "@/lib/poller";
 import { vapid } from "@/lib/push";
 import { pushSubs } from "@/lib/schema";
 import { parsePushBody } from "@/lib/validate";
@@ -42,13 +42,8 @@ export async function POST(req: Request) {
   if (pushIsStale(parsed.endpoint)) return NextResponse.json({ error: "subscription is stale" }, { status: 409 });
   try {
     const database = db();
-    // endpoint is globally unique, so a device moving between accounts (a shared browser,
-    // a re-login) reassigns the row. Find the old owner first: without this its cached
-    // list would keep pushing this user's alerts to that device until the next reload.
-    const [existing] = await database
-      .select({ userId: pushSubs.userId })
-      .from(pushSubs)
-      .where(eq(pushSubs.endpoint, parsed.endpoint));
+    // endpoint is globally unique, so this reassigns the row when a device moves between
+    // accounts (a shared browser, a re-login).
     await database
       .insert(pushSubs)
       .values({ userId: user.id, ...parsed })
@@ -56,8 +51,11 @@ export async function POST(req: Request) {
         target: pushSubs.endpoint,
         set: { userId: user.id, p256dh: parsed.p256dh, auth: parsed.auth },
       });
-    if (existing && existing.userId !== user.id) await removeUserPush(existing.userId, parsed.endpoint);
     await addUserPush(user.id, parsed);
+    // The row is authoritative now, so drop the endpoint from whoever else was cached
+    // holding it. Sweeping beats reading the prior owner before the upsert: that read
+    // races with a concurrent subscribe for the same endpoint, and it costs a query.
+    evictPushElsewhere(user.id, parsed.endpoint);
     return NextResponse.json({ ok: true }, { status: 201 });
   } catch (e) {
     alog.error({ err: e, method: "POST", path: "/api/push" }, "route error");

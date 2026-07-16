@@ -21,10 +21,17 @@ async function ready(): Promise<ServiceWorkerRegistration> {
   return navigator.serviceWorker.ready;
 }
 
-async function publicKey(): Promise<string | null> {
+const UNCONFIGURED = "Push is not configured on this server.";
+
+// The server's VAPID public key, or a message saying why there isn't one.
+async function publicKey(): Promise<{ key: string } | { error: string }> {
   const res = await fetch("/api/push");
-  if (!res.ok) return null; // 503 = push isn't configured
-  return (await res.json()).publicKey ?? null;
+  // Only reachable behind an auth proxy, but worth its own message: "not configured" would
+  // send someone hunting a server problem when reloading the page is the whole fix.
+  if (res.status === 401) return { error: "Your session expired. Reload the page and try again." };
+  if (!res.ok) return { error: UNCONFIGURED }; // 503 = push isn't configured
+  const key = (await res.json())?.publicKey;
+  return typeof key === "string" ? { key } : { error: UNCONFIGURED };
 }
 
 // A subscription is bound to the VAPID key that created it. If the server's key has since
@@ -40,52 +47,69 @@ function boundTo(sub: PushSubscription, key: string): boolean {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") === key;
 }
 
-async function save(sub: PushSubscription): Promise<boolean> {
+// "stale" is the server saying a push service already declared this endpoint dead, so the
+// subscription has to be replaced rather than re-asserted.
+type SaveResult = "ok" | "stale" | "failed";
+
+async function save(sub: PushSubscription): Promise<SaveResult> {
   const res = await fetch("/api/push", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     // toJSON() gives {endpoint, expirationTime, keys:{p256dh, auth}} already base64url'd.
     body: JSON.stringify(sub.toJSON()),
   });
-  return res.ok;
+  if (res.ok) return "ok";
+  return res.status === 409 ? "stale" : "failed";
+}
+
+// Drops whatever this registration holds and mints a new subscription. Unsubscribing first
+// is not optional: subscribe() throws InvalidStateError while a subscription on a different
+// key is still live.
+async function resubscribe(reg: ServiceWorkerRegistration, key: string): Promise<PushSubscription> {
+  const old = await reg.pushManager.getSubscription();
+  await old?.unsubscribe();
+  return reg.pushManager.subscribe({
+    userVisibleOnly: true, // required by Chrome and Edge; they reject without it
+    // A base64url string is accepted directly - the urlBase64ToUint8Array helper that
+    // every tutorial copies has been unnecessary for years.
+    applicationServerKey: key,
+  });
 }
 
 // Subscribes this device and registers it server-side. Returns an error string, or null
 // on success.
 export async function enablePush(): Promise<string | null> {
   if (Notification.permission === "denied") return "Notifications are blocked for this site in your browser.";
-  const key = await publicKey();
-  if (!key) return "Push is not configured on this server.";
+  const pk = await publicKey();
+  if ("error" in pk) return pk.error;
   // Must be called from a user gesture; Safari in particular ignores it otherwise.
   const perm = await Notification.requestPermission();
   if (perm !== "granted") return "Notification permission was not granted.";
   const reg = await ready();
-  let sub = await reg.pushManager.getSubscription();
-  // subscribe() throws InvalidStateError if a subscription on a different key is still
-  // live, so the stale one has to go first rather than just being resubscribed over.
-  if (sub && !boundTo(sub, key)) {
-    await sub.unsubscribe();
-    sub = null;
-  }
-  sub ??= await reg.pushManager.subscribe({
-    userVisibleOnly: true, // required by Chrome and Edge; they reject without it
-    // A base64url string is accepted directly - the urlBase64ToUint8Array helper that
-    // every tutorial copies has been unnecessary for years.
-    applicationServerKey: key,
-  });
-  return (await save(sub)) ? null : "Could not save the subscription.";
+  const held = await reg.pushManager.getSubscription();
+  const sub = held && boundTo(held, pk.key) ? held : await resubscribe(reg, pk.key);
+  let saved = await save(sub);
+  // The browser handed back an endpoint the server knows is dead. One retry only: a freshly
+  // minted endpoint that still comes back stale is not something a loop can fix.
+  if (saved === "stale") saved = await save(await resubscribe(reg, pk.key));
+  return saved === "ok" ? null : "Could not save the subscription.";
 }
 
 export async function disablePush(): Promise<void> {
   const reg = await navigator.serviceWorker.getRegistration("/sw.js");
   const sub = await reg?.pushManager.getSubscription();
   if (!sub) return;
+  const { endpoint } = sub;
+  // Unsubscribe first, then drop the row. The other order turns push back on behind the
+  // user's back: if unsubscribe() throws once the row is gone, the browser still holds a
+  // live subscription and the next refreshPush() posts it straight back. This way a failed
+  // DELETE only strands a row whose endpoint now 410s, which the next alert reaps.
+  await sub.unsubscribe();
   await fetch("/api/push", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ endpoint: sub.endpoint }),
+    body: JSON.stringify({ endpoint }),
   });
-  await sub.unsubscribe();
 }
 
 export async function currentSubscription(): Promise<PushSubscription | null> {
@@ -103,7 +127,17 @@ export async function currentSubscription(): Promise<PushSubscription | null> {
 export async function refreshPush(): Promise<void> {
   try {
     const sub = await currentSubscription();
-    if (sub) await save(sub);
+    if (!sub) return;
+    if ((await save(sub)) !== "stale") return;
+    // A push service has already declared this endpoint dead, but the browser goes on
+    // handing it back - iOS expires endpoints silently and Safari fires no
+    // pushsubscriptionchange. Re-asserting it would just get it reaped again on the next
+    // alert, every load, forever, with the toggle still showing push as on. Replacing it is
+    // the only way out, and this is the one moment we learn it's needed.
+    const pk = await publicKey();
+    if ("error" in pk) return;
+    // Already registered - currentSubscription() found a subscription on it.
+    await save(await resubscribe(await ready(), pk.key));
   } catch {
     // Never surface: this is background maintenance the user didn't ask for.
   }

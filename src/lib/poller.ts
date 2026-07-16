@@ -119,6 +119,13 @@ type State = {
   users: Map<number, UserCtx>;
   errors: PollError[];
   lastScheduledAt: number | null; // heartbeat: last time a live poll timer was set, powers /api/health
+  // Endpoints a push service has told us are gone. reapPush deletes the row, but the
+  // browser keeps handing the same dead endpoint back - iOS expires them with no event and
+  // Safari has no pushsubscriptionchange - so a client re-asserting on load would reinsert
+  // it and have it reaped again, forever, while the UI claimed push was on. Remembering the
+  // death lets /api/push answer 409 and send the client to mint a fresh subscription.
+  // In-memory on purpose: a restart costs one more reap cycle before the client is told.
+  stalePush: Set<string>;
 };
 
 // globalThis so instrumentation and route-handler bundles share one instance
@@ -132,7 +139,34 @@ function state(): State {
     users: new Map(),
     errors: [],
     lastScheduledAt: null,
+    stalePush: new Set(),
   });
+}
+
+// Bounded because stalePush outlives every row it names and endpoints churn: iOS re-mints
+// them every week or two, so an unbounded set is a slow leak in a process that runs for
+// months.
+const MAX_STALE_PUSH = 500;
+
+// Records endpoints the push service rejected for good, so the subscribe route can tell a
+// client its browser is handing back a corpse. Insertion-ordered, so the oldest deaths fall
+// off first - which costs at most one extra reap cycle for a device nobody has opened in
+// months.
+export function markStalePush(endpoints: string[]): void {
+  const stale = state().stalePush;
+  for (const e of endpoints) {
+    // Re-add moves it to the back: a corpse we're still being handed is not the coldest one.
+    stale.delete(e);
+    stale.add(e);
+  }
+  for (const e of stale) {
+    if (stale.size <= MAX_STALE_PUSH) break;
+    stale.delete(e);
+  }
+}
+
+export function pushIsStale(endpoint: string): boolean {
+  return state().stalePush.has(endpoint);
 }
 
 // redact() because these strings are user-visible, not just logged: this feeds both
@@ -637,6 +671,9 @@ const NOTHING_PUSHED = { error: null, anyDelivered: false, dead: [] as string[] 
 async function reapPush(database: ReturnType<typeof db>, u: UserCtx, dead: string[]) {
   const gone = new Set(dead);
   u.push = u.push.filter((p) => !gone.has(p.endpoint));
+  // Before the delete, and kept even if it fails: this is what stops the client re-adding
+  // the row on its next load, and it has to outlive the row either way.
+  markStalePush(dead);
   try {
     await database.delete(pushSubs).where(inArray(pushSubs.endpoint, dead));
     plog.info({ userId: u.id, count: dead.length }, "reaped expired push subscriptions");

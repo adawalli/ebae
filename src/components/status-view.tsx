@@ -42,8 +42,8 @@ export function StatusView({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="border-b p-4 md:px-[30px] md:py-6">
-        <h2 className="text-[21px] font-bold tracking-[-0.01em]">Status</h2>
-        <div className="mt-1 text-[13px] text-muted-foreground">Poller, quota and eBay API health</div>
+        <h2 className="text-[21px] font-bold tracking-[-0.01em]">Status &amp; Settings</h2>
+        <div className="mt-1 text-[13px] text-muted-foreground">Poller health, eBay keys and notifications</div>
       </div>
       <div className="flex-1 overflow-y-visible p-4 md:overflow-y-auto md:px-[30px] md:py-6">
         <div className="mb-5 grid grid-cols-1 gap-3 md:grid-cols-3 md:gap-3.5">

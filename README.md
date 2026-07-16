@@ -22,15 +22,15 @@ That is the default and it needs **no new env vars**: one implicit user, no logi
 
 1. Create a free account at [developer.ebay.com](https://developer.ebay.com) and create an app (production keyset).
 2. Put the App ID and Cert ID in `.env.local` as `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET`.
-3. Restart. The status page shows the token going live.
+3. Restart. The Status & Settings page shows the token going live.
 
-In a multi-user mode the env vars are ignored: each user enters their own App ID and Cert ID on the status page instead, and the secret is encrypted before it is stored (see [`ENCRYPTION_KEY`](#encryption_key)). Keys are checked against eBay on save, so a typo fails immediately. Without keys a user's searches idle - the UI says so.
+In a multi-user mode the env vars are ignored: each user enters their own App ID and Cert ID on the Status & Settings page instead, and the secret is encrypted before it is stored (see [`ENCRYPTION_KEY`](#encryption_key)). Keys are checked against eBay on save, so a typo fails immediately. Without keys a user's searches idle - the UI says so.
 
 Browse API default quota is 5,000 calls/day per eBay app, so `EBAY_DAILY_QUOTA` is a per-user ceiling. The UI projects your daily usage as you add searches and the poller enforces the budget.
 
 ## Discord notifications
 
-Create a webhook in your Discord channel (channel settings → Integrations → Webhooks) and set `DISCORD_WEBHOOK_URL`. More targets can be added on the status page.
+Create a webhook in your Discord channel (channel settings → Integrations → Webhooks) and set `DISCORD_WEBHOOK_URL`. More targets can be added on the Status & Settings page.
 
 In a multi-user mode `DISCORD_WEBHOOK_URL` is ignored (it would fan everyone's alerts into one channel) - each user adds their own webhooks in the UI.
 

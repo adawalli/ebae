@@ -196,7 +196,7 @@ export default function Home() {
   const navItems = [
     { key: "searches" as const, label: "Searches", badge: null },
     { key: "alerts" as const, label: "Alerts", badge: alertsBadge || null },
-    { key: "status" as const, label: "Status", badge: status?.errors.length || null },
+    { key: "status" as const, label: "Status & Settings", badge: status?.errors.length || null },
   ];
 
   return (

@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, count, eq, isNull } from "drizzle-orm";
 import type { db } from "./db";
 import { alerts, channels, searches, users } from "./schema";
 import { SINGLE_USER_EMAIL, authMode } from "./authmode";
@@ -17,7 +17,14 @@ export async function claimLegacyRows(database: ReturnType<typeof db>): Promise<
   const mode = authMode();
   const email = mode === "single" ? SINGLE_USER_EMAIL : process.env.LEGACY_OWNER_EMAIL?.trim().toLowerCase();
   if (!email) {
-    clog.warn("no LEGACY_OWNER_EMAIL - existing rows stay unowned and will not poll");
+    // Having no LEGACY_OWNER_EMAIL is the steady state, not a problem: it is set for one boot
+    // during an upgrade and removed after. Warn only when rows are genuinely stranded -
+    // unconditionally would cry wolf on every boot of every multi-user deployment, telling an
+    // owner whose searches are polling perfectly well that they aren't.
+    const [stranded] = await database.select({ n: count() }).from(searches).where(isNull(searches.userId));
+    if (stranded?.n) {
+      clog.warn({ searches: stranded.n }, "unowned searches and no LEGACY_OWNER_EMAIL - they will not poll");
+    }
     return;
   }
 

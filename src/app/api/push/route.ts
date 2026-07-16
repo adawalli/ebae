@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { log } from "@/lib/log";
-import { addUserPush, removeUserPush } from "@/lib/poller";
+import { addUserPush, pushIsStale, removeUserPush } from "@/lib/poller";
 import { vapid } from "@/lib/push";
 import { pushSubs } from "@/lib/schema";
 import { parsePushBody } from "@/lib/validate";
@@ -36,6 +36,10 @@ export async function POST(req: Request) {
     alog.warn({ host: hostOf(body?.endpoint), reason: parsed }, "push subscribe rejected");
     return NextResponse.json({ error: parsed }, { status: 400 });
   }
+  // The browser still holds this endpoint, but the push service already told us it is gone
+  // (see reapPush). Taking it would recreate a row nothing can ever deliver to, and the
+  // client would go on re-adding it every load, so send it back to mint a new subscription.
+  if (pushIsStale(parsed.endpoint)) return NextResponse.json({ error: "subscription is stale" }, { status: 409 });
   try {
     const database = db();
     // endpoint is globally unique, so a device moving between accounts (a shared browser,

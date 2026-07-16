@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { markStalePush, pushIsStale } from "./poller";
 import { parsePushBody, pushHostAllowed } from "./validate";
 
 // The allowlist is an SSRF guard, not a formality: the poller POSTs to whatever endpoint
@@ -90,4 +91,32 @@ test("a batch that reaps its last subscription stops counting it as a target", (
   // The next item in the same batch must see zero, so it stamps deliveredAt at insert
   // rather than waiting forever on a target that is gone.
   expect(webhooks.length + subs.length).toBe(0);
+});
+
+// A reaped endpoint has to stay known after its row is gone. The browser goes on handing
+// the same dead endpoint back, so without this the subscribe route re-adds it on the next
+// load, the next alert reaps it again, and push is silently dead forever.
+test("a reaped endpoint is remembered so the client is told to resubscribe", () => {
+  const dead = "https://web.push.apple.com/dead-token";
+  expect(pushIsStale(dead)).toBe(false);
+  markStalePush([dead]);
+  expect(pushIsStale(dead)).toBe(true);
+  // The replacement the client mints must not be caught by it.
+  expect(pushIsStale("https://web.push.apple.com/fresh-token")).toBe(false);
+});
+
+test("the stale set is bounded and evicts the coldest endpoint first", () => {
+  const at = (i: number) => `https://web.push.apple.com/bound-${i}`;
+  // 500 is MAX_STALE_PUSH; push well past it. Endpoints churn (iOS re-mints them every week
+  // or two) and this set outlives every row it names, so unbounded is a slow leak.
+  markStalePush(Array.from({ length: 600 }, (_, i) => at(i)));
+  expect(pushIsStale(at(0))).toBe(false); // coldest, evicted
+  expect(pushIsStale(at(599))).toBe(true); // newest, kept
+
+  // Re-marking is a fresh death, not a duplicate: a corpse we're still being handed must
+  // not be the next one evicted.
+  const survivor = at(150);
+  markStalePush([survivor]);
+  markStalePush(Array.from({ length: 200 }, (_, i) => at(1000 + i)));
+  expect(pushIsStale(survivor)).toBe(true);
 });

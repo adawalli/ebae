@@ -1,5 +1,5 @@
 import { log } from "./log";
-import type { ConditionKey, Item, Search } from "./types";
+import type { Item, Search } from "./types";
 
 const elog = log.child({ component: "ebay" });
 
@@ -21,32 +21,30 @@ const MARKETPLACE_CURRENCY: Record<string, string> = {
 // poller computes server-side (e.g. the market-median badge) render with the right symbol.
 export const CURRENCY = MARKETPLACE_CURRENCY[MARKETPLACE] ?? "USD";
 
-// Condition presets -> Browse `conditionIds` values. USED spans excellent..acceptable
-// (3000-6000) but omits 7000 "for parts/not working" - the junk tier most searches want
-// gone. Keys are the only values validate.ts lets through. Note: these are condition IDs,
-// so they go in `conditionIds`, NOT the `conditions` filter (which takes only the coarse
-// NEW/USED/UNSPECIFIED enums and 400s on numeric IDs).
-// Keyed by ConditionKey so adding a preset to CONDITION_KEYS (types.ts) is a compile error
-// here until its ID mapping is supplied — the whitelist (validate.ts) and UI (page.tsx)
-// derive from the same source, so the three can't silently drift.
-// null = no server-side filter; see conditionExcluded below.
-const CONDITION_FILTER: Record<ConditionKey, string | null> = {
-  NOT_PARTS: null,
-  NEW: "1000",
-  USED: "3000|4000|5000|6000",
-};
-
 // eBay's "for parts or not working" tier (rendered "Parts Only" on the web).
 export const FOR_PARTS_ID = "7000";
 
-// NOT_PARTS keeps eBay's whole "Any condition" result set but drops the for-parts tier here
-// rather than through `conditionIds`. That filter is a whitelist with no negation, so the
-// only server-side spelling of "everything but 7000" is to name the other 15 IDs - which
-// would drop listings whose category specifies no condition at all, and would rot every time
-// eBay adds an ID (2990/3010 arrived for apparel, 2010-2030 for refurb tiers). Naming the one
-// ID we actually exclude can't rot. Pure + exported for tests.
+// The new-family IDs: 1000 New, 1500 New other/Open box, 1750 New with defects. All three are
+// sold as new, so a "New only" search should see them. 2750 "Like New" is NOT here - it's a
+// used item in nice shape, and belongs to USED.
+const NEW_IDS = new Set(["1000", "1500", "1750"]);
+
+// Whether a listing fails the search's condition preset. Applied in the poller, not through
+// Browse's `conditionIds` filter, and phrased as the IDs each preset EXCLUDES rather than a
+// keep-list of the ones it allows. `conditionIds` has no negation, so any server-side keep-list
+// silently drops every listing whose category states no condition at all (there is no ID for
+// "unspecified"), and rots each time eBay adds one - 2990/3010 arrived for apparel, 2010-2030
+// for the refurb tiers, and a keep-list written before them quietly stops matching them.
+// A drop-list can only ever be too permissive, which is the safe direction here: a listing you
+// didn't want costs a glance, one you never see costs the deal. Pure + exported for tests.
 export function conditionExcluded(item: Item, conditions: string | null): boolean {
-  return conditions === "NOT_PARTS" && item.conditionId === FOR_PARTS_ID;
+  const id = item.conditionId;
+  if (conditions === "NOT_PARTS") return id === FOR_PARTS_ID;
+  if (conditions === "USED") return id === FOR_PARTS_ID || (id != null && NEW_IDS.has(id));
+  // NEW is the one preset eBay defines as a closed set, so it keeps rather than drops - but an
+  // unspecified conditionId still survives, since "no condition stated" is not "not new".
+  if (conditions === "NEW") return id != null && !NEW_IDS.has(id);
+  return false; // null = any condition, nothing dropped
 }
 
 const SANDBOX = process.env.EBAY_ENV === "sandbox";
@@ -94,10 +92,8 @@ export function browseFilters(s: Search): string[] {
     const hi = s.priceCap ?? "";
     filters.push(`price:[${lo}..${hi}]`, `priceCurrency:${CURRENCY}`);
   }
-  // numeric condition IDs belong in `conditionIds`; the `conditions` filter only takes the
-  // NEW/USED/UNSPECIFIED enums and 400s on IDs (which would back the search off to silence).
-  const cond = s.conditions as ConditionKey | null; // validated to a ConditionKey (or null) at the API boundary
-  if (cond && CONDITION_FILTER[cond]) filters.push(`conditionIds:{${CONDITION_FILTER[cond]}}`);
+  // No condition clause, by design: every preset is enforced in the poller via
+  // conditionExcluded (see there for why a server-side conditionIds keep-list loses listings).
   return filters;
 }
 
@@ -198,29 +194,17 @@ const VARIANTS = [
   "recent service, receipts included",
   "rare variant, collector owned",
 ];
-// [display name, condition ID] - IDs let the mock mirror the real filters exactly.
-const CONDITIONS: [string, string][] = [
+// [display name, condition ID] - covers each family a preset treats differently, including a
+// null ID (a category that states no condition), the case a server-side keep-list would drop.
+const CONDITIONS: [string, string | null][] = [
   ["New", "1000"],
   ["Open box", "1500"],
+  ["Certified Refurbished", "2000"],
   ["Excellent", "4000"],
   ["Used", "3000"],
-  ["Pre-owned", "3000"],
+  ["Not specified", null],
   ["For parts or not working", FOR_PARTS_ID],
 ];
-
-// Mirror the live condition filtering in mock mode so the feature is exercisable without
-// eBay credentials. Derived from CONDITION_FILTER rather than matching display strings, so
-// a preset's ID mapping can't drift from what mock mode shows. Note "Open box" (1500)
-// matches neither NEW nor USED here, which is faithful: it doesn't live-either.
-// Takes the whole Item, not a field: `condition` (display text) and `conditionId` are both
-// string | null, so a field parameter lets a caller pass the wrong one with no type error -
-// which silently empties the sample, since no display name matches a numeric ID.
-function mockConditionOk(item: Item, conditions: string | null): boolean {
-  if (!conditions) return true;
-  if (conditions === "NOT_PARTS") return !conditionExcluded(item, conditions);
-  const ids = CONDITION_FILTER[conditions as ConditionKey];
-  return ids != null && item.conditionId != null && ids.split("|").includes(item.conditionId);
-}
 
 function mockItem(s: Search, n: number): Item {
   const id = `v1|mock-${s.id}-${n}|0`;
@@ -258,7 +242,7 @@ function mockSearch(s: Search): Item[] {
     if (pool.length > 50) pool.pop();
   }
   // condition filter is server-side for the live API, so mirror it here
-  return pool.filter((i: Item) => mockConditionOk(i, s.conditions));
+  return pool.filter((i: Item) => !conditionExcluded(i, s.conditions));
 }
 
 // Mock market sample: prices centered ~$500 regardless of the search's band, so the
@@ -268,5 +252,5 @@ function mockMarket(s: Search): Item[] {
   return Array.from({ length: 40 }, (_, n) => ({
     ...mockItem(s, n),
     price: 400 + ((n * 16) % 21) * 10, // 400..600, median ~500 — independent of the price band
-  })).filter((i) => mockConditionOk(i, s.conditions));
+  })).filter((i) => !conditionExcluded(i, s.conditions));
 }

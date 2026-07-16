@@ -128,16 +128,18 @@ export async function refreshPush(): Promise<void> {
   try {
     const sub = await currentSubscription();
     if (!sub) return;
-    if ((await save(sub)) !== "stale") return;
-    // A push service has already declared this endpoint dead, but the browser goes on
-    // handing it back - iOS expires endpoints silently and Safari fires no
-    // pushsubscriptionchange. Re-asserting it would just get it reaped again on the next
-    // alert, every load, forever, with the toggle still showing push as on. Replacing it is
-    // the only way out, and this is the one moment we learn it's needed.
     const pk = await publicKey();
     if ("error" in pk) return;
-    // Already registered - currentSubscription() found a subscription on it.
-    await save(await resubscribe(await ready(), pk.key));
+    // Two ways a subscription the browser still calls healthy is already dead, neither of
+    // which it reports: the push service expired the endpoint (iOS does this silently and
+    // Safari fires no pushsubscriptionchange - the server saw the 404/410 and answers 409
+    // here), or VAPID_* was rotated and every send now 400s, which is deliberately never
+    // reaped so nothing else would ever notice. Re-asserting either just leaves it dead
+    // with the toggle still showing push as on. Replacing is the only way out, and an app
+    // load is the one moment we can find out.
+    const dead = !boundTo(sub, pk.key) || (await save(sub)) === "stale";
+    // ready() rather than a fresh register: currentSubscription() already found a worker.
+    if (dead) await save(await resubscribe(await ready(), pk.key));
   } catch {
     // Never surface: this is background maintenance the user didn't ask for.
   }

@@ -1195,6 +1195,17 @@ export async function removeUserPush(userId: number, endpoint: string): Promise<
   if (u) u.push = u.push.filter((p) => p.endpoint !== endpoint);
 }
 
+// endpoint is globally unique, so exactly one user can hold it: a device moving between
+// accounts (a shared browser, a re-login) has to leave the old one's cache or that user's
+// alerts keep pushing to it. A sweep rather than a caller-supplied prior owner, because
+// reading the owner before the upsert races with a concurrent subscribe for the same
+// endpoint and would evict from the wrong user. Cheap: cached users, no query.
+export function evictPushElsewhere(keepUserId: number, endpoint: string): void {
+  for (const [id, u] of state().users) {
+    if (id !== keepUserId) u.push = u.push.filter((p) => p.endpoint !== endpoint);
+  }
+}
+
 // Re-kick one user's searches after a change that decides whether/how they poll. Jittered so a
 // user with many searches doesn't hit eBay in one burst.
 function kick(userId: number) {

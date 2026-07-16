@@ -49,44 +49,54 @@ test("browseFilters: price bounds build [lo..hi], [..hi], [lo..] with a currency
   expect(browseFilters({ ...base, priceFloor: 100 })).toContain("price:[100..]");
 });
 
-// Regression guard for the shipped bug: numeric condition IDs MUST use `conditionIds`,
-// not `conditions` (which takes only NEW/USED/UNSPECIFIED enums and rejects IDs).
-test("browseFilters: condition presets emit conditionIds, never conditions:{<id>}", () => {
-  const neu = browseFilters({ ...base, conditions: "NEW" });
-  expect(neu).toContain("conditionIds:{1000}");
-  const used = browseFilters({ ...base, conditions: "USED" });
-  expect(used).toContain("conditionIds:{3000|4000|5000|6000}"); // omits 7000 for-parts
-  // no filter may ever put a numeric ID in the enum-only `conditions` field
-  for (const f of [...neu, ...used]) expect(f.startsWith("conditions:{")).toBe(false);
-  // null conditions adds no condition filter at all
-  expect(browseFilters(base).some((f) => f.includes("condition"))).toBe(false);
+// No preset may send a condition clause: `conditionIds` is a keep-list with no negation, so it
+// drops every listing whose category states no condition, and rots as eBay adds IDs. Every
+// preset is enforced by conditionExcluded instead. (Supersedes the old guard against putting
+// numeric IDs in the enum-only `conditions` field - we now send neither.)
+test("browseFilters: no preset emits a condition clause", () => {
+  for (const c of [null, "NOT_PARTS", "NEW", "USED"]) {
+    expect(browseFilters({ ...base, conditions: c }).some((f) => f.includes("condition"))).toBe(false);
+  }
 });
 
-// NOT_PARTS deliberately sends no condition filter: `conditionIds` is a whitelist with no
-// negation, so the only server-side spelling of "everything but 7000" is the other 15 IDs -
-// which would drop unspecified-condition listings and rot each time eBay adds an ID.
-test("browseFilters: NOT_PARTS sends no condition filter (suppression is client-side)", () => {
-  expect(browseFilters({ ...base, conditions: "NOT_PARTS" }).some((f) => f.includes("condition"))).toBe(false);
-});
+const withId = (conditionId: string | null) => ({ ...item, conditionId });
 
 test("conditionExcluded: NOT_PARTS drops only the for-parts tier", () => {
-  expect(conditionExcluded(item, "NOT_PARTS")).toBe(true);
-  expect(conditionExcluded({ ...item, conditionId: "3000" }, "NOT_PARTS")).toBe(false);
-  expect(conditionExcluded(item, null)).toBe(false); // "Any condition" keeps for-parts
-  expect(conditionExcluded(item, "USED")).toBe(false); // eBay's conditionIds already excluded it
+  expect(conditionExcluded(withId("7000"), "NOT_PARTS")).toBe(true);
+  expect(conditionExcluded(withId("3000"), "NOT_PARTS")).toBe(false);
+  expect(conditionExcluded(withId("2000"), "NOT_PARTS")).toBe(false); // refurb is not junk
+  expect(conditionExcluded(withId("7000"), null)).toBe(false); // "Any condition" keeps for-parts
 });
 
-// The whole point of suppressing one ID instead of whitelisting the other 15: a listing whose
-// category doesn't require a condition must still alert.
+// USED is a drop-list (parts + the new family), so the tiers the old keep-list silently lost -
+// refurb, Like New, and the apparel pre-owned grades - now reach the user.
+test("conditionExcluded: USED drops parts and new, keeps every used-family tier", () => {
+  for (const id of ["7000", "1000", "1500", "1750"]) expect(conditionExcluded(withId(id), "USED")).toBe(true);
+  for (const id of ["2000", "2010", "2020", "2030", "2500", "2750", "2990", "3000", "3010", "4000", "5000", "6000"])
+    expect(conditionExcluded(withId(id), "USED")).toBe(false);
+});
+
+test("conditionExcluded: NEW keeps the new family, drops the rest", () => {
+  for (const id of ["1000", "1500", "1750"]) expect(conditionExcluded(withId(id), "NEW")).toBe(false);
+  for (const id of ["2750", "3000", "7000"]) expect(conditionExcluded(withId(id), "NEW")).toBe(true);
+});
+
+// The whole point of a drop-list: a listing whose category states no condition must survive
+// every preset. A conditionIds keep-list could never express this.
 test("conditionExcluded: an unspecified conditionId is never dropped", () => {
-  expect(conditionExcluded({ ...item, conditionId: null }, "NOT_PARTS")).toBe(false);
+  for (const c of [null, "NOT_PARTS", "NEW", "USED"]) expect(conditionExcluded(withId(null), c)).toBe(false);
+});
+
+// An ID eBay adds tomorrow must reach the user, not vanish. This is the rot a keep-list has.
+test("conditionExcluded: an unknown future condition ID survives NOT_PARTS and USED", () => {
+  expect(conditionExcluded(withId("8000"), "NOT_PARTS")).toBe(false);
+  expect(conditionExcluded(withId("8000"), "USED")).toBe(false);
 });
 
 test("browseFilters: all clauses compose in order", () => {
   const f = browseFilters({ ...base, includeAuctions: true, priceFloor: 50, priceCap: 900, conditions: "NEW" });
   expect(f[0]).toBe("buyingOptions:{FIXED_PRICE|AUCTION}");
   expect(f).toContain("price:[50..900]");
-  expect(f).toContain("conditionIds:{1000}");
 });
 
 // The market sample keeps the FLOOR and drops only the CAP. Regression guard for the
@@ -99,7 +109,7 @@ test("marketSampleSearch keeps the floor, drops the cap", () => {
   const f = browseFilters(m);
   expect(f).toContain("price:[150..]"); // floor kept, open-ended top
   expect(f.some((c) => c.includes("800"))).toBe(false); // cap gone
-  expect(f).toContain("conditionIds:{3000|4000|5000|6000}"); // other constraints preserved
+  expect(m.conditions).toBe("USED"); // other constraints preserved (applied via conditionExcluded)
 });
 
 // The mock market sample must apply the same condition filter as the mock search: they call
@@ -109,7 +119,8 @@ test("marketSampleSearch keeps the floor, drops the cap", () => {
 test("sampleMarket (mock): the condition preset filters the sample by ID", async () => {
   const neu = await sampleMarket({ ...base, conditions: "NEW" });
   expect(neu.length).toBeGreaterThan(0);
-  expect(neu.every((i) => i.conditionId === "1000")).toBe(true);
+  // new family, plus unspecified-condition listings, which no preset may drop
+  expect(neu.every((i) => i.conditionId == null || ["1000", "1500", "1750"].includes(i.conditionId!))).toBe(true);
   const notParts = await sampleMarket({ ...base, conditions: "NOT_PARTS" });
   expect(notParts.length).toBeGreaterThan(0);
   expect(notParts.every((i) => i.conditionId !== "7000")).toBe(true); // junk can't drag the median

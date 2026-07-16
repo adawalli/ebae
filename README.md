@@ -83,6 +83,24 @@ Generic trusted-header SSO for Authelia, authentik, oauth2-proxy, Tailscale serv
 
 **Only enable this when the app is reachable exclusively through that proxy.** The header is plain text and is trusted as-is - anyone who can reach the app directly can set it to any address and become that user. Bind the app to localhost or a private network, and make sure the proxy strips the header from inbound requests.
 
+### Local development against a shared database
+
+`AUTH_MODE=single` still runs fine against a database a multi-user mode created, but **you will see an empty account**: single mode signs you in as the implicit `local@localhost` user, while every existing row belongs to the SSO identity that created it. Nothing is lost and nothing is taken - the boot-time claim only adopts rows that have no owner - your data is simply someone else's.
+
+Worth knowing before you point `bun run dev` at a live database: the poller is not scoped to whoever is logged in. It loads **every** user and polls **their** searches with **their** credentials, delivering to **their** webhooks. So a second poller against a shared database doubles the eBay quota spend and can double-post an alert, because the seen-item cache is per process. If the local box can't decrypt those credentials (no `ENCRYPTION_KEY`), single mode falls back to mock and posts _fake_ listings to those real webhooks.
+
+Use a scratch `DATABASE_URL` - that's what the quick start describes, and mock mode means it needs no eBay keys at all.
+
+If you genuinely need your real rows locally, be yourself instead of being `local@localhost`:
+
+```sh
+AUTH_MODE=proxy
+AUTH_TRUSTED_HEADER=X-Email
+curl -H 'X-Email: you@example.com' localhost:3000/api/searches
+```
+
+For the browser you need something to inject that header on every request. Prefer a local reverse proxy over a browser extension, and re-read the warning above about what the poller will be doing while you click around.
+
 ### `ENCRYPTION_KEY`
 
 Needed only to save eBay credentials through the UI (encrypts the client secret at rest, AES-256-GCM). Single-mode deployments on `EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET` store nothing and don't need it.

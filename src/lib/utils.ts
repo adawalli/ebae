@@ -9,7 +9,7 @@ export function cn(...inputs: ClassValue[]) {
 
 // Keep these keys in sync with MARKETPLACE_CURRENCY in ebay.ts — same marketplace
 // set. An entry added there but not here silently falls back to ebay.com below.
-const EBAY_DOMAIN: Record<string, string> = {
+export const EBAY_DOMAIN: Record<string, string> = {
   EBAY_US: "ebay.com",
   EBAY_CA: "ebay.ca",
   EBAY_GB: "ebay.co.uk",

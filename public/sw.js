@@ -30,8 +30,12 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  // Straight to the listing. No matchAll/focus dance: the target is an ebay.com URL and
-  // matchAll only ever returns this origin's own clients, so there is nothing to match.
-  const url = (event.notification.data && event.notification.data.url) || "/";
-  event.waitUntil(self.clients.openWindow(url));
+  // iOS home-screen PWAs ignore openWindow() to a cross-origin URL (the ebay.com listing) and
+  // just reopen the app on its dashboard. So we openWindow a same-origin bounce - /go, which
+  // iOS honours - and let the server 302 out to the listing. No matchAll/focus dance: /go is a
+  // throwaway navigation, not a client we want to reuse.
+  const dest = (event.notification.data && event.notification.data.url) || "/";
+  const url = new URL("/go", self.location.origin);
+  url.searchParams.set("u", dest);
+  event.waitUntil(self.clients.openWindow(url.href));
 });

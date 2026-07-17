@@ -62,7 +62,8 @@ One Bun + Next.js app, one container image.
 - Poller runs entirely from an **in-memory cache** of searches and seen item IDs.
 - Cache is loaded at boot, refreshed from DB every 8-12 h (configurable), and **written through immediately** on any UI mutation (create/edit/pause a search updates DB and cache in the same request - no manual refresh needed).
 - DB is only touched when: config changes, a new item is found (insert seen_item + alert_log row), or the periodic refresh fires.
-- A steady state with no new items and no config changes = zero DB queries between refreshes.
+- **The open UI must not defeat any of the above.** It polls every 10s, so a single tab is enough to hold the compute awake around the clock if any of those requests reads the DB. Two rules keep it honest: a hidden tab polls nothing (`document.hidden`), and of the three polled routes only `/api/alerts` touches the DB - it answers `304` off an in-memory per-user revision (`alertsTag`) whenever that user's list hasn't changed. `/api/searches` and `/api/status` serve from the poller's cache.
+- A steady state with no new items and no config changes = zero DB queries between refreshes, whether or not the app is open.
 
 **Data model** (small, boring):
 

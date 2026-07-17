@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Alert, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
 import { callsFor } from "@/lib/format";
 import { refreshPush } from "@/lib/push-client";
@@ -29,18 +29,45 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
+  // The ETag of the alerts response currently on screen, with the URL it came from.
+  // /api/alerts is the only polled route that reads the DB, so a 304 here is what lets the
+  // database sleep while the app sits open. One tag, not a per-URL map, because there is one
+  // `alerts` state: a tag may only be presented for the URL that filled that state. A map
+  // would answer "all" with the tag from a filtered view, take the 304, and leave the filtered
+  // alerts on screen under the All tab.
+  const alertEtag = useRef<{ url: string; tag: string } | null>(null);
+
   const refresh = useCallback(async () => {
     // filter alerts server-side: a global top-N fetch can push a low-volume
     // search's alerts out of the window, hiding them from its filtered view
     const alertsUrl = alertFilter === "all" ? "/api/alerts" : `/api/alerts?searchId=${alertFilter}`;
+    const held = alertEtag.current;
+    const known = held?.url === alertsUrl ? held.tag : undefined;
     try {
-      const [sRes, aRes, stRes] = await Promise.all([fetch("/api/searches"), fetch(alertsUrl), fetch("/api/status")]);
+      const [sRes, aRes, stRes] = await Promise.all([
+        fetch("/api/searches"),
+        fetch(alertsUrl, { headers: known ? { "If-None-Match": known } : undefined }),
+        fetch("/api/status"),
+      ]);
       // In cloudflare mode the Access cookie normally expires at the edge and the redirect
       // never reaches us, so this is the fallback for the modes where it doesn't.
       setExpired([sRes, aRes, stRes].some((r) => r.status === 401));
       if (sRes.ok) setSearches((await sRes.json()).searches);
+      // 304 means the list is unchanged, so it falls through here and keeps the state and the
+      // tag we already hold - the same shape as any other non-ok response.
       if (aRes.ok) {
+        // Null while the poller is still booting, which drops the tag: nothing to validate
+        // against, so the next poll asks in full rather than presenting a validator for
+        // older state.
+        const tag = aRes.headers.get("ETag");
         const list = (await aRes.json()).alerts;
+        // Committed here, with the body, and never up beside the header read: the tag has to
+        // describe the list actually on screen. Two refreshes overlap whenever the filter
+        // changes mid-poll, and headers and bodies can resolve in opposite orders, so an
+        // earlier assignment could leave this ref naming one URL while `alerts` holds the
+        // other's rows - then the next tick validates that tag, gets a 304, and the wrong
+        // list stays up until something bumps the revision.
+        alertEtag.current = tag ? { url: alertsUrl, tag } : null;
         setAlerts(list);
         if (alertFilter === "all") setAlertsBadge(list.length);
       }
@@ -52,10 +79,23 @@ export default function Home() {
 
   useEffect(() => {
     // initial fetch + poll; setState only fires after the network round-trip
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    refresh();
-    const t = setInterval(refresh, 10_000);
-    return () => clearInterval(t);
+    void refresh();
+    // A hidden tab polls nothing. Browsers only throttle a background timer to ~1/minute,
+    // which is still frequent enough to hold a serverless Postgres awake forever, so a tab
+    // left open on another desktop would quietly bill the DB around the clock.
+    const t = setInterval(() => {
+      if (!document.hidden) void refresh();
+    }, 10_000);
+    // Coming back has to be instant rather than up to 10s stale, and this fires on tab focus,
+    // window switch, and phone unlock alike.
+    const onVisible = () => {
+      if (!document.hidden) void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [refresh]);
 
   useEffect(() => {

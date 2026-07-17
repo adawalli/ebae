@@ -126,6 +126,12 @@ type State = {
   // death lets /api/push answer 409 and send the client to mint a fresh subscription.
   // In-memory on purpose: a restart costs one more reap cycle before the client is told.
   stalePush: Set<string>;
+  // Per-user counter behind the /api/alerts ETag. The UI polls that route every 10s and it is
+  // the only one of the three that reads the DB, so without this a single open tab queries
+  // Postgres 360 times an hour and Neon's autosuspend timer never expires - the DB stays
+  // billed awake for as long as anyone has the app open. Keyed by user id and held outside
+  // `users` because reload() replaces those UserCtx objects wholesale.
+  alertsRev: Map<number, number>;
 };
 
 // globalThis so instrumentation and route-handler bundles share one instance
@@ -140,6 +146,7 @@ function state(): State {
     errors: [],
     lastScheduledAt: null,
     stalePush: new Set(),
+    alertsRev: new Map(),
   });
 }
 
@@ -167,6 +174,39 @@ export function markStalePush(endpoints: string[]): void {
 
 export function pushIsStale(endpoint: string): boolean {
   return state().stalePush.has(endpoint);
+}
+
+// Invalidates one user's /api/alerts ETag. Every path that changes what that route returns for
+// them has to call this, or their open tabs 304 on a payload the DB no longer agrees with:
+// an alert insert (pollOnce), a clear (DELETE /api/alerts), and a search delete - which never
+// writes to alerts but nulls their searchId through the FK. A deliveredAt stamp is not in the
+// payload, so redeliverPending deliberately does not bump.
+export function bumpAlerts(userId: number): void {
+  const rev = state().alertsRev;
+  rev.set(userId, (rev.get(userId) ?? 0) + 1);
+}
+
+// The /api/alerts validator, or null when this process can't stand behind one.
+//
+// userId is IN the tag, not just the Map key. Two users would otherwise mint the same string
+// (every rev starts at 0, so right after a deploy everyone's tag is identical), and an ETag is
+// a promise about a body, not about a user. A browser cache holding the previous user's
+// response for this URL revalidates on its own after a re-login, and an equal tag would answer
+// 304 - serving them the last user's alerts. The server never confuses whose rows are whose;
+// the collision alone is the leak.
+//
+// Two fences, both required:
+//   bootedAt - the counter is in memory, so a tag from a previous process must never match one
+//              from this process, or a client sits on data the restart changed under it.
+//   ready    - until the boot chain (migrate, claimLegacyRows, reload) has actually finished,
+//              the answers are provisional: claimLegacyRows adopts pre-multi-user rows into a
+//              user's history without touching any rev, so a tag minted before it lands would
+//              be reissued verbatim afterwards and freeze that history at empty. A failed boot
+//              retries in the background while Next already serves, so this window is real.
+export function alertsTag(userId: number): string | null {
+  const st = state();
+  if (!st.ready || !st.bootedAt) return null;
+  return `${st.bootedAt}-${userId}-${st.alertsRev.get(userId) ?? 0}`;
 }
 
 // redact() because these strings are user-visible, not just logged: this feeds both
@@ -905,6 +945,7 @@ async function pollOnce(e: Entry) {
         wrote = true;
         e.seen.add(item.itemId);
         if (alertId == null) continue; // duplicate: the row already existed, don't re-notify
+        bumpAlerts(e.s.userId); // the owner's alert list changed; their tabs must refetch
         const now = Date.now();
         e.hitTimes.push(now);
         e.lastHitAt = now;
@@ -1119,6 +1160,11 @@ export async function deleteSearch(userId: number, id: number): Promise<boolean>
   const e = state().entries.get(id);
   if (e?.timer) clearTimeout(e.timer);
   state().entries.delete(id);
+  // The alerts rows outlive their search (alerts.searchId is ON DELETE set null, so the history
+  // survives with searchId null rather than vanishing), which means this changed the /api/alerts
+  // payload without writing to that table. Another tab still filtered on this search would
+  // otherwise 304 forever on alerts the DB no longer reports under it.
+  bumpAlerts(userId);
   plog.info({ searchId: id }, "search deleted");
   return true;
 }

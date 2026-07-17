@@ -9,7 +9,8 @@ async function locationFor(u: string | null) {
 }
 
 test("passes through every supported marketplace domain", async () => {
-  for (const host of ["www.ebay.com", "www.ebay.co.uk", "www.ebay.de", "www.ebay.com.au", "ebay.ca"]) {
+  const hosts = ["ebay.com", "ebay.ca", "ebay.co.uk", "ebay.com.au", "ebay.de", "ebay.fr", "ebay.it", "ebay.es"];
+  for (const host of [...hosts, "www.ebay.com"]) {
     const listing = `https://${host}/itm/123`;
     expect(await locationFor(listing)).toBe(listing);
   }

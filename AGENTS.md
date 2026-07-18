@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This is a Bun-managed Next.js application for self-hosted eBay alerts. App routes and UI live in `src/app/`, including API routes under `src/app/api/`. Shared server logic is in `src/lib/`: database setup in `db.ts`, eBay integration in `ebay.ts`, Discord notifications in `discord.ts`, validation in `validate.ts`, and the in-process poller in `poller.ts`. Static files belong in `public/`. Deployment assets are `Dockerfile`, `docker-compose.yml`, and `deploy/k8s.yaml`. Architecture notes and roadmap live in `DESIGN.md`.
+This is a Bun-managed Next.js application for self-hosted eBay alerts. App routes and UI live in `src/app/`, including API routes under `src/app/api/`. Shared server logic is in `src/lib/`: database setup in `db.ts`, eBay integration in `ebay.ts`, Discord notifications in `discord.ts`, validation in `validate.ts`, and the in-process poller in `poller/` (imported as `@/lib/poller`, which resolves to its barrel; `loop.ts` polls, `boot.ts` starts and refreshes the cache, `api.ts` is what the route handlers call). Static files belong in `public/`. Deployment assets are `Dockerfile`, `docker-compose.yml`, and `deploy/k8s.yaml`. Architecture notes and roadmap live in `DESIGN.md`.
 
 ## Build, Test, and Development Commands
 

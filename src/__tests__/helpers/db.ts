@@ -24,6 +24,8 @@ type Globals = typeof globalThis & {
 
 const g = globalThis as Globals;
 
+let open: PGlite | undefined;
+
 // Applies the same ./drizzle migrations production boots with, so a schema change that
 // forgets a migration fails here too. migrateToLatest() can't be reused: it is pinned to
 // the postgres-js migrator.
@@ -37,7 +39,11 @@ export async function freshTestDb(): Promise<TestDb> {
   delete process.env.DISCORD_WEBHOOK_URL;
   delete process.env.AUTH_MODE;
 
-  const database = drizzle(new PGlite(), { schema });
+  // One instance per test, so the previous one is released rather than left holding its WASM
+  // heap for the rest of the run.
+  await open?.close();
+  open = new PGlite();
+  const database = drizzle(open, { schema });
   await migrate(database, { migrationsFolder: "./drizzle" });
   g.__ebaeDb = database;
   return database;

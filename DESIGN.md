@@ -34,6 +34,18 @@ eBay's native saved-search alerts are slow - often hours behind. For sought-afte
 
 The scaling lever is a **per-search poll interval**: hot searches at 1-2 min, casual ones at 10-15 min. The UI shows projected daily call usage as searches are added, and the poller enforces the budget so a misconfiguration can't blow the quota. Each user brings their own eBay app, so the budget is counted and enforced per user.
 
+Projected usage is computed server-side from the cached entries (`projectedCalls`), over the day's _pollable_ minutes - 1440 minus the snooze window - and includes each band-limited search's daily market sample. The per-row figures and the total come from one function so they always agree with each other and with the counter the poller bills against.
+
+**Budget governor.** Spending the daily budget by noon used to mean polling stopped dead until midnight. The governor stretches poll intervals as spend runs ahead of the day, so the budget lasts instead of running out:
+
+- **Signal:** the exact correction needed to land on the ceiling at end of day - the spend the rest of the day would naturally cost at the current rate, over the budget actually left for it. That ratio is 1 precisely when a user is on track, which is the guarantee the feature rests on: _a configuration that spends its full budget by 23:59 is using it perfectly and is never slowed at all._ Raw `used/ceiling` would instead throttle everyone every evening for being 90% through a budget they are entitled to spend.
+- **Bounds:** slow-down only (the factor is >= 1 by construction, so no search ever polls faster than its owner configured), capped at `GOV_MAX_FACTOR` = 4x, and inert until `GOV_MIN_SPEND` = 5% of the ceiling is spent - without that floor the near-zero elapsed fraction just after the local midnight reset makes a handful of calls project to an enormous rate.
+- **Cost:** none. Recomputed per reschedule from the in-memory counter and the user's own clock; nothing persisted, no new table, no extra query, so the steady-state DB-free poll stays DB-free (§4).
+- **Backstop:** the hard cliff is unchanged. At the ceiling, polls are still skipped and retried at `QUOTA_RETRY_MS`.
+- **Transparency:** the status tile shows spend against what an evenly-paced day would have spent by now, each stretched search shows `5 min → 12 min`, and every engage/release is logged.
+
+`healthWindowMs` derives from the reschedule delay constants rather than restating them, so stretching a delay can't leave the liveness window too tight and start 503ing healthy pods.
+
 **First poll of a new search** seeds the seen set without alerting (otherwise you'd get spammed with every existing listing).
 
 ## 4. Architecture
@@ -144,7 +156,7 @@ Config stopped being strictly env-only with multi-user: a shared deployment can'
 - Generic webhook channel (POST JSON → ntfy, Slack, Home Assistant, ...)
 - Richer per-search filters: price caps ✓, condition ✓, exclude-keywords ✓, seller location
 - Deal context: within-band **Typical** median ✓, daily **Market** baseline ✓ (cap removed, floor kept; asking prices; sold-price history needs the Marketplace Insights API)
-- Quota dashboard + adaptive polling (slow down overnight, speed up on hot searches)
+- Quota dashboard ✓ + adaptive polling: slow down to protect the daily budget ✓ (see §3). Speeding up on hot searches is deliberately **not** built - polling faster than the interval a user set is a promise ebae doesn't make.
 
 **Phase 3 - Nice-to-haves**
 

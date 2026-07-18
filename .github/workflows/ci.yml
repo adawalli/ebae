@@ -1,0 +1,31 @@
+name: ci
+
+# The checks AGENTS.md asks for before a PR. docker.yml already builds the image on every PR,
+# which catches type errors, but nothing ran the test suite - so a dependency bump could land
+# with the suite entirely unexercised. Ordered cheapest-first so a failure reports quickly.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read # no secrets needed; dependabot PRs run fine on the read-only token
+
+# A new push supersedes the run it interrupted.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.x" # mirrors the Dockerfile's oven/bun:1
+      # frozen: a lockfile that disagrees with package.json should fail here, not resolve silently
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun test
+      - run: bun run build

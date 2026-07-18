@@ -722,7 +722,7 @@ async function reapPush(database: ReturnType<typeof db>, u: UserCtx, dead: strin
   }
 }
 
-async function redeliverPending(database: ReturnType<typeof db>) {
+export async function redeliverPending(database: ReturnType<typeof db>) {
   const st = state();
   const now = new Date(); // one stamp for the whole sweep, so the DB shows they came from one boot
   await database
@@ -819,7 +819,7 @@ function pollMode(u: UserCtx): "live" | "mock" | "no-creds" {
   return authMode() === "single" ? "mock" : "no-creds";
 }
 
-async function pollOnce(e: Entry) {
+export async function pollOnce(e: Entry) {
   const st = state();
   const u = st.users.get(e.s.userId);
   if (!u) {

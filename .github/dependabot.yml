@@ -1,0 +1,23 @@
+version: 2
+
+# Minor and patch bumps arrive as one grouped PR per ecosystem per week; majors come
+# through individually, since those are the ones that need reading before merging.
+# Nothing auto-merges - there is no test CI to gate on yet.
+updates:
+  - package-ecosystem: bun # needs the text bun.lock, which is what this repo has
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: "/" # finds the workflows under .github/workflows itself
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]

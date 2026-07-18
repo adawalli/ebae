@@ -1,0 +1,238 @@
+import { eq } from "drizzle-orm";
+import { authMode } from "@/lib/authmode";
+import { db } from "@/lib/db";
+import { notify } from "@/lib/discord";
+import { conditionExcluded, mockSearch, searchNewlyListed } from "@/lib/ebay";
+import { notifyPush } from "@/lib/push";
+import { alerts, searches, seenItems } from "@/lib/schema";
+import type { PriceContext } from "@/lib/types";
+import { NOTHING_PUSHED, NOTHING_SENT, reapPush } from "./delivery";
+import { excludeMatch, maybeSampleMarket, priceContext } from "./market";
+import { QUOTA_CEILING, flushCalls } from "./quota";
+import { snoozing } from "./snooze";
+import { type Entry, type UserCtx, bumpAlerts, message, plog, recordError, state } from "./state";
+
+export const MAX_BACKOFF_MS = 30 * 60_000;
+
+export function schedule(e: Entry, delayMs: number) {
+  if (state().entries.get(e.s.id) !== e) return; // entry deleted/replaced while a tick was in flight
+  if (e.timer) clearTimeout(e.timer);
+  e.timer = null;
+  if (!e.s.enabled || !state().ready) return;
+  // Heartbeat: stamp only once a live timer is actually set. A disabled or deleted entry's
+  // final schedule() must not bump it, or that stale bump would mask a wedged enabled search.
+  // Snooze/quota/backoff paths keep the entry enabled+ready, so intentional idle still stamps.
+  state().lastScheduledAt = Date.now();
+  e.timer = setTimeout(() => void tick(e), delayMs);
+  plog.debug({ searchId: e.s.id, q: e.s.q, delayMs }, "scheduled");
+}
+
+async function tick(e: Entry) {
+  if (e.running) {
+    schedule(e, 5000);
+    return;
+  }
+  e.running = true;
+  try {
+    await pollOnce(e);
+  } catch (err) {
+    // pollOnce catches its own poll failures; reaching here means a throw before its try
+    // (e.g. an invalid snooze tz in Intl). Reschedule so one entry can't silently kill its
+    // timer - which the heartbeat would otherwise read as a wedge and 503.
+    recordError(e.s.userId, e.s.q, `tick: ${message(err)}`);
+    schedule(e, MAX_BACKOFF_MS);
+  } finally {
+    e.running = false;
+  }
+}
+
+// What a user's next poll will actually do. Live needs their own keys; mock is single mode's
+// credential-less path (the zero-config quick start), which multi-user modes deliberately don't
+// have - fake listings in a shared deployment would look real to the friend seeing them. Shared
+// with status() so the UI's "polling paused" banner can't disagree with the poll loop.
+export function pollMode(u: UserCtx): "live" | "mock" | "no-creds" {
+  if (u.ebay) return "live";
+  return authMode() === "single" ? "mock" : "no-creds";
+}
+
+export async function pollOnce(e: Entry) {
+  const st = state();
+  const u = st.users.get(e.s.userId);
+  if (!u) {
+    // Owner isn't cached (a row created since the last reload). Nothing to bill or notify
+    // against, so idle at the normal cadence rather than let the timer die - a dead timer
+    // reads as a wedge to the heartbeat.
+    recordError(e.s.userId, e.s.q, "search owner is not loaded - poll skipped");
+    schedule(e, e.s.intervalMin * 60_000);
+    return;
+  }
+  // Overnight snooze: don't touch the eBay API during the owner's window. Re-tick at the
+  // search's normal interval; the first tick after the window ends polls and picks
+  // up anything listed meanwhile (still-available items alert then, not never).
+  if (snoozing(u.snooze)) {
+    plog.debug({ searchId: e.s.id, q: e.s.q }, "snoozed - poll skipped");
+    schedule(e, e.s.intervalMin * 60_000);
+    return;
+  }
+  const today = new Date().toDateString();
+  if (u.calls.date !== today) u.calls = { date: today, used: 0 };
+  if (u.calls.used >= QUOTA_CEILING) {
+    recordError(u.id, e.s.q, "daily API budget exhausted - poll skipped");
+    schedule(e, 15 * 60_000);
+    return;
+  }
+  // No keys and no mock to fall back on: there is nothing to poll with. Stay idle - no eBay
+  // call, no quota spent, no error every tick - until the user saves creds, which re-kicks
+  // this search (setUserCreds). The UI shows the paused banner off the same mode.
+  if (pollMode(u) === "no-creds") {
+    plog.debug({ searchId: e.s.id, q: e.s.q, userId: u.id }, "no credentials - polling paused");
+    schedule(e, e.s.intervalMin * 60_000);
+    return;
+  }
+
+  plog.debug({ searchId: e.s.id, q: e.s.q }, "polling");
+  try {
+    u.calls.used++;
+    const items = u.ebay ? await searchNewlyListed(u.ebay, e.s) : mockSearch(e.s);
+    e.lastPolledAt = Date.now();
+    plog.info({ q: e.s.q, count: items.length, quotaUsed: u.calls.used }, "eBay poll");
+    const database = db();
+    const fresh = items.filter((i) => !e.seen.has(i.itemId));
+    plog.debug({ searchId: e.s.id, fresh: fresh.length, of: items.length }, "dedup");
+    let wrote = false; // did this tick open a connection? gates the piggyback flush below
+
+    if (!e.s.seeded) {
+      // first poll seeds the seen set silently - no alert spam (DESIGN.md §3)
+      if (fresh.length) {
+        const rows = fresh.map((i) => ({ searchId: e.s.id, itemId: i.itemId }));
+        await database.insert(seenItems).values(rows).onConflictDoNothing();
+        for (const i of fresh) e.seen.add(i.itemId);
+      }
+      await database.update(searches).set({ seeded: true }).where(eq(searches.id, e.s.id));
+      wrote = true;
+      e.s.seeded = true;
+      plog.info({ searchId: e.s.id, q: e.s.q, count: fresh.length }, "seeded");
+    } else {
+      // Deal-context baseline. Prefer the daily market sample (reflects the whole market,
+      // even for a band-limited search); only when there's no baseline fall back to the
+      // median of this search's recent priced alerts, computed from before this batch lands
+      // (so the new items don't skew their own "typical"). The recent-alert read is skipped
+      // whenever a market baseline exists (dealField's market branch ignores its count) and
+      // whenever the poll is empty, so steady-state polls stay DB-free.
+      const market = e.s.marketMedian;
+      const ctx: PriceContext =
+        market != null && market > 0
+          ? { typical: market, count: 0, basis: "market" }
+          : { ...(fresh.length ? await priceContext(database, e.s.id) : { typical: null, count: 0 }), basis: "recent" };
+      // Pin the owner's channel list for this batch: reload() swaps the UserCtx and its
+      // channel list (never mutates), so a capture keeps the insert's deliveredAt seed and the
+      // notify target consistent even if a reload lands mid-tick.
+      const webhooks = u.channels; // local copy; named to not shadow the `channels` schema table
+      // Pinned for the same reason as `webhooks`, but narrowed as endpoints die: reapPush
+      // reassigns u.push rather than mutating it, so this alias would otherwise keep handing
+      // a reaped endpoint to every later item in the batch.
+      let subs = u.push;
+      for (const item of [...fresh].reverse()) {
+        // Recomputed per item, not once per batch: reaping the last subscription has to be
+        // able to take this to zero, or the rows below would seed deliveredAt=null for a
+        // target that no longer exists and never be delivered by anyone.
+        const targets = webhooks.length + subs.length;
+        if (e.seen.has(item.itemId)) continue; // reload() may have merged it in mid-loop
+        // Suppressed (exclude-terms hit, or the NOT_PARTS preset's for-parts tier): mark seen
+        // (so later widening the search won't re-alert this old listing) but send no alert.
+        // Seen set stays the full dedupe set.
+        if (excludeMatch(item.title, e.s.excludeTerms) || conditionExcluded(item, e.s.conditions)) {
+          await database.insert(seenItems).values({ searchId: e.s.id, itemId: item.itemId }).onConflictDoNothing();
+          wrote = true;
+          e.seen.add(item.itemId);
+          plog.debug({ searchId: e.s.id, itemId: item.itemId, q: e.s.q }, "excluded - suppressed");
+          continue;
+        }
+        // Transaction: if alerts insert fails, seen_items also rolls back so the
+        // item is retried next poll instead of being permanently dropped. The alerts
+        // insert is conflict-guarded (see alerts_search_item_idx): a reload race that
+        // re-processes an item hits the unique index and inserts nothing, so alertId
+        // comes back null and we skip the notify. deliveredAt is stamped now only when
+        // there's nothing to deliver to; otherwise it stays null until notify succeeds.
+        let alertId: number | null = null;
+        await database.transaction(async (tx) => {
+          await tx.insert(seenItems).values({ searchId: e.s.id, itemId: item.itemId }).onConflictDoNothing();
+          const [inserted] = await tx
+            .insert(alerts)
+            .values({
+              userId: e.s.userId,
+              searchId: e.s.id,
+              searchQ: e.s.q,
+              itemId: item.itemId,
+              title: item.title,
+              price: item.price,
+              currency: item.currency,
+              shippingCost: item.shippingCost,
+              buyingOption: item.buyingOption,
+              condition: item.condition,
+              imageUrl: item.imageUrl,
+              itemUrl: item.itemUrl,
+              deliveredAt: targets ? null : new Date(),
+            })
+            .onConflictDoNothing({ target: [alerts.searchId, alerts.itemId] })
+            .returning({ id: alerts.id });
+          alertId = inserted?.id ?? null;
+        });
+        wrote = true;
+        e.seen.add(item.itemId);
+        if (alertId == null) continue; // duplicate: the row already existed, don't re-notify
+        bumpAlerts(e.s.userId); // the owner's alert list changed; their tabs must refetch
+        const now = Date.now();
+        e.hitTimes.push(now);
+        e.lastHitAt = now;
+        plog.info({ searchId: e.s.id, itemId: item.itemId, price: item.price }, "alert sent");
+        if (targets) {
+          const [d, p] = await Promise.all([
+            webhooks.length ? notify(item, e.s, webhooks, ctx) : NOTHING_SENT,
+            subs.length ? notifyPush(item, e.s, subs) : NOTHING_PUSHED,
+          ]);
+          // Recorded separately, never `d.error ?? p.error`: this list is the only place a
+          // self-hoster sees an outage, so collapsing the two would hide a dead webhook
+          // behind a push failure (and vice versa).
+          if (d.error) recordError(u.id, e.s.q, d.error, "error");
+          if (p.error) recordError(u.id, e.s.q, p.error, "error");
+          if (p.dead.length) {
+            await reapPush(database, u, p.dead);
+            const gone = new Set(p.dead);
+            subs = subs.filter((s) => !gone.has(s.endpoint)); // keep the pinned copy in step
+          }
+          // "Delivered" = reached at least one target. On total failure the row stays
+          // deliveredAt=null and boot redelivery retries it (never re-posting to a target that
+          // already has it, since anyDelivered would have marked it delivered here).
+          if (d.anyDelivered || p.anyDelivered) {
+            await database.update(alerts).set({ deliveredAt: new Date() }).where(eq(alerts.id, alertId));
+          }
+        }
+      }
+    }
+
+    // Piggyback the daily-call-count persist on the connection these writes already
+    // opened. Empty polls (seeded, nothing new) skip it and stay DB-free, so a
+    // reboot loses at most the calls counted since the last write - by design.
+    if (wrote) await flushCalls(database, u.id, u.calls);
+    // Refresh the market baseline at most once/day per band-limited search. Self-throttled
+    // and isolated: it opens a connection only when actually due, so steady-state empty
+    // polls stay DB-free, and its own try/catch keeps a sample failure off the main poll.
+    await maybeSampleMarket(e, u, database);
+    e.backoffMs = 0;
+    schedule(e, e.s.intervalMin * 60_000);
+  } catch (err) {
+    plog.error({ err, searchId: e.s.id, q: e.s.q }, "poll failed"); // stack goes to stdout; recordError keeps only the message for the UI
+    recordError(u.id, e.s.q, message(err));
+    e.backoffMs = Math.min(e.backoffMs ? e.backoffMs * 2 : e.s.intervalMin * 60_000, MAX_BACKOFF_MS);
+    schedule(e, e.backoffMs);
+  }
+}
+
+// Re-kick one user's searches after a change that decides whether/how they poll. Jittered so a
+// user with many searches doesn't hit eBay in one burst.
+export function kick(userId: number) {
+  for (const e of state().entries.values()) {
+    if (e.s.userId === userId && e.s.enabled) schedule(e, 1000 + Math.random() * 3000);
+  }
+}

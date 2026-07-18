@@ -15,7 +15,7 @@ RUN node_modules/.bin/next build
 # run: standalone output, non-root
 FROM node:24-alpine
 WORKDIR /app
-# NEXT_MANUAL_SIG_HANDLE: let poller.ts own SIGTERM/SIGINT so its shutdown flush
+# NEXT_MANUAL_SIG_HANDLE: let poller/boot.ts own SIGTERM/SIGINT so its shutdown flush
 # completes; otherwise Next's own handler process.exit()s and cuts the DB write off.
 # APP_VERSION: the image tag, threaded in at build time so the UI is self-describing
 # without a package.json bump. Falls back to "dev" for local builds.

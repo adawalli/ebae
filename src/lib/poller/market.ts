@@ -8,6 +8,14 @@ import { type Entry, type UserCtx, message, plog, recordError } from "./state";
 
 const MARKET_SAMPLE_HOURS = Number(process.env.MARKET_SAMPLE_HOURS ?? 24);
 
+// Calls a day one search spends on market baselines. Zero unless it has both a floor and a
+// cap - the same gate maybeSampleMarket applies below, kept next to it so the quota projection
+// and the poller can't disagree about which searches cost extra.
+export function marketSamplesPerDay(s: { priceFloor: number | null; priceCap: number | null }): number {
+  if (s.priceFloor == null || s.priceCap == null) return 0;
+  return Math.max(1, Math.round(24 / MARKET_SAMPLE_HOURS));
+}
+
 // A listing's title matches one of the search's exclude terms (comma/newline
 // separated, case-insensitive substring). No terms -> never excluded. The Browse
 // API has no negative-keyword support, so this suppression is client-side. Pure +

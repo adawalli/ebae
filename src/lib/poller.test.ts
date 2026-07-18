@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
 import {
+  GOV_MAX_FACTOR,
+  GOV_MIN_SPEND,
+  MAX_BACKOFF_MS,
+  QUOTA_SKIP_MS,
+  activeFracElapsed,
   baselineInvalidated,
   excludeMatch,
+  governedDelayMs,
+  governorFactor,
   healthWindowMs,
   inWindow,
   matchCriteriaChanged,
@@ -182,6 +189,105 @@ test("snoozeMinutes: 0 when disabled, window length when enabled", () => {
   expect(snoozeMinutes({ enabled: false, start: 60, end: 420, tz: null })).toBe(0);
   expect(snoozeMinutes({ enabled: true, start: 60, end: 420, tz: null })).toBe(360); // 01:00-07:00
   expect(snoozeMinutes({ enabled: true, start: 1320, end: 360, tz: null })).toBe(480); // 22:00-06:00
+});
+
+// ---------- budget governor ----------
+// The governor stretches poll intervals when a user's spend is on track to exhaust the daily
+// eBay budget before the day ends. Slow-down only: the factor is >= 1 by construction, so a
+// search can never poll faster than the interval its owner set.
+
+// The guarantee the whole feature rests on: a user whose spend is on track to land exactly on
+// the ceiling at the end of the day is using their budget perfectly, and is never slowed. This
+// is why the signal is the projected shortfall and not raw used/ceiling - the latter would
+// throttle everyone every evening for being 90% through a budget they are entitled to spend.
+test("governorFactor leaves an on-budget user alone all day", () => {
+  // Exactly on track at every point in the day: f of the budget spent, f of the day gone.
+  for (const f of [0.1, 0.25, 0.5, 0.75, 0.99]) {
+    expect(governorFactor(5000 * f, 5000, f)).toBe(1);
+  }
+  expect(governorFactor(1000, 5000, 0.5)).toBe(1); // well under: 20% spent at midday
+  expect(governorFactor(4000, 5000, 0.9)).toBe(1); // 80% spent with 10% of the day left
+});
+
+// Engaged, the factor is the exact correction: the rest of the day would naturally cost
+// `naturalSpendLeft`, only `budgetLeft` remains, so slow by their ratio and the spend lands on
+// the ceiling instead of hitting the cliff early.
+test("governorFactor slows by exactly the projected shortfall", () => {
+  // Midday, 3000 of 5000 spent: the afternoon would cost another 3000 but only 2000 is left.
+  expect(governorFactor(3000, 5000, 0.5)).toBe(1.5);
+  // Midday, 2600 spent: afternoon costs 2600, 2400 left. Quantized to 3 decimals.
+  expect(governorFactor(2600, 5000, 0.5)).toBe(1.083);
+});
+
+test("governorFactor never exceeds the cap", () => {
+  expect(governorFactor(4900, 5000, 0.5)).toBe(GOV_MAX_FACTOR); // 49x correction, capped
+  expect(governorFactor(5000, 5000, 0.5)).toBe(GOV_MAX_FACTOR); // budget gone at midday
+  expect(governorFactor(9999, 5000, 0.5)).toBe(GOV_MAX_FACTOR); // overspent past the ceiling
+});
+
+test("governorFactor is monotonic in spend", () => {
+  let prev = 0;
+  for (let used = 0; used <= 6000; used += 100) {
+    const f = governorFactor(used, 5000, 0.5);
+    expect(f).toBeGreaterThanOrEqual(prev);
+    expect(f).toBeGreaterThanOrEqual(1);
+    expect(f).toBeLessThanOrEqual(GOV_MAX_FACTOR);
+    prev = f;
+  }
+});
+
+// Just after the local midnight reset, activeFrac is near zero, so used/(ceiling*activeFrac)
+// spikes on a handful of calls and would slam every search to 4x for no reason. Below a floor
+// of total spend the governor stays inert.
+test("governorFactor is inert on a trickle of spend after midnight", () => {
+  expect(governorFactor(20, 5000, 0.001)).toBe(1); // 20 calls at 00:01: pace is meaningless
+  expect(governorFactor(GOV_MIN_SPEND * 5000 - 1, 5000, 0.001)).toBe(1); // just under the floor
+  expect(governorFactor(GOV_MIN_SPEND * 5000, 5000, 0.001)).toBeGreaterThan(1); // at it, pace rules
+});
+
+test("governorFactor guards degenerate inputs", () => {
+  expect(governorFactor(5000, 5000, 0)).toBe(1); // no active minutes elapsed yet
+  expect(governorFactor(5000, 5000, -1)).toBe(1);
+  expect(governorFactor(5000, 0, 0.5)).toBe(1); // ceiling unset/zero: nothing to protect
+  expect(governorFactor(0, 5000, 0.5)).toBe(1);
+});
+
+// The one guarantee the feature rests on: the governed delay is never shorter than the
+// interval the user asked for, at any factor the governor can produce.
+test("governedDelayMs never polls faster than the user's interval", () => {
+  for (const interval of [1, 5, 15, 60, 1440]) {
+    for (const used of [0, 100, 2500, 4000, 5000, 99_999]) {
+      const factor = governorFactor(used, 5000, 0.5);
+      expect(governedDelayMs(interval, factor)).toBeGreaterThanOrEqual(interval * 60_000);
+      expect(governedDelayMs(interval, factor)).toBeLessThanOrEqual(interval * 60_000 * GOV_MAX_FACTOR);
+    }
+  }
+});
+
+// activeFracElapsed: how much of the day's pollable time is gone. Snooze-aware, because a
+// user snoozing 22:00-06:00 has 960 pollable minutes, not 1440 - measuring against wall-clock
+// would read them as behind pace all morning and never throttle.
+test("activeFracElapsed tracks wall clock when snooze is off", () => {
+  const off = { enabled: false, start: 60, end: 420, tz: null };
+  expect(activeFracElapsed(off, 0)).toBe(0);
+  expect(activeFracElapsed(off, 720)).toBeCloseTo(0.5, 5);
+  expect(activeFracElapsed(off, 1440)).toBe(1);
+});
+
+test("activeFracElapsed ignores snoozed minutes", () => {
+  const sn = { enabled: true, start: 60, end: 420, tz: null }; // 01:00-07:00, 1080 active min
+  expect(activeFracElapsed(sn, 60)).toBeCloseTo(60 / 1080, 5); // 01:00: 60 active min gone
+  expect(activeFracElapsed(sn, 420)).toBeCloseTo(60 / 1080, 5); // 07:00: snooze added nothing
+  expect(activeFracElapsed(sn, 240)).toBeCloseTo(60 / 1080, 5); // mid-snooze: frozen
+  expect(activeFracElapsed(sn, 1440)).toBe(1);
+});
+
+test("activeFracElapsed handles a window crossing midnight", () => {
+  const sn = { enabled: true, start: 1320, end: 360, tz: null }; // 22:00-06:00, 960 active min
+  expect(activeFracElapsed(sn, 360)).toBe(0); // 06:00: the whole night was snoozed
+  expect(activeFracElapsed(sn, 720)).toBeCloseTo(360 / 960, 5); // noon: 6 active hours in
+  expect(activeFracElapsed(sn, 1320)).toBe(1); // 22:00: every active minute is spent
+  expect(activeFracElapsed(sn, 1439)).toBe(1); // deep in the window: stays clamped
 });
 
 // healthWindowMs: the freshness bound for the liveness heartbeat. Too tight => healthy

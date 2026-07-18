@@ -194,7 +194,12 @@ export function SearchFormDialog({
           </div>
 
           <div className="flex items-center gap-2 rounded-lg bg-[var(--eb-accent-soft)] px-3.5 py-3 text-[12.5px] text-[var(--eb-accent-text)]">
-            <span className="font-mono font-semibold">≈ {fmt(callsFor(form.interval, activeMin))} calls·day</span>
+            {/* + the daily market baseline, which only a search with both a floor and a cap gets
+                (the same gate as marketSamplesPerDay). Counted here so this preview matches the
+                per-row figure the search will show once it exists. */}
+            <span className="font-mono font-semibold">
+              ≈ {fmt(callsFor(form.interval, activeMin) + (form.priceFloor && form.priceCap ? 1 : 0))} calls·day
+            </span>
             <span className="text-muted-foreground">
               · first poll seeds silently — no alert spam from existing listings
             </span>

@@ -21,8 +21,8 @@ export {
 } from "./api";
 export { boot } from "./boot";
 export { redeliverPending } from "./delivery";
-export { pollOnce } from "./loop";
+export { MAX_BACKOFF_MS, QUOTA_SKIP_MS, pollOnce } from "./loop";
 export { excludeMatch, median } from "./market";
-export { mergeCalls } from "./quota";
-export { inWindow, snoozeMinutes } from "./snooze";
+export { GOV_MAX_FACTOR, GOV_MIN_SPEND, governedDelayMs, governorFactor, mergeCalls } from "./quota";
+export { activeFracElapsed, inWindow, snoozeMinutes } from "./snooze";
 export { alertsTag, bumpAlerts, markStalePush, pushIsStale, type Entry, type UserCtx } from "./state";

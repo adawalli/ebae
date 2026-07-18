@@ -4,7 +4,7 @@ import { ExternalLink, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { CONDITION_BADGE, type ConditionKey, type SearchStats, type StatusInfo } from "@/lib/types";
 import { splitExcludeTerms } from "@/lib/exclude-terms";
 import { ebayWebUrl } from "@/lib/utils";
-import { ago, callsFor, fmt, money } from "@/lib/format";
+import { ago, fmt, money } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -14,7 +14,6 @@ import { Progress } from "@/components/ui/progress";
 export function SearchesView({
   searches,
   active,
-  activeMin,
   projected,
   ceiling,
   quotaPct,
@@ -29,7 +28,6 @@ export function SearchesView({
 }: {
   searches: SearchStats[];
   active: SearchStats[];
-  activeMin: number;
   projected: number;
   ceiling: number;
   quotaPct: number;
@@ -199,11 +197,23 @@ export function SearchesView({
                       {s.intervalMin}
                       <span className="md:hidden">m</span>
                       <span className="hidden md:inline"> min</span>
+                      {/* Only when the governor has actually stretched this search: showing the
+                          configured interval alone would be a lie about when it next polls. */}
+                      {s.enabled && s.effectiveIntervalMin > s.intervalMin && (
+                        <span
+                          className="ml-1 text-[var(--eb-warn,#b45309)]"
+                          title="Slowed to keep today's polling inside your daily eBay budget. Your configured interval is unchanged."
+                        >
+                          → {s.effectiveIntervalMin}
+                          <span className="md:hidden">m</span>
+                          <span className="hidden md:inline"> min</span>
+                        </span>
+                      )}
                     </span>
                     <span className="text-muted-foreground md:text-right md:text-[13px]">
                       {s.enabled ? (
                         <>
-                          {fmt(callsFor(s.intervalMin, activeMin))}
+                          {fmt(s.callsPerDay)}
                           <span className="md:hidden"> calls·day</span>
                         </>
                       ) : (

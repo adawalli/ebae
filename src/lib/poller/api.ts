@@ -8,7 +8,7 @@ import type { PushSub, Search, SearchStats, SnoozeConfig, StatusInfo } from "@/l
 import { userCtx } from "./boot";
 import { MAX_BACKOFF_MS, QUOTA_SKIP_MS, kick, pollMode, schedule } from "./loop";
 import { MARKET_SAMPLES_PER_DAY, marketSamplesPerDay } from "./market";
-import { QUOTA_CEILING, governorFactor, usedToday } from "./quota";
+import { GOV_MAX_FACTOR, QUOTA_CEILING, governorFactor, usedToday } from "./quota";
 import { SNOOZE_DEFAULT, activeFracNow, hhmm, snoozeMinutes, snoozeWindow, snoozing } from "./snooze";
 import { type Entry, type SnoozeState, bumpAlerts, plog, rowToSearch, state } from "./state";
 
@@ -372,12 +372,12 @@ export function status(userId: number): StatusInfo {
 }
 
 // Longest legitimate gap between two schedule() calls: the largest reschedule delay any
-// path can pick (a search's interval, QUOTA_SKIP_MS, or the backoff cap), plus a grace
+// path can pick (a governed search interval, QUOTA_SKIP_MS, or the backoff cap), plus a grace
 // margin for tick duration. Beyond this the heartbeat is genuinely stale. The QUOTA_SKIP_MS
 // floor is what stops an all-short-interval fleet reading unhealthy during a quota pause.
 // Pure + exported for tests.
 export function healthWindowMs(intervalsMin: number[]): number {
-  return Math.max(QUOTA_SKIP_MS, MAX_BACKOFF_MS, ...intervalsMin.map((m) => m * 60_000)) + 5 * 60_000;
+  return Math.max(QUOTA_SKIP_MS, MAX_BACKOFF_MS, ...intervalsMin.map((m) => m * 60_000 * GOV_MAX_FACTOR)) + 5 * 60_000;
 }
 
 // Liveness for /api/health. Not-ready => unhealthy (still booting / DB down). No enabled

@@ -37,6 +37,7 @@ export function SearchFormDialog({
   formError,
   submitSearch,
   activeMin,
+  marketSamples,
 }: {
   showForm: boolean;
   setShowForm: (v: boolean) => void;
@@ -47,6 +48,7 @@ export function SearchFormDialog({
   formError: string | null;
   submitSearch: () => void;
   activeMin: number;
+  marketSamples: number;
 }) {
   return (
     <Dialog open={showForm} onOpenChange={setShowForm}>
@@ -194,11 +196,14 @@ export function SearchFormDialog({
           </div>
 
           <div className="flex items-center gap-2 rounded-lg bg-[var(--eb-accent-soft)] px-3.5 py-3 text-[12.5px] text-[var(--eb-accent-text)]">
-            {/* + the daily market baseline, which only a search with both a floor and a cap gets
-                (the same gate as marketSamplesPerDay). Counted here so this preview matches the
-                per-row figure the search will show once it exists. */}
+            {/* + the market baselines, which only a search with both a floor and a cap gets (the
+                same gate as marketSamplesPerDay). The count rides in on status because it comes
+                off a server-only env var; the gate is applied here because the search being
+                priced has no row to read one from. Both so this preview matches the per-row
+                figure the search will show once it exists. */}
             <span className="font-mono font-semibold">
-              ≈ {fmt(callsFor(form.interval, activeMin) + (form.priceFloor && form.priceCap ? 1 : 0))} calls·day
+              ≈ {fmt(callsFor(form.interval, activeMin) + (form.priceFloor && form.priceCap ? marketSamples : 0))}{" "}
+              calls·day
             </span>
             <span className="text-muted-foreground">
               · first poll seeds silently — no alert spam from existing listings

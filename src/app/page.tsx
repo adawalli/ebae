@@ -235,7 +235,10 @@ export default function Home() {
   const activeMin = 1440 - (status?.snooze.dailyMinutes ?? 0);
   // Server-side (see projectedCalls): the browser's own sum of intervals didn't know about
   // per-search market samples, so it read low against the counter the poller actually enforces.
-  const projected = status?.quota.projected ?? 0;
+  // Falls back to summing the rows' own server-computed figures rather than to zero, so a failed
+  // status poll degrades to the same number by a different route instead of painting an empty
+  // quota bar for a fleet that may be sitting at the ceiling.
+  const projected = status?.quota.projected ?? active.reduce((n, s) => n + s.callsPerDay, 0);
   const ceiling = status?.quota.ceiling ?? 5000;
   const quotaPct = Math.min(100, Math.round((projected / ceiling) * 100));
   const running = status?.poller.running ?? false;
@@ -336,6 +339,7 @@ export default function Home() {
           formError={formError}
           submitSearch={submitSearch}
           activeMin={activeMin}
+          marketSamples={status?.quota.marketSamplesPerDay ?? 1}
         />
       )}
     </SidebarProvider>

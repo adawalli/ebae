@@ -8,12 +8,16 @@ import { type Entry, type UserCtx, message, plog, recordError } from "./state";
 
 const MARKET_SAMPLE_HOURS = Number(process.env.MARKET_SAMPLE_HOURS ?? 24);
 
+// Baselines a band-limited search takes per day. Exported on its own so the new-search preview
+// can price a search that doesn't exist yet (see status()), where the gate below has nothing to
+// read. At the default 24h gap this is 1.
+export const MARKET_SAMPLES_PER_DAY = Math.max(1, Math.round(24 / MARKET_SAMPLE_HOURS));
+
 // Calls a day one search spends on market baselines. Zero unless it has both a floor and a
 // cap - the same gate maybeSampleMarket applies below, kept next to it so the quota projection
 // and the poller can't disagree about which searches cost extra.
 export function marketSamplesPerDay(s: { priceFloor: number | null; priceCap: number | null }): number {
-  if (s.priceFloor == null || s.priceCap == null) return 0;
-  return Math.max(1, Math.round(24 / MARKET_SAMPLE_HOURS));
+  return s.priceFloor == null || s.priceCap == null ? 0 : MARKET_SAMPLES_PER_DAY;
 }
 
 // A listing's title matches one of the search's exclude terms (comma/newline

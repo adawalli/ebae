@@ -211,6 +211,9 @@ async function reload() {
       channels: webhooksByUser.get(row.id) ?? [],
       push: pushByUser.get(row.id) ?? [],
       calls: st.users.get(row.id)?.calls ?? { date: today, used: 0 },
+      // Carried across the reload alongside `calls` for the same reason: it's the memory of
+      // the last logged edge, so dropping it would re-log "engaged" on every reload.
+      governorEngaged: st.users.get(row.id)?.governorEngaged ?? false,
       snooze: { enabled: row.snoozeEnabled, start: row.snoozeStart, end: row.snoozeEnd, tz: row.snoozeTz },
     });
   }

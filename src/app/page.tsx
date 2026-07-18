@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Alert, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
-import { callsFor } from "@/lib/format";
 import { refreshPush } from "@/lib/push-client";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SearchesView } from "@/components/searches-view";
@@ -234,7 +233,9 @@ export default function Home() {
   const visibleAlerts = alerts;
   const active = searches.filter((s) => s.enabled);
   const activeMin = 1440 - (status?.snooze.dailyMinutes ?? 0);
-  const projected = active.reduce((n, s) => n + callsFor(s.intervalMin, activeMin), 0);
+  // Server-side (see projectedCalls): the browser's own sum of intervals didn't know about
+  // per-search market samples, so it read low against the counter the poller actually enforces.
+  const projected = status?.quota.projected ?? 0;
   const ceiling = status?.quota.ceiling ?? 5000;
   const quotaPct = Math.min(100, Math.round((projected / ceiling) * 100));
   const running = status?.poller.running ?? false;
@@ -282,7 +283,6 @@ export default function Home() {
             <SearchesView
               searches={searches}
               active={active}
-              activeMin={activeMin}
               projected={projected}
               ceiling={ceiling}
               quotaPct={quotaPct}

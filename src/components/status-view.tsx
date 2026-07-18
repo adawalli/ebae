@@ -100,9 +100,18 @@ export function StatusView({
                 {fmt(status?.quota.used ?? 0)}{" "}
                 <span className="text-[14px] font-normal text-[var(--eb-faint)]">/ {fmt(ceiling)}</span>
               </div>
+              {/* Against "expected" rather than only the ceiling: 90% spent is fine at 23:00 and
+                  alarming at 09:00, and the raw percentage can't tell those apart. */}
               <div className="mt-2 font-mono text-xs text-[var(--eb-faint)]">
-                {Math.round(((status?.quota.used ?? 0) / ceiling) * 100)}% of daily budget
+                {fmt(status?.quota.expected ?? 0)} expected by now ·{" "}
+                {Math.round(((status?.quota.used ?? 0) / ceiling) * 100)}% of budget
               </div>
+              {status?.quota.governor.active && (
+                <div className="mt-1.5 text-xs text-[var(--eb-warn,#b45309)]">
+                  Governor active · polling at {status.quota.governor.factor.toFixed(1)}× your intervals to stay inside
+                  today&apos;s budget
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

@@ -60,6 +60,12 @@ export type SearchStats = Search & {
   hits24: number;
   lastHitAt: string | null;
   lastPolledAt: string | null;
+  // intervalMin stretched by the budget governor. Equal to intervalMin whenever the governor
+  // is idle, which is the common case; larger only while the owner is over budget pace.
+  effectiveIntervalMin: number;
+  // Calls a day this search costs, market sample included. Server-side so the per-row figures
+  // sum to StatusInfo.quota.projected instead of being derived twice from different formulas.
+  callsPerDay: number;
 };
 
 // One eBay listing, normalized from Browse item_summary (or the mock generator)
@@ -131,7 +137,16 @@ export type StatusInfo = {
     currency: string;
     tokenExpiresAt: string | null;
   };
-  quota: { used: number; ceiling: number };
+  quota: {
+    used: number;
+    ceiling: number;
+    // What the current configuration will spend over a full day, and how much of that should
+    // already be spent at this point in the day. Both computed server-side, off the same
+    // numbers the poller bills against, so the dashboard can't drift from the enforced counter.
+    projected: number;
+    expected: number;
+    governor: { active: boolean; factor: number };
+  };
   snooze: { active: boolean; window: string | null; dailyMinutes: number };
   errors: PollError[];
   user: { email: string };

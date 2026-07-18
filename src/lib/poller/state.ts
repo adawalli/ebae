@@ -40,6 +40,10 @@ export type UserCtx = {
   // assumes a URL string, and a push target is three values. Two lists, two senders.
   push: PushSub[];
   calls: { date: string; used: number };
+  // Whether the budget governor is currently stretching this user's intervals. Derived from
+  // `calls` and the clock, held only to detect the engage/release edge for logging - never
+  // read as the factor itself, which is always recomputed.
+  governorEngaged: boolean;
   snooze: SnoozeState;
 };
 

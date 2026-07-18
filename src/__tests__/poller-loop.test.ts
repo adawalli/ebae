@@ -5,10 +5,13 @@ import { SINGLE_USER_EMAIL } from "@/lib/authmode";
 import { db } from "@/lib/db";
 import { alerts, searches, seenItems, users } from "@/lib/schema";
 import {
+  GOV_MAX_FACTOR,
   createSearch,
+  listSearches,
   pollOnce,
   redeliverPending,
   status,
+  updateSearch,
   type Entry,
   type SearchInput,
   type UserCtx,
@@ -16,7 +19,7 @@ import {
 import type { Item, PollError } from "@/lib/types";
 
 // state() is module-private, so tests reach the same singleton the poller does.
-type Cached = { entries: Map<number, Entry>; users: Map<number, UserCtx>; errors: PollError[] };
+type Cached = { ready: boolean; entries: Map<number, Entry>; users: Map<number, UserCtx>; errors: PollError[] };
 const g = globalThis as typeof globalThis & {
   __ebaeState: Cached;
   __ebaeMock: { pools: Map<number, Item[]> };
@@ -233,4 +236,84 @@ test("an alert under the age cutoff is delivered, not retired", async () => {
   );
   expect(byId.get(fresh.id)!.deliveredAt).not.toBeNull();
   expect(byId.get(done.id)!.deliveredAt!.toISOString()).toBe(alreadyDelivered.toISOString());
+});
+
+// ---------- budget governor ----------
+// The pure factor math is covered in poller.test.ts. What matters here is the wiring: that a
+// poll which spent a call actually reschedules at the governed delay, and that the same factor
+// reaches the UI. A correct formula nothing calls would pass every unit test and change nothing.
+
+// schedule() hands its delay to setTimeout, so capture that rather than introspecting a Timer.
+// The stub also keeps the callback from ever firing, which is what stops these tests leaking a
+// live poll timer into the ones that follow.
+function captureDelays() {
+  const real = globalThis.setTimeout;
+  const delays: number[] = [];
+  globalThis.setTimeout = ((fn: () => void, ms: number) => {
+    delays.push(ms);
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as unknown as typeof globalThis.setTimeout;
+  return { delays, restore: () => (globalThis.setTimeout = real) };
+}
+
+// Drive one poll with the state a test has set up and report the delay it rescheduled at.
+async function delayAfterPoll(e: Entry): Promise<number> {
+  g.__ebaeState.ready = true; // schedule() no-ops until the poller is ready
+  const cap = captureDelays();
+  try {
+    await pollOnce(e);
+    // schedule() is the last thing pollOnce does, after every await it makes.
+    return cap.delays.at(-1)!;
+  } finally {
+    cap.restore();
+    g.__ebaeState.ready = false;
+  }
+}
+
+test("a poll within budget reschedules at exactly the configured interval", async () => {
+  const e = await seededEntry({ intervalMin: 5 });
+  const u = g.__ebaeState.users.get(userId)!;
+  // A tenth of the budget spent - nowhere near the day's pace, whatever time the suite runs at.
+  u.calls = { date: new Date().toDateString(), used: Math.floor(status(userId).quota.ceiling * 0.1) };
+
+  expect(await delayAfterPoll(e)).toBe(5 * 60_000);
+  expect(u.governorEngaged).toBe(false);
+});
+
+test("a poll running ahead of budget reschedules slower, and says so", async () => {
+  const e = await seededEntry({ intervalMin: 5 });
+  const u = g.__ebaeState.users.get(userId)!;
+  const ceiling = status(userId).quota.ceiling;
+  // Effectively the whole budget gone. However far into the day the suite runs, the remaining
+  // budget cannot cover the remaining hours, so the governor is pinned at its cap.
+  u.calls = { date: new Date().toDateString(), used: ceiling - 1 };
+
+  const delay = await delayAfterPoll(e);
+
+  expect(delay).toBe(5 * 60_000 * GOV_MAX_FACTOR);
+  expect(u.governorEngaged).toBe(true);
+  // ...and the same stretch is what the searches list reports, so the row can't claim a
+  // cadence the poller isn't using.
+  expect(listSearches(userId)[0].effectiveIntervalMin).toBe(5 * GOV_MAX_FACTOR);
+  expect(status(userId).quota.governor).toEqual({ active: true, factor: GOV_MAX_FACTOR });
+});
+
+test("status projects the day's calls including each market sample", async () => {
+  await createSearch(userId, input({ q: "plain", intervalMin: 10 })); // 144 polls/day
+  await createSearch(userId, input({ q: "banded", intervalMin: 10, priceFloor: 100, priceCap: 500 })); // + 1 sample
+
+  const { quota } = status(userId);
+  expect(quota.projected).toBe(144 + 144 + 1);
+  // Every row's own figure, summed, is the number shown against the ceiling - the browser used
+  // to compute this itself and omit the market samples entirely.
+  expect(listSearches(userId).reduce((n, s) => n + s.callsPerDay, 0)).toBe(quota.projected);
+});
+
+test("a paused search costs nothing and drops out of the projection", async () => {
+  const s = await createSearch(userId, input({ intervalMin: 10 }));
+  expect(status(userId).quota.projected).toBe(144);
+
+  await updateSearch(userId, s.id, { enabled: false });
+
+  expect(status(userId).quota.projected).toBe(0);
 });

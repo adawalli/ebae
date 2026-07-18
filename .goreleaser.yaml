@@ -1,0 +1,49 @@
+# Release notes only. docker.yml builds and pushes the image on the same tag; GoReleaser
+# just turns the commits since the previous tag into a grouped GitHub Release, and produces
+# no artifacts of its own.
+version: 2
+
+project_name: ebae
+
+# Nothing is built here, but the builder still matters: GoReleaser runs its go-module pipe
+# whenever a build declares the (default) `go` builder, and that pipe shells out to `go`.
+# Declaring a non-Go builder skips the pipe, so releasing needs no Go toolchain in CI.
+builds:
+  - builder: bun
+    skip: true
+
+changelog:
+  # `git` reads the local log, so `goreleaser release --skip=publish` reproduces exactly what
+  # CI will publish. `github` needs API access to dry-run, and `github-native` hands the notes
+  # to GitHub wholesale, ignoring groups/sort/filters.
+  use: git
+  sort: asc
+  abbrev: 7
+  groups:
+    - title: Features
+      regexp: "^feat"
+      order: 0
+    - title: Fixes
+      regexp: "^fix"
+      order: 1
+    - title: Maintenance
+      regexp: "^(refactor|perf|test)"
+      order: 2
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - "^docs"
+      - "^chore"
+      - "^ci"
+      - "^Merge"
+
+release:
+  # .Version is the bare semver (0.1.23), which is the tag docker.yml pushes - .Tag would
+  # carry the leading v and name an image that does not exist.
+  footer: |
+    ## Container image
+
+    ```
+    docker pull adawalli/ebae:{{ .Version }}
+    ```

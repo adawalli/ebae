@@ -201,7 +201,7 @@ export function SearchesView({
                           configured interval alone would be a lie about when it next polls. */}
                       {s.enabled && s.effectiveIntervalMin > s.intervalMin && (
                         <span
-                          className="ml-1 text-[var(--eb-warn,#b45309)]"
+                          className="ml-1 text-[var(--eb-amber)]"
                           title="Slowed to keep today's polling inside your daily eBay budget. Your configured interval is unchanged."
                         >
                           → {s.effectiveIntervalMin}

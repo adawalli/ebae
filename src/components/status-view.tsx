@@ -107,7 +107,7 @@ export function StatusView({
                 {Math.round(((status?.quota.used ?? 0) / ceiling) * 100)}% of budget
               </div>
               {status?.quota.governor.active && (
-                <div className="mt-1.5 text-xs text-[var(--eb-warn,#b45309)]">
+                <div className="mt-1.5 text-xs text-[var(--eb-amber)]">
                   Governor active · polling at {status.quota.governor.factor.toFixed(1)}× your intervals to stay inside
                   today&apos;s budget
                 </div>

@@ -304,7 +304,7 @@ test("activeFracElapsed handles a window crossing midnight", () => {
 test("healthWindowMs: backoff cap dominates short intervals", () => {
   expect(healthWindowMs([5])).toBe(35 * 60_000); // 30-min backoff cap + 5 grace
   expect(healthWindowMs([])).toBe(35 * 60_000); // no searches: 15-min floor still < cap
-  expect(healthWindowMs([60])).toBe(65 * 60_000); // long interval dominates: 60 + 5
+  expect(healthWindowMs([60])).toBe(245 * 60_000); // governed interval dominates: 60 * 4 + 5
 });
 
 // The window has to outlast every delay schedule() can be handed, or a poller that is merely
@@ -316,7 +316,10 @@ test("healthWindowMs outlasts every reschedule delay", () => {
     const window = healthWindowMs(intervals);
     expect(window).toBeGreaterThan(QUOTA_SKIP_MS);
     expect(window).toBeGreaterThan(MAX_BACKOFF_MS);
-    for (const m of intervals) expect(window).toBeGreaterThan(m * 60_000);
+    for (const m of intervals) {
+      expect(window).toBeGreaterThan(m * 60_000);
+      expect(window).toBeGreaterThan(governedDelayMs(m, GOV_MAX_FACTOR));
+    }
   }
 });
 

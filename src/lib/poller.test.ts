@@ -299,6 +299,19 @@ test("healthWindowMs: backoff cap dominates short intervals", () => {
   expect(healthWindowMs([60])).toBe(65 * 60_000); // long interval dominates: 60 + 5
 });
 
+// The window has to outlast every delay schedule() can be handed, or a poller that is merely
+// idling on purpose reads as wedged and /api/health 503s a healthy pod. The delays live in
+// loop.ts; this asserts the relationship rather than the arithmetic, so raising one of them
+// without widening the window fails here instead of in production.
+test("healthWindowMs outlasts every reschedule delay", () => {
+  for (const intervals of [[], [1], [5, 1440], [60]]) {
+    const window = healthWindowMs(intervals);
+    expect(window).toBeGreaterThan(QUOTA_SKIP_MS);
+    expect(window).toBeGreaterThan(MAX_BACKOFF_MS);
+    for (const m of intervals) expect(window).toBeGreaterThan(m * 60_000);
+  }
+});
+
 // Snooze settings validation (the API trust boundary): HH:MM parsing, tz check,
 // and the empty-window guard that would otherwise mean "snooze all day".
 test("hhmmToMin parses valid times and rejects junk", () => {

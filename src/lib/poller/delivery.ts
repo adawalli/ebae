@@ -19,13 +19,13 @@ const REDELIVER_MAX_AGE_MS = 60 * 60_000;
 // Stand-ins for a sender with nothing to send, so the two delivery paths can always be
 // awaited as a pair without branching the result handling.
 export const NOTHING_SENT = { error: null, anyDelivered: false } as const;
-export const NOTHING_PUSHED = { error: null, anyDelivered: false, dead: [] as string[] } as const;
+export const NOTHING_PUSHED = { error: null, anyDelivered: false, dead: [] as readonly string[] } as const;
 
 // Drop subscriptions the push service says are gone for good (404/410 only - see push.ts).
 // Reassigns u.push rather than mutating it, matching reload's swap discipline; callers
 // holding a pinned copy of the list have to narrow it themselves. Never throws: losing a
 // reap is a retry next tick, not a lost alert.
-export async function reapPush(database: ReturnType<typeof db>, u: UserCtx, dead: string[]) {
+export async function reapPush(database: ReturnType<typeof db>, u: UserCtx, dead: readonly string[]) {
   const gone = new Set(dead);
   u.push = u.push.filter((p) => !gone.has(p.endpoint));
   // Before the delete, and kept even if it fails: this is what stops the client re-adding

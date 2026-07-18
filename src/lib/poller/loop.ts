@@ -13,6 +13,9 @@ import { snoozing } from "./snooze";
 import { type Entry, type UserCtx, bumpAlerts, message, plog, recordError, state } from "./state";
 
 export const MAX_BACKOFF_MS = 30 * 60_000;
+// How long a quota-exhausted search idles before re-checking. healthWindowMs treats this as
+// the floor of the freshness window, so raising it here widens that window too.
+export const QUOTA_SKIP_MS = 15 * 60_000;
 
 export function schedule(e: Entry, delayMs: number) {
   if (state().entries.get(e.s.id) !== e) return; // entry deleted/replaced while a tick was in flight
@@ -78,7 +81,7 @@ export async function pollOnce(e: Entry) {
   if (u.calls.date !== today) u.calls = { date: today, used: 0 };
   if (u.calls.used >= QUOTA_CEILING) {
     recordError(u.id, e.s.q, "daily API budget exhausted - poll skipped");
-    schedule(e, 15 * 60_000);
+    schedule(e, QUOTA_SKIP_MS);
     return;
   }
   // No keys and no mock to fall back on: there is nothing to poll with. Stay idle - no eBay

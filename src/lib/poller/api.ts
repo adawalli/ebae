@@ -5,7 +5,7 @@ import { currencyFor, invalidateToken, tokenExpiresAt, type EbayCreds } from "@/
 import { searches, users } from "@/lib/schema";
 import type { PushSub, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
 import { userCtx } from "./boot";
-import { MAX_BACKOFF_MS, kick, pollMode, schedule } from "./loop";
+import { MAX_BACKOFF_MS, QUOTA_SKIP_MS, kick, pollMode, schedule } from "./loop";
 import { QUOTA_CEILING } from "./quota";
 import { SNOOZE_DEFAULT, hhmm, snoozeMinutes, snoozeWindow, snoozing } from "./snooze";
 import { type Entry, type SnoozeState, bumpAlerts, plog, rowToSearch, state } from "./state";
@@ -131,7 +131,7 @@ export async function updateSearch(
   if (criteriaChanged) row.seeded = false;
   // Clear the market baseline when the criteria or the exclude terms change (see
   // baselineInvalidated) so the next poll re-samples instead of comparing against a stale
-  // market. An excludeTerms-only edit resets the baseline without re-seeding — the seen set
+  // market. An excludeTerms-only edit resets the baseline without re-seeding - the seen set
   // stays complete, matching the DESIGN.md §3 guarantee.
   if (baselineInvalidated(cur, row)) {
     row.marketMedian = null;
@@ -303,12 +303,12 @@ export function status(userId: number): StatusInfo {
 }
 
 // Longest legitimate gap between two schedule() calls: the largest reschedule delay any
-// path can pick (a search's interval, the 15-min quota-skip, or the 30-min backoff cap),
-// plus a grace margin for tick duration. Beyond this the heartbeat is genuinely stale.
-// Pure + exported for tests. 15 = quota-skip floor so a all-short-interval fleet still
-// tolerates a quota pause.
+// path can pick (a search's interval, QUOTA_SKIP_MS, or the backoff cap), plus a grace
+// margin for tick duration. Beyond this the heartbeat is genuinely stale. The QUOTA_SKIP_MS
+// floor is what stops an all-short-interval fleet reading unhealthy during a quota pause.
+// Pure + exported for tests.
 export function healthWindowMs(intervalsMin: number[]): number {
-  return Math.max(Math.max(15, ...intervalsMin) * 60_000, MAX_BACKOFF_MS) + 5 * 60_000;
+  return Math.max(QUOTA_SKIP_MS, MAX_BACKOFF_MS, ...intervalsMin.map((m) => m * 60_000)) + 5 * 60_000;
 }
 
 // Liveness for /api/health. Not-ready => unhealthy (still booting / DB down). No enabled

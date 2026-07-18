@@ -93,7 +93,7 @@ const MAX_STALE_PUSH = 500;
 // client its browser is handing back a corpse. Insertion-ordered, so the oldest deaths fall
 // off first - which costs at most one extra reap cycle for a device nobody has opened in
 // months.
-export function markStalePush(endpoints: string[]): void {
+export function markStalePush(endpoints: readonly string[]): void {
   const stale = state().stalePush;
   for (const e of endpoints) {
     // Re-add moves it to the back: a corpse we're still being handed is not the coldest one.

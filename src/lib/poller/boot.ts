@@ -312,7 +312,7 @@ async function reload() {
     if (memLast != null && (e.lastHitAt == null || memLast > e.lastHitAt)) e.lastHitAt = memLast;
   }
   // Reconcile each user's daily quota counter. Flush our in-memory value and read back
-  // what greatest() resolved to — one round-trip that handles both directions:
+  // what greatest() resolved to: one round-trip that handles both directions,
   // dying-process race (DB has more than we just read) and concurrent polls
   // (we have more than DB). Guard midnight twice: a poll tick can reset a counter
   // during the await, and if that happens we must not stamp it backward.
@@ -330,7 +330,15 @@ async function reload() {
 // auth.ts provisions a users row on first login, but the cache only rebuilds every
 // CACHE_REFRESH_HOURS - far too late for a new user's first save to take effect. Pull the whole
 // cache forward instead of a bespoke one-user load: it happens once per new user.
+// A first-login page load fires several of these at once; share one reload between them so
+// the miss costs a single query batch, not one per request.
+let reloading: Promise<void> | null = null;
 export async function userCtx(userId: number): Promise<UserCtx | undefined> {
-  if (!state().users.has(userId)) await reload();
+  if (!state().users.has(userId)) {
+    reloading ??= reload().finally(() => {
+      reloading = null;
+    });
+    await reloading;
+  }
   return state().users.get(userId);
 }

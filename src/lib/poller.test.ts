@@ -8,6 +8,7 @@ import {
   baselineInvalidated,
   excludeMatch,
   governedDelayMs,
+  governorDecision,
   governorFactor,
   healthWindowMs,
   inWindow,
@@ -218,6 +219,18 @@ test("governorFactor slows by exactly the projected shortfall", () => {
   expect(governorFactor(3000, 5000, 0.5)).toBe(1.5);
   // Midday, 2600 spent: afternoon costs 2600, 2400 left. Quantized to 3 decimals.
   expect(governorFactor(2600, 5000, 0.5)).toBe(1.083);
+});
+
+test("governor releases when the current configuration fits the remaining budget", () => {
+  // 2,300 calls are spent one-quarter through the active day, but the new configuration needs
+  // only 2,250 more calls. That is safely within the 2,700 calls left, so polling resets now.
+  expect(governorDecision(2300, 5000, 0.25, 3000, true)).toEqual({ active: false, factor: 1 });
+});
+
+test("governor holds a five-percent release buffer", () => {
+  // The current configuration fits, but with only 2% headroom. An engaged governor must keep
+  // a 5% slowdown until the configured work fits with the full 5% release margin.
+  expect(governorDecision(2300, 5000, 0.25, 3528, true)).toEqual({ active: true, factor: 1.05 });
 });
 
 test("governorFactor never exceeds the cap", () => {

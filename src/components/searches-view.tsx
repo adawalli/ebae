@@ -9,7 +9,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { Progress } from "@/components/ui/progress";
+
+const interval = (minutes: number) => (Number.isInteger(minutes) ? String(minutes) : minutes.toFixed(1));
 
 export function SearchesView({
   searches,
@@ -40,6 +41,13 @@ export function SearchesView({
   togglePause: (s: SearchStats) => void;
   removeSearch: (s: SearchStats) => void;
 }) {
+  const quota = status?.quota;
+  const forecast = quota?.configuredForecast ?? projected;
+  const forecastPct = Math.min(100, Math.round((forecast / ceiling) * 100));
+  const spentPct = quota ? Math.min(100, (quota.used / ceiling) * 100) : 0;
+  const requestedPct = quota ? Math.min(100 - spentPct, (quota.configuredRemaining / ceiling) * 100) : 0;
+  const overagePct = quota ? Math.min(20, (quota.overage / ceiling) * 100) : 0;
+
   function searchSub(s: SearchStats) {
     if (!s.enabled) return "paused";
     if (!s.seeded) return "seeding baseline — first matches silenced";
@@ -78,18 +86,59 @@ export function SearchesView({
       </div>
 
       {/* quota strip */}
-      <Card className="mx-4 mt-4 mb-1.5 md:mx-[30px] md:mt-5">
+      <Card className="mx-4 mt-4 mb-1.5 overflow-visible md:mx-[30px] md:mt-5">
         <CardContent>
           <div className="mb-2.5 flex flex-wrap items-baseline justify-between gap-1.5">
             <span className="text-[13px] text-muted-foreground">
-              Projected API usage <span className="text-[var(--eb-faint)]">· enforced global budget</span>
+              {quota ? "Today at your intervals" : "Configured API usage"}{" "}
+              <span className="text-[var(--eb-faint)]">· enforced global budget</span>
             </span>
             <span className="font-mono text-[13px] text-foreground">
-              <b className="text-[var(--eb-accent-text)]">{fmt(projected)}</b> / {fmt(ceiling)} calls·day{" "}
-              <span className="text-[var(--eb-faint)]">· {quotaPct}%</span>
+              <b className={quota?.overage ? "text-[var(--eb-amber)]" : "text-[var(--eb-accent-text)]"}>
+                {fmt(forecast)}
+              </b>{" "}
+              / {fmt(ceiling)} calls <span className="text-[var(--eb-faint)]">· {forecastPct}%</span>
             </span>
           </div>
-          <Progress value={quotaPct} className="h-2" />
+          {quota ? (
+            <>
+              <div className="relative h-2 overflow-visible rounded-full bg-[var(--eb-faint)]/15">
+                <span
+                  className="absolute inset-y-0 left-0 rounded-l-full bg-[var(--eb-accent)]"
+                  style={{ width: `${spentPct}%` }}
+                />
+                <span
+                  className="absolute inset-y-0 bg-[var(--eb-accent-text)]/75"
+                  style={{ left: `${spentPct}%`, width: `${requestedPct}%` }}
+                />
+                {quota.overage > 0 && (
+                  <span
+                    className="absolute inset-y-0 rounded-r-full bg-[var(--eb-amber)]"
+                    style={{ left: "100%", width: `${overagePct}%` }}
+                  />
+                )}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-[var(--eb-faint)]">
+                <span>{fmt(quota.used)} spent</span>
+                <span>{fmt(quota.configuredRemaining)} requested</span>
+                {quota.overage > 0 ? (
+                  <span className="text-[var(--eb-amber)]">{fmt(quota.overage)} to slow down</span>
+                ) : (
+                  <span>{fmt(quota.remaining)} remaining</span>
+                )}
+              </div>
+              {quota.governor.active && (
+                <div className="mt-1 font-mono text-[11px] text-[var(--eb-amber)]">
+                  Governor active · polling at {quota.governor.factor.toFixed(1)}× your intervals to finish inside
+                  today&apos;s budget
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="h-2 overflow-hidden rounded-full bg-[var(--eb-faint)]/15">
+              <span className="block h-full rounded-full bg-[var(--eb-accent)]" style={{ width: `${quotaPct}%` }} />
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -194,7 +243,7 @@ export function SearchesView({
                       }}
                     >
                       <span className="md:hidden">every </span>
-                      {s.intervalMin}
+                      {interval(s.intervalMin)}
                       <span className="md:hidden">m</span>
                       <span className="hidden md:inline"> min</span>
                       {/* Only when the governor has actually stretched this search: showing the
@@ -204,7 +253,7 @@ export function SearchesView({
                           className="ml-1 text-[var(--eb-amber)]"
                           title="Slowed to keep today's polling inside your daily eBay budget. Your configured interval is unchanged."
                         >
-                          → {s.effectiveIntervalMin}
+                          → {interval(s.effectiveIntervalMin)}
                           <span className="md:hidden">m</span>
                           <span className="hidden md:inline"> min</span>
                         </span>

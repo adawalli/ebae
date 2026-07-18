@@ -21,7 +21,7 @@ Use TypeScript with `strict` enabled and prefer imports through the `@/*` alias 
 
 ## Testing Guidelines
 
-Tests run under `bun test` (Bun's built-in runner - there is no npm script). Run `bun run lint`, `bun run build`, and `bun test` before opening a PR. Colocate tests with the related module using a clear suffix such as `poller.test.ts`, or place broader integration tests under `src/__tests__/`. Prefer focused tests around polling, validation, quota behavior, and API route responses. Tests have no `DATABASE_URL`, so stick to the pure units (see `auth.test.ts`, which exercises only the JWT half for exactly that reason).
+Tests run under `bun test` (Bun's built-in runner - there is no npm script). Run `bun run lint`, `bun run build`, and `bun test` before opening a PR. Colocate tests with the related module using a clear suffix such as `poller.test.ts`, or place broader integration tests under `src/__tests__/`. Prefer focused tests around polling, validation, quota behavior, and API route responses. Tests need no `DATABASE_URL`: `src/__tests__/helpers/db.ts` gives you an in-memory PGlite with the real `./drizzle` migrations applied, injected through `globalThis.__ebaeDb` so routes, poller, and auth all run against it. Still prefer a pure unit where a seam exists (see `auth.test.ts`, which exercises only the JWT half) and reach for the harness when the behavior genuinely needs the database.
 
 ## Commit & Pull Request Guidelines
 

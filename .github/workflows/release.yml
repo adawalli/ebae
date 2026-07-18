@@ -1,0 +1,25 @@
+name: release
+
+# Publishes the GitHub Release (grouped notes from the commits since the last tag) for the
+# same v*.*.* tags docker.yml builds the image from. The two run in parallel and never
+# overlap: this one only writes release notes, it produces no artifacts.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write # creating a release is a write to the repo
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # changelog diffs against the previous tag, so shallow won't do
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

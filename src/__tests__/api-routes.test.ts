@@ -3,18 +3,15 @@ import { DELETE as alertsDELETE, GET as alertsGET } from "@/app/api/alerts/route
 import { DELETE as searchDELETE, PATCH as searchPATCH } from "@/app/api/searches/[id]/route";
 import { GET as searchesGET, POST as searchesPOST } from "@/app/api/searches/route";
 import { GET as statusGET } from "@/app/api/status/route";
-import { alertsTag } from "@/lib/poller";
+import { alertsTag, type Entry, type UserCtx } from "@/lib/poller";
 import { alerts as alertsTable, searches } from "@/lib/schema";
 import { freshTestDb } from "./helpers/db";
 
-type UserCtx = {
-  calls: { date: string; used: number };
-  snooze: { enabled: boolean; start: number; end: number; tz: string | null };
-};
+// A narrowed view of the poller's private State: only the fields these tests reach for.
 type St = {
   ready: boolean;
   bootedAt: number | null;
-  entries: Map<number, unknown>;
+  entries: Map<number, Entry>;
   users: Map<number, UserCtx>;
 };
 const st = (): St => {

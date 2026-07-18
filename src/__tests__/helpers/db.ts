@@ -7,15 +7,15 @@
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
+import type { Entry } from "@/lib/poller";
 import * as schema from "@/lib/schema";
 
 type TestDb = ReturnType<typeof drizzle<typeof schema>>;
 
-type Entryish = { timer?: ReturnType<typeof setTimeout> };
 type Globals = typeof globalThis & {
   __ebaeDb?: unknown;
   __ebaeSql?: unknown;
-  __ebaeState?: { entries?: Map<number, Entryish> };
+  __ebaeState?: { entries?: Map<number, Entry> };
   __ebaeUsers?: unknown;
   __ebaeJwks?: unknown;
   __ebaeTokens?: unknown;

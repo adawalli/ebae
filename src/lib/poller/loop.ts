@@ -8,8 +8,9 @@ import { alerts, searches, seenItems } from "@/lib/schema";
 import type { PriceContext } from "@/lib/types";
 import { NOTHING_PUSHED, NOTHING_SENT, reapPush } from "./delivery";
 import { excludeMatch, maybeSampleMarket, priceContext } from "./market";
+import { projectedCalls } from "./projection";
 import { QUOTA_CEILING, flushCalls, governedDelayMs, governorFor } from "./quota";
-import { snoozing } from "./snooze";
+import { snoozeMinutes, snoozing } from "./snooze";
 import { type Entry, type UserCtx, bumpAlerts, message, plog, recordError, state } from "./state";
 
 export const MAX_BACKOFF_MS = 30 * 60_000;
@@ -227,7 +228,11 @@ export async function pollOnce(e: Entry) {
     // owner-not-cached reschedules above cost no quota, so stretching them would delay noticing
     // that the window ended or the keys arrived while saving nothing. The quota-exhausted retry
     // and the error backoff are already their own (longer) delays.
-    schedule(e, governedDelayMs(e.s.intervalMin, governorFor(u)));
+    const active = [...st.entries.values()].filter((x) => x.s.userId === u.id && x.s.enabled).map((x) => x.s);
+    schedule(
+      e,
+      governedDelayMs(e.s.intervalMin, governorFor(u, projectedCalls(active, 1440 - snoozeMinutes(u.snooze)))),
+    );
   } catch (err) {
     plog.error({ err, searchId: e.s.id, q: e.s.q }, "poll failed"); // stack goes to stdout; recordError keeps only the message for the UI
     recordError(u.id, e.s.q, message(err));

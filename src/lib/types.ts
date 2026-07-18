@@ -61,7 +61,7 @@ export type SearchStats = Search & {
   lastHitAt: string | null;
   lastPolledAt: string | null;
   // intervalMin stretched by the budget governor. Equal to intervalMin whenever the governor
-  // is idle, which is the common case; larger only while the owner is over budget pace.
+  // is idle, which is the common case; larger only while the remaining saved work exceeds budget.
   effectiveIntervalMin: number;
   // Calls a day this search costs, market sample included. Server-side so the per-row figures
   // sum to StatusInfo.quota.projected instead of being derived twice from different formulas.
@@ -146,6 +146,10 @@ export type StatusInfo = {
     projected: number;
     expected: number;
     governor: { active: boolean; factor: number };
+    remaining: number;
+    configuredRemaining: number;
+    configuredForecast: number;
+    overage: number;
     // Market baselines a floor+cap search costs per day (MARKET_SAMPLE_HOURS, server-only).
     // Here so the new-search preview prices the same way a saved row does.
     marketSamplesPerDay: number;

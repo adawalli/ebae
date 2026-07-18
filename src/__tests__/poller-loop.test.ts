@@ -10,6 +10,7 @@ import {
   listSearches,
   pollOnce,
   redeliverPending,
+  setSnooze,
   status,
   updateSearch,
   type Entry,
@@ -323,6 +324,18 @@ test("status projects the day's calls including each market sample", async () =>
   expect(listSearches(userId).reduce((n, s) => n + s.callsPerDay, 0)).toBe(quota.projected);
 });
 
+test("status exposes the configured work still remaining today", async () => {
+  await createSearch(userId, input({ intervalMin: 10 }));
+  const u = g.__ebaeState.users.get(userId)!;
+  u.calls = { date: new Date().toDateString(), used: 700 };
+
+  const quota = status(userId).quota;
+
+  expect(quota.remaining).toBe(quota.ceiling - quota.used);
+  expect(quota.configuredForecast).toBe(quota.used + quota.configuredRemaining);
+  expect(quota.overage).toBe(Math.max(quota.configuredForecast - quota.ceiling, 0));
+});
+
 test("a paused search costs nothing and drops out of the projection", async () => {
   const s = await createSearch(userId, input({ intervalMin: 10 }));
   expect(status(userId).quota.projected).toBe(144);
@@ -330,4 +343,26 @@ test("a paused search costs nothing and drops out of the projection", async () =
   await updateSearch(userId, s.id, { enabled: false });
 
   expect(status(userId).quota.projected).toBe(0);
+});
+
+test("saving an inactive snooze does not re-kick every search", async () => {
+  await seededEntry();
+  await seededEntry({ q: "second" });
+  g.__ebaeState.ready = true;
+  const real = globalThis.setTimeout;
+  const delays: number[] = [];
+  globalThis.setTimeout = ((fn: () => void, ms: number) => {
+    delays.push(ms);
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof globalThis.setTimeout;
+  try {
+    const now = new Date();
+    const minute = now.getUTCHours() * 60 + now.getUTCMinutes();
+    await setSnooze(userId, { enabled: true, start: (minute + 60) % 1440, end: (minute + 120) % 1440, tz: "UTC" });
+    expect(delays).toHaveLength(2);
+    expect(delays.every((ms) => ms >= 5 * 60_000)).toBe(true);
+  } finally {
+    globalThis.setTimeout = real;
+    g.__ebaeState.ready = false;
+  }
 });

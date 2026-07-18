@@ -2,13 +2,13 @@ import { eq } from "drizzle-orm";
 import pkg from "../../../package.json";
 import { db } from "@/lib/db";
 import { currencyFor, invalidateToken, tokenExpiresAt, type EbayCreds } from "@/lib/ebay";
-import { callsFor } from "@/lib/format";
 import { searches, users } from "@/lib/schema";
-import type { PushSub, Search, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
+import type { PushSub, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
 import { userCtx } from "./boot";
 import { MAX_BACKOFF_MS, QUOTA_SKIP_MS, kick, pollMode, schedule } from "./loop";
-import { MARKET_SAMPLES_PER_DAY, marketSamplesPerDay } from "./market";
-import { GOV_MAX_FACTOR, QUOTA_CEILING, governorFactor, usedToday } from "./quota";
+import { MARKET_SAMPLES_PER_DAY } from "./market";
+import { callsPerDayFor, projectedCalls } from "./projection";
+import { GOV_MAX_FACTOR, QUOTA_CEILING, governedDelayMs, governorDecision, governorFor, usedToday } from "./quota";
 import { SNOOZE_DEFAULT, activeFracNow, hhmm, snoozeMinutes, snoozeWindow, snoozing } from "./snooze";
 import { type Entry, type SnoozeState, bumpAlerts, plog, rowToSearch, state } from "./state";
 
@@ -29,7 +29,15 @@ function activeMinFor(userId: number): number {
 // reschedule can't disagree about the current factor.
 function factorFor(userId: number): number {
   const u = state().users.get(userId);
-  return u ? governorFactor(usedToday(u.calls), QUOTA_CEILING, activeFracNow(u.snooze)) : 1;
+  if (!u) return 1;
+  const active = [...state().entries.values()].filter((e) => e.s.userId === userId && e.s.enabled).map((e) => e.s);
+  return governorDecision(
+    usedToday(u.calls),
+    QUOTA_CEILING,
+    activeFracNow(u.snooze),
+    projectedCalls(active, activeMinFor(userId)),
+    u.governorEngaged,
+  ).factor;
 }
 
 export function listSearches(userId: number): SearchStats[] {
@@ -48,7 +56,7 @@ export function listSearches(userId: number): SearchStats[] {
         hits24: e.hitTimes.length,
         lastHitAt: e.lastHitAt ? new Date(e.lastHitAt).toISOString() : null,
         lastPolledAt: e.lastPolledAt ? new Date(e.lastPolledAt).toISOString() : null,
-        effectiveIntervalMin: Math.round(e.s.intervalMin * factor),
+        effectiveIntervalMin: Math.round(e.s.intervalMin * factor * 10) / 10,
         callsPerDay: callsPerDayFor(e.s, activeMin),
       };
     });
@@ -102,7 +110,7 @@ export async function createSearch(userId: number, input: SearchInput): Promise<
     hits24: 0,
     lastHitAt: null,
     lastPolledAt: null,
-    effectiveIntervalMin: Math.round(e.s.intervalMin * factorFor(userId)),
+    effectiveIntervalMin: Math.round(e.s.intervalMin * factorFor(userId) * 10) / 10,
     callsPerDay: callsPerDayFor(e.s, activeMinFor(userId)),
   };
 }
@@ -184,7 +192,7 @@ export async function updateSearch(
         hits24: 0,
         lastHitAt: null,
         lastPolledAt: null,
-        effectiveIntervalMin: Math.round(s.intervalMin * factorFor(userId)),
+        effectiveIntervalMin: Math.round(s.intervalMin * factorFor(userId) * 10) / 10,
         callsPerDay: callsPerDayFor(s, activeMinFor(userId)),
       };
     }
@@ -224,16 +232,32 @@ export function getSnooze(userId: number): SnoozeConfig {
   return { enabled: sn.enabled, start: hhmm(sn.start), end: hhmm(sn.end), tz: sn.tz };
 }
 
-// Persist + write-through one user's snooze config, then re-kick their enabled searches so the
-// change lands now, not at each timer's next tick (disable → poll promptly again).
+// Persist + write-through one user's snooze config. Passive edits replace the old timers at the
+// new governed cadence; they must not create a burst of eBay calls merely to apply a setting.
+// Ending a snooze that is active right now is the one exception: it resumes promptly.
 export async function setSnooze(userId: number, sn: SnoozeState): Promise<SnoozeConfig> {
   await db()
     .update(users)
     .set({ snoozeEnabled: sn.enabled, snoozeStart: sn.start, snoozeEnd: sn.end, snoozeTz: sn.tz })
     .where(eq(users.id, userId));
   const u = await userCtx(userId);
-  if (u) u.snooze = sn;
-  kick(userId);
+  if (u) {
+    const old = u.snooze;
+    const now = new Date();
+    u.snooze = sn;
+    const active = [...state().entries.values()].filter((e) => e.s.userId === userId && e.s.enabled);
+    const factor = governorFor(
+      u,
+      projectedCalls(
+        active.map((e) => e.s),
+        activeMinFor(userId),
+      ),
+      now,
+    );
+    for (const e of active) {
+      schedule(e, snoozing(old, now) && !snoozing(sn, now) ? 0 : governedDelayMs(e.s.intervalMin, factor));
+    }
+  }
   plog.info({ userId, enabled: sn.enabled, start: sn.start, end: sn.end, tz: sn.tz }, "snooze updated");
   return getSnooze(userId);
 }
@@ -300,19 +324,7 @@ export function evictPushElsewhere(keepUserId: number, endpoint: string): void {
   }
 }
 
-// Calls a day one search costs: one per poll across the day's pollable minutes, plus its
-// periodic market sample. Server-side, off the same fields the poller bills against, so the
-// dashboard can't drift from the enforced counter - which it did while the browser summed
-// intervals and knew nothing about market samples. Pure + exported.
-export function callsPerDayFor(s: Pick<Search, "intervalMin" | "priceFloor" | "priceCap">, activeMin: number): number {
-  return callsFor(s.intervalMin, activeMin) + marketSamplesPerDay(s);
-}
-
-// The per-row figures and this total come from the same function, so the rows always sum to
-// the number shown against the ceiling.
-export function projectedCalls(rows: Search[], activeMin: number): number {
-  return rows.reduce((n, s) => n + callsPerDayFor(s, activeMin), 0);
-}
+export { callsPerDayFor, projectedCalls } from "./projection";
 
 // One user's view of the poller: their quota, their snooze, their errors (plus the ownerless
 // ones, which are everyone's), their eBay mode. ready/bootError/bootedAt/version are process
@@ -348,6 +360,9 @@ export function status(userId: number): StatusInfo {
       const projected = projectedCalls(enabled, activeMinFor(userId));
       const frac = activeFracNow(sn);
       const factor = factorFor(userId);
+      const configuredRemaining = Math.ceil(projected * (1 - frac));
+      const remaining = Math.max(QUOTA_CEILING - used, 0);
+      const configuredForecast = used + configuredRemaining;
       // "expected" is what an evenly-paced day would have spent by now. Compared against `used`
       // it answers the question the raw counter can't: is this spend on track, or early?
       return {
@@ -356,6 +371,10 @@ export function status(userId: number): StatusInfo {
         projected,
         expected: Math.round(projected * frac),
         governor: { active: factor > 1, factor },
+        remaining,
+        configuredRemaining,
+        configuredForecast,
+        overage: Math.max(configuredForecast - QUOTA_CEILING, 0),
         // Shipped rather than recomputed in the browser: it comes off a server-only env var the
         // client can't read, and the new-search preview has no saved row to take a figure from.
         marketSamplesPerDay: MARKET_SAMPLES_PER_DAY,

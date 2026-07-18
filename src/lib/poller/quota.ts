@@ -9,23 +9,18 @@ import { type UserCtx, plog } from "./state";
 export const QUOTA_CEILING = Number(process.env.EBAY_DAILY_QUOTA ?? 5000);
 
 // ---------- budget governor ----------
-// Stretches poll intervals when a user's spend is on track to exhaust the daily budget before
-// the day is over, so the ceiling is approached gradually instead of hit at noon and leaving
-// the rest of the day dark. Slow-down only: every factor below is >= 1, so a search can never
-// poll faster than the interval its owner set. The hard cliff in pollOnce stays as the backstop.
+// Stretches poll intervals when the current saved configuration needs more calls than are left
+// today. Slow-down only: every factor below is >= 1, so a search can never poll faster than the
+// interval its owner set. The hard cliff in pollOnce stays as the backstop.
 
 export const GOV_MAX_FACTOR = 4; // never slower than 4x the user's interval
 export const GOV_MIN_SPEND = 0.05; // inert until 5% of the ceiling is spent
+export const GOV_RELEASE_HEADROOM = 0.05;
 
-// The exact correction needed to land on the ceiling at the end of the day, rather than a
-// threshold and a ramp: divide the spend the rest of the day would naturally cost at the
-// current rate by the budget actually left for it. That ratio is 1 precisely when the user is
-// on track, which is what makes the central guarantee true - a configuration that lands on the
-// ceiling at 23:59 is using its budget perfectly and is never slowed by so much as a second.
-// Above 1 it slows by exactly the shortfall, and being recomputed every poll it self-corrects
-// as the day goes on, so there is no need to brake early "just in case" and waste budget the
-// user is entitled to spend. Pure + exported for tests.
-export function governorFactor(used: number, ceiling: number, activeFrac: number): number {
+// Divide the work still scheduled at the saved intervals by the budget left today. Above 1,
+// slow by exactly the shortfall. The current projection matters: interval, pause, and snooze
+// edits replace the old plan immediately instead of being judged by historical call rate.
+function requiredGovernorFactor(used: number, ceiling: number, activeFrac: number, projected: number): number {
   if (ceiling <= 0 || activeFrac <= 0) return 1;
   // Just after the local midnight reset activeFrac is near zero, so a handful of calls project
   // out to an enormous full-day rate and would slam every search to the cap for no reason.
@@ -33,12 +28,40 @@ export function governorFactor(used: number, ceiling: number, activeFrac: number
   if (used < GOV_MIN_SPEND * ceiling) return 1;
   const budgetLeft = ceiling - used;
   if (budgetLeft <= 0) return GOV_MAX_FACTOR; // spent: the hard cliff is already the operative limit
-  const naturalSpendLeft = (used / activeFrac) * (1 - activeFrac);
-  const factor = Math.min(Math.max(naturalSpendLeft / budgetLeft, 1), GOV_MAX_FACTOR);
+  const naturalSpendLeft = projected * (1 - activeFrac);
+  return naturalSpendLeft / budgetLeft;
+}
+
+// Omitted projection preserves the historical-rate calculation for existing pure callers. The
+// governor itself always passes the saved searches' current daily projection.
+export function governorFactor(
+  used: number,
+  ceiling: number,
+  activeFrac: number,
+  projected = used / activeFrac,
+): number {
+  const factor = Math.min(Math.max(requiredGovernorFactor(used, ceiling, activeFrac, projected), 1), GOV_MAX_FACTOR);
   // Quantized because the division leaves an exactly-on-budget user at 1.0000000000000009,
   // and anything above 1 reads as engaged - lighting the badge for the one user the guarantee
   // above promises never to touch. Three decimals is far finer than any delay this feeds.
   return Math.round(factor * 1000) / 1000;
+}
+
+export function governorDecision(
+  used: number,
+  ceiling: number,
+  activeFrac: number,
+  projected: number,
+  engaged: boolean,
+): { active: boolean; factor: number } {
+  if (ceiling <= 0 || activeFrac <= 0 || used < GOV_MIN_SPEND * ceiling) return { active: false, factor: 1 };
+  const required = requiredGovernorFactor(used, ceiling, activeFrac, projected);
+  if (engaged && required <= 1 - GOV_RELEASE_HEADROOM) return { active: false, factor: 1 };
+  if (!engaged && required <= 1) return { active: false, factor: 1 };
+  return {
+    active: true,
+    factor: Math.round(Math.min(Math.max(required, 1 + GOV_RELEASE_HEADROOM), GOV_MAX_FACTOR) * 1000) / 1000,
+  };
 }
 
 // factor >= 1 always, so this is never below the user's configured interval.
@@ -61,10 +84,15 @@ export function usedToday(calls: UserCtx["calls"], today = new Date().toDateStri
 // no-op poll stays DB-free (DESIGN.md §4). Logs each engage/release flip so a self-hoster can
 // tell why their polling slowed down; plog.info rather than recordError because the governor
 // doing its job is not a fault to surface in the UI error list.
-export function governorFor(u: UserCtx, now = new Date()): number {
+export function governorFor(u: UserCtx, projected: number, now = new Date()): number {
   const used = usedToday(u.calls, now.toDateString());
-  const factor = governorFactor(used, QUOTA_CEILING, activeFracNow(u.snooze, now));
-  const engaged = factor > 1;
+  const { factor, active: engaged } = governorDecision(
+    used,
+    QUOTA_CEILING,
+    activeFracNow(u.snooze, now),
+    projected,
+    u.governorEngaged,
+  );
   if (engaged !== u.governorEngaged) {
     u.governorEngaged = engaged;
     plog.info(

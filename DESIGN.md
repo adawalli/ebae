@@ -38,12 +38,12 @@ Projected usage is computed server-side from the cached entries (`projectedCalls
 
 **Budget governor.** Spending the daily budget by noon used to mean polling stopped dead until midnight. The governor stretches poll intervals as spend runs ahead of the day, so the budget lasts instead of running out:
 
-- **Signal:** the exact correction needed to land on the ceiling at end of day - the spend the rest of the day would naturally cost at the current rate, over the budget actually left for it. That ratio is 1 precisely when a user is on track, which is the guarantee the feature rests on: _a configuration that spends its full budget by 23:59 is using it perfectly and is never slowed at all._ Raw `used/ceiling` would instead throttle everyone every evening for being 90% through a budget they are entitled to spend.
-- **Bounds:** slow-down only (the factor is >= 1 by construction, so no search ever polls faster than its owner configured), capped at `GOV_MAX_FACTOR` = 4x, and inert until `GOV_MIN_SPEND` = 5% of the ceiling is spent - without that floor the near-zero elapsed fraction just after the local midnight reset makes a handful of calls project to an enormous rate.
+- **Signal:** the exact correction needed to fit the _current saved configuration's remaining work_ inside the budget actually left. It does not extrapolate an earlier, faster configuration: pausing a search or lengthening snooze immediately lowers the demand it protects. A configuration that now fits the remaining budget is never slowed.
+- **Bounds:** slow-down only (the factor is >= 1 by construction, so no search ever polls faster than the interval its owner configured), capped at `GOV_MAX_FACTOR` = 4x, and inert until `GOV_MIN_SPEND` = 5% of the ceiling is spent. An engaged governor releases only after `GOV_RELEASE_HEADROOM` = 5% of remaining-budget slack, preventing interval flapping around the boundary.
 - **Cost:** none. Recomputed per reschedule from the in-memory counter and the user's own clock; nothing persisted, no new table, no extra query, so the steady-state DB-free poll stays DB-free (§4).
 - **Day boundary:** the counter is not cleared at midnight - the owner's next poll rolls it over. Every other reader takes it through `usedToday`, which treats a stale date as no spend, so the status tile and the per-row factor can't read yesterday's total as a minutes-old day's.
 - **Backstop:** the hard cliff is unchanged. At the ceiling, polls are still skipped and retried at `QUOTA_SKIP_MS`.
-- **Transparency:** the status tile shows spend against what an evenly-paced day would have spent by now, each stretched search shows `5 min → 12 min`, and every engage/release is logged.
+- **Transparency:** the Saved searches bar shows today's configured forecast as spent calls, remaining requested work, and any overflow; each stretched search shows its effective interval (including a decimal when needed), and every engage/release is logged.
 
 `healthWindowMs` derives from the reschedule delay constants rather than restating them, so stretching a delay can't leave the liveness window too tight and start 503ing healthy pods.
 

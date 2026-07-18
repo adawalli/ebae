@@ -30,6 +30,8 @@ In a multi-user mode the env vars are ignored: each user enters their own App ID
 
 Browse API default quota is 5,000 calls/day per eBay app, so `EBAY_DAILY_QUOTA` is a per-user ceiling. The UI projects your daily usage as you add searches and the poller enforces the budget.
 
+The Status page shows what you've spent today against what an evenly-paced day would have spent by now, so 90% used reads differently at 09:00 than at 23:00. If your spend does run ahead of the day, a **budget governor** stretches your poll intervals so the budget lasts to midnight rather than running out at noon and leaving the rest of the day dark. It only ever slows polling down - never below the interval you set - it's capped at 4x, and a setup that spends its whole budget by day's end is using it exactly right and is never slowed. While it's engaged the Status page says so and each affected search shows its stretched interval as `5 min → 12 min`. Nothing to configure.
+
 ## Notifications
 
 Alerts go to Discord webhooks, push notifications on your own devices, or both. Every target that accepts an alert gets it; an alert is retried after a restart only while no target has taken it.

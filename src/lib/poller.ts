@@ -78,7 +78,7 @@ export function snoozeMinutes(sn: SnoozeState): number {
   return sn.enabled ? (sn.end - sn.start + 1440) % 1440 : 0;
 }
 
-type Entry = {
+export type Entry = {
   s: Search;
   seen: Set<string>;
   hitTimes: number[]; // alert timestamps within the last 24h
@@ -92,7 +92,7 @@ type Entry = {
 // Everything a poll needs about the owner of the search it's about to run: their keys, where
 // their alerts go, what they've spent, when they're asleep. Rebuilt from the DB by reload();
 // `calls` is the one field the poll loop mutates (see mergeCalls).
-type UserCtx = {
+export type UserCtx = {
   id: number;
   email: string;
   ebay: EbayCreds | null; // null = mock (single mode) or paused (multi-user); see pollMode

@@ -298,6 +298,20 @@ test("a poll running ahead of budget reschedules slower, and says so", async () 
   expect(status(userId).quota.governor).toEqual({ active: true, factor: GOV_MAX_FACTOR });
 });
 
+test("a counter left over from yesterday engages nothing", async () => {
+  await seededEntry({ intervalMin: 5 });
+  const u = g.__ebaeState.users.get(userId)!;
+  const ceiling = status(userId).quota.ceiling;
+  // Local midnight has passed but this user hasn't polled since, so their counter still holds
+  // yesterday's total. Read raw, that spend measured against a minutes-old day projects way
+  // past the ceiling and pins every read path to the cap - for a user who has spent nothing.
+  u.calls = { date: new Date(Date.now() - 86_400_000).toDateString(), used: ceiling - 1 };
+
+  expect(status(userId).quota.used).toBe(0);
+  expect(status(userId).quota.governor).toEqual({ active: false, factor: 1 });
+  expect(listSearches(userId)[0].effectiveIntervalMin).toBe(5);
+});
+
 test("status projects the day's calls including each market sample", async () => {
   await createSearch(userId, input({ q: "plain", intervalMin: 10 })); // 144 polls/day
   await createSearch(userId, input({ q: "banded", intervalMin: 10, priceFloor: 100, priceCap: 500 })); // + 1 sample

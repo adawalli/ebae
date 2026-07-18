@@ -15,6 +15,7 @@ import {
   median,
   mergeCalls,
   snoozeMinutes,
+  usedToday,
 } from "./poller";
 import { dealField } from "./discord";
 import { hhmmToMin, parseSearchBody, parseSnoozeBody } from "./validate";
@@ -254,6 +255,13 @@ test("governorFactor guards degenerate inputs", () => {
 
 // The one guarantee the feature rests on: the governed delay is never shorter than the
 // interval the user asked for, at any factor the governor can produce.
+test("usedToday reads a counter only on the day it was counted", () => {
+  expect(usedToday({ date: "Fri Jul 17 2026", used: 4500 }, "Fri Jul 17 2026")).toBe(4500);
+  // The counter is not cleared at midnight - the next poll rolls it over - so every reader that
+  // isn't that poll has to treat a stale date as no spend rather than as a full day of it.
+  expect(usedToday({ date: "Thu Jul 16 2026", used: 4500 }, "Fri Jul 17 2026")).toBe(0);
+});
+
 test("governedDelayMs never polls faster than the user's interval", () => {
   for (const interval of [1, 5, 15, 60, 1440]) {
     for (const used of [0, 100, 2500, 4000, 5000, 99_999]) {

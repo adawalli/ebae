@@ -146,6 +146,9 @@ export type StatusInfo = {
     projected: number;
     expected: number;
     governor: { active: boolean; factor: number };
+    // Market baselines a floor+cap search costs per day (MARKET_SAMPLE_HOURS, server-only).
+    // Here so the new-search preview prices the same way a saved row does.
+    marketSamplesPerDay: number;
   };
   snooze: { active: boolean; window: string | null; dailyMinutes: number };
   errors: PollError[];

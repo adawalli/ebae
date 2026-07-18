@@ -7,8 +7,8 @@ import { searches, users } from "@/lib/schema";
 import type { PushSub, Search, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
 import { userCtx } from "./boot";
 import { MAX_BACKOFF_MS, QUOTA_SKIP_MS, kick, pollMode, schedule } from "./loop";
-import { marketSamplesPerDay } from "./market";
-import { QUOTA_CEILING, governorFactor } from "./quota";
+import { MARKET_SAMPLES_PER_DAY, marketSamplesPerDay } from "./market";
+import { QUOTA_CEILING, governorFactor, usedToday } from "./quota";
 import { SNOOZE_DEFAULT, activeFracNow, hhmm, snoozeMinutes, snoozeWindow, snoozing } from "./snooze";
 import { type Entry, type SnoozeState, bumpAlerts, plog, rowToSearch, state } from "./state";
 
@@ -29,7 +29,7 @@ function activeMinFor(userId: number): number {
 // reschedule can't disagree about the current factor.
 function factorFor(userId: number): number {
   const u = state().users.get(userId);
-  return u ? governorFactor(u.calls.used, QUOTA_CEILING, activeFracNow(u.snooze)) : 1;
+  return u ? governorFactor(usedToday(u.calls), QUOTA_CEILING, activeFracNow(u.snooze)) : 1;
 }
 
 export function listSearches(userId: number): SearchStats[] {
@@ -343,11 +343,11 @@ export function status(userId: number): StatusInfo {
       tokenExpiresAt: tokenExpiresAt(userId),
     },
     quota: (() => {
-      const used = u?.calls.date === today ? u.calls.used : 0;
+      const used = u ? usedToday(u.calls, today) : 0;
       const enabled = [...st.entries.values()].filter((e) => e.s.userId === userId && e.s.enabled).map((e) => e.s);
-      const projected = projectedCalls(enabled, 1440 - snoozeMinutes(sn));
+      const projected = projectedCalls(enabled, activeMinFor(userId));
       const frac = activeFracNow(sn);
-      const factor = u ? governorFactor(used, QUOTA_CEILING, frac) : 1;
+      const factor = factorFor(userId);
       // "expected" is what an evenly-paced day would have spent by now. Compared against `used`
       // it answers the question the raw counter can't: is this spend on track, or early?
       return {
@@ -356,6 +356,9 @@ export function status(userId: number): StatusInfo {
         projected,
         expected: Math.round(projected * frac),
         governor: { active: factor > 1, factor },
+        // Shipped rather than recomputed in the browser: it comes off a server-only env var the
+        // client can't read, and the new-search preview has no saved row to take a figure from.
+        marketSamplesPerDay: MARKET_SAMPLES_PER_DAY,
       };
     })(),
     snooze: { active: snoozing(sn), window: snoozeWindow(sn), dailyMinutes: snoozeMinutes(sn) },

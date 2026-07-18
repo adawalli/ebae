@@ -46,18 +46,29 @@ export function governedDelayMs(intervalMin: number, factor: number): number {
   return Math.round(intervalMin * 60_000 * factor);
 }
 
+// Today's spend, or 0 when the counter still holds a previous day's. The poll loop rolls the
+// counter over itself before spending, so its own reads are always current - but every other
+// reader (the status tile, the per-row factor) can land in the window between local midnight
+// and that user's next poll, where the field still holds yesterday's total. Reading it raw
+// there measures a full day of spend against a day that is minutes old, and the governor
+// projects that to the cap. Read the counter through here, never off the field.
+export function usedToday(calls: UserCtx["calls"], today = new Date().toDateString()): number {
+  return calls.date === today ? calls.used : 0;
+}
+
 // One user's factor right now, off their in-memory counter and their own local clock. No DB
 // read and no persistence - it's derived state, recomputed per reschedule, so the steady-state
 // no-op poll stays DB-free (DESIGN.md §4). Logs each engage/release flip so a self-hoster can
 // tell why their polling slowed down; plog.info rather than recordError because the governor
 // doing its job is not a fault to surface in the UI error list.
 export function governorFor(u: UserCtx, now = new Date()): number {
-  const factor = governorFactor(u.calls.used, QUOTA_CEILING, activeFracNow(u.snooze, now));
+  const used = usedToday(u.calls, now.toDateString());
+  const factor = governorFactor(used, QUOTA_CEILING, activeFracNow(u.snooze, now));
   const engaged = factor > 1;
   if (engaged !== u.governorEngaged) {
     u.governorEngaged = engaged;
     plog.info(
-      { userId: u.id, factor, used: u.calls.used, ceiling: QUOTA_CEILING },
+      { userId: u.id, factor, used, ceiling: QUOTA_CEILING },
       engaged ? "quota governor engaged" : "quota governor released",
     );
   }

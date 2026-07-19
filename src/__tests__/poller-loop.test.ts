@@ -120,6 +120,8 @@ test("turning on sold tracking persists without re-seeding", async () => {
   expect(updated?.trackSold).toBe(true);
   expect(updated?.seeded).toBe(true); // not a match field: the seen set survives
   expect(e.s.trackSold).toBe(true); // write-through, so the next tick sees it without a reload
+  await pollOnce(e);
+  expect(await database.select().from(trackedItems)).toHaveLength(0); // historical seed rows stay untracked
   const [row] = await database
     .select({ trackSold: searches.trackSold, seeded: searches.seeded })
     .from(searches)

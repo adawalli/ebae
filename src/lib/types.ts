@@ -53,7 +53,7 @@ export type Search = {
   excludeTerms: string | null; // comma/newline-separated title exclusions
   marketMedian: number | null; // daily unfiltered market baseline (poller-managed)
   marketSampledAt: string | null;
-  trackSold: boolean; // opt-in: follow surfaced listings to learn what they realized
+  trackSold: boolean; // follow surfaced listings to learn what they realized; user-configurable
   intervalMin: number;
   enabled: boolean;
   seeded: boolean;
@@ -103,7 +103,7 @@ export type Item = {
 };
 
 // Price context for an alert embed, best basis first. "sold" = median of what this search's
-// tracked listings actually realized (opt-in, gated on a real sample); "market" = the daily
+// tracked listings actually realized (when enabled and gated on a real sample); "market" = the daily
 // unfiltered market median of asking prices (reflects the whole market); "recent" = median of
 // prior priced alerts for the search (in-band fallback, gated on `count` >= a real sample).
 export type PriceContext = { typical: number | null; count: number; basis: "sold" | "market" | "recent" };

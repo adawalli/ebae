@@ -170,11 +170,11 @@ test("parseSearchBody: conditions whitelist and excludeTerms trim/cap", () => {
   expect((long.excludeTerms as string).length).toBe(500);
 });
 
-// trackSold spends extra eBay calls, so an omitted field must never turn it on: a POST
-// without it saves false, and a PATCH without it leaves the stored value alone.
-test("parseSearchBody: trackSold defaults off and is untouched by a partial patch", () => {
-  expect((parseSearchBody({ q: "x" }, false) as Record<string, unknown>).trackSold).toBe(false);
+// Sold tracking is on by default, while a partial update must leave the stored choice alone.
+test("parseSearchBody: trackSold defaults on and is untouched by a partial patch", () => {
+  expect((parseSearchBody({ q: "x" }, false) as Record<string, unknown>).trackSold).toBe(true);
   expect((parseSearchBody({ q: "x", trackSold: true }, false) as Record<string, unknown>).trackSold).toBe(true);
+  expect((parseSearchBody({ q: "x", trackSold: false }, false) as Record<string, unknown>).trackSold).toBe(false);
   expect((parseSearchBody({ trackSold: 1 }, true) as Record<string, unknown>).trackSold).toBe(true); // coerced
   expect((parseSearchBody({ trackSold: false }, true) as Record<string, unknown>).trackSold).toBe(false);
   expect((parseSearchBody({ q: "x" }, true) as Record<string, unknown>).trackSold).toBeUndefined();

@@ -64,10 +64,9 @@ export const searches = pgTable("searches", {
   // ~$X" instead of only comparing to other in-band alerts. Poller-managed, not user-set.
   marketMedian: numeric("market_median", { mode: "number" }),
   marketSampledAt: timestamp("market_sampled_at", { withTimezone: true }),
-  // Opt-in: check back on listings this search surfaced to learn what they actually sold
-  // for (see tracked_items). Off by default because every check is an extra eBay call
-  // against the owner's daily quota.
-  trackSold: boolean("track_sold").notNull().default(false),
+  // Check back on listings this search surfaced to learn what they actually sold for (see
+  // tracked_items). Enabled by default; users can opt out to save eBay quota.
+  trackSold: boolean("track_sold").notNull().default(true),
   intervalMin: integer("interval_min").notNull().default(5),
   enabled: boolean("enabled").notNull().default(true),
   seeded: boolean("seeded").notNull().default(false),

@@ -34,11 +34,11 @@ The Status page shows what you've spent today against what an evenly-paced day w
 
 ## Sold prices
 
-An alert is only useful if you know what the thing is worth. By default ebae compares a listing
-against **asking** prices - a daily unfiltered sample of the same search, shown as "Market". Turn
-on **Track sold prices** on a search and it also learns what listings _actually went for_, and
-prefers that: alerts then read "Sold ~$420 · ▼ 30% under", and the search's subtitle shows
-`sold ~$420`.
+An alert is only useful if you know what the thing is worth. By default ebae tracks what listings
+_actually went for_ and prefers that: alerts then read "Sold ~$420 · ▼ 30% under", and the
+search's subtitle shows `sold ~$420`. Until it has enough sales, it compares against **asking**
+prices - a daily unfiltered sample of the same search, shown as "Market". Turn off **Track sold
+prices** on an individual search to save API calls.
 
 eBay's sold-search APIs are enterprise-only, so ebae gets there by checking back on listings the
 search already found:

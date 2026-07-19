@@ -37,15 +37,21 @@ const remove = (id: number) =>
     params: Promise.resolve({ id: String(id) }),
   });
 
-test("a created search lands in the DB, the cache and the list", async () => {
+test("a created search enables sold tracking in the API and DB", async () => {
   const res = await create({ q: "leica m6", intervalMin: 10 });
   expect(res.status).toBe(201);
   const { search } = await res.json();
-  expect(search.q).toBe("leica m6");
+  expect(search).toMatchObject({ q: "leica m6", trackSold: true });
 
   const rows = await database.select().from(searches);
   expect(rows).toHaveLength(1);
-  expect(rows[0]).toMatchObject({ id: search.id, q: "leica m6", intervalMin: 10, enabled: true });
+  expect(rows[0]).toMatchObject({ id: search.id, q: "leica m6", intervalMin: 10, trackSold: true, enabled: true });
+
+  const [direct] = await database
+    .insert(searches)
+    .values({ userId: rows[0].userId, q: "canon ae-1" })
+    .returning({ trackSold: searches.trackSold });
+  expect(direct.trackSold).toBe(true);
   // The row alone is not enough: without a cache entry the search never polls.
   expect(st().entries.has(search.id)).toBe(true);
 

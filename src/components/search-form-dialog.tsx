@@ -22,7 +22,7 @@ export const emptyForm = {
   exclude: "",
   bin: true,
   auctions: false,
-  trackSold: false,
+  trackSold: true,
   interval: 2,
 };
 
@@ -209,7 +209,8 @@ export function SearchFormDialog({
                 Track sold prices
               </FieldLabel>
               <FieldDescription className="text-[11.5px]">
-                check back on listings this search finds to learn what they actually sold for · spends extra API calls
+                check back on listings this search finds to learn what they actually sold for · turn off to save API
+                calls
               </FieldDescription>
             </FieldContent>
             <Switch

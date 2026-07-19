@@ -187,6 +187,7 @@ export default function Home() {
       exclude: s.excludeTerms ?? "",
       bin: s.binOnly,
       auctions: s.includeAuctions,
+      trackSold: s.trackSold,
       interval: s.intervalMin,
     });
     setFormError(null);
@@ -211,6 +212,7 @@ export default function Home() {
           excludeTerms: form.exclude || null,
           binOnly: form.bin,
           includeAuctions: form.auctions,
+          trackSold: form.trackSold,
           intervalMin: form.interval,
         }),
       });
@@ -340,6 +342,7 @@ export default function Home() {
           submitSearch={submitSearch}
           activeMin={activeMin}
           marketSamples={status?.quota.marketSamplesPerDay ?? 1}
+          pendingChecks={editId == null ? 0 : (searches.find((s) => s.id === editId)?.checksDue24h ?? 0)}
         />
       )}
     </SidebarProvider>

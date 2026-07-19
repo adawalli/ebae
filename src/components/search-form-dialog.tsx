@@ -5,7 +5,7 @@ import { CONDITION_KEYS, CONDITION_LABELS } from "@/lib/types";
 import { callsFor, fmt } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Field, FieldLabel } from "@/components/ui/field";
+import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { NativeSelect } from "@/components/ui/native-select";
@@ -22,6 +22,7 @@ export const emptyForm = {
   exclude: "",
   bin: true,
   auctions: false,
+  trackSold: false,
   interval: 2,
 };
 
@@ -38,6 +39,7 @@ export function SearchFormDialog({
   submitSearch,
   activeMin,
   marketSamples,
+  pendingChecks,
 }: {
   showForm: boolean;
   setShowForm: (v: boolean) => void;
@@ -49,6 +51,10 @@ export function SearchFormDialog({
   submitSearch: () => void;
   activeMin: number;
   marketSamples: number;
+  // Sold-price checks the search being edited already has scheduled in the next 24h (0 for a new
+  // one, which is following nothing yet). Comes off the row rather than being modelled here: it
+  // depends on what is currently being followed, which only the server knows.
+  pendingChecks: number;
 }) {
   return (
     <Dialog open={showForm} onOpenChange={setShowForm}>
@@ -195,14 +201,40 @@ export function SearchFormDialog({
             })}
           </div>
 
+          {/* Its own row, not a third item in the pair above: that pair is one axis (BIN vs
+              auctions, mutually exclusive) while this is independent of both. */}
+          <Field orientation="horizontal" className="rounded-lg border bg-[var(--eb-input-bg)] px-3.5 py-3">
+            <FieldContent>
+              <FieldLabel htmlFor="toggle-track-sold" className="text-[13.5px] font-medium">
+                Track sold prices
+              </FieldLabel>
+              <FieldDescription className="text-[11.5px]">
+                check back on listings this search finds to learn what they actually sold for · spends extra API calls
+              </FieldDescription>
+            </FieldContent>
+            <Switch
+              id="toggle-track-sold"
+              checked={form.trackSold}
+              onCheckedChange={(v) => setForm({ ...form, trackSold: v })}
+            />
+          </Field>
+
           <div className="flex items-center gap-2 rounded-lg bg-[var(--eb-accent-soft)] px-3.5 py-3 text-[12.5px] text-[var(--eb-accent-text)]">
             {/* + the market baselines, which only a search with both a floor and a cap gets (the
                 same gate as marketSamplesPerDay). The count rides in on status because it comes
                 off a server-only env var; the gate is applied here because the search being
                 priced has no row to read one from. Both so this preview matches the per-row
                 figure the search will show once it exists. */}
+            {/* + the sold-price checks already due, so this figure agrees with the callsPerDay
+                the row behind the dialog is showing (and drops to zero when the toggle goes off,
+                which is the feedback the toggle's "spends extra API calls" warning promises). */}
             <span className="font-mono font-semibold">
-              ≈ {fmt(callsFor(form.interval, activeMin) + (form.priceFloor && form.priceCap ? marketSamples : 0))}{" "}
+              ≈{" "}
+              {fmt(
+                callsFor(form.interval, activeMin) +
+                  (form.priceFloor && form.priceCap ? marketSamples : 0) +
+                  (form.trackSold ? pendingChecks : 0),
+              )}{" "}
               calls·day
             </span>
             <span className="text-muted-foreground">

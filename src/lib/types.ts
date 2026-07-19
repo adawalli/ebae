@@ -35,6 +35,11 @@ export const MARKETPLACE_CURRENCY: Record<string, string> = {
   EBAY_ES: "EUR",
 };
 
+// How to read a tracked listing's price. "offer_cap" listings accept Best Offer, so eBay
+// keeps showing the asking price after a sale - a ceiling on what it went for, not the
+// realized price, which is why those rows are excluded from the sold median.
+export type PriceKind = "bid" | "fixed" | "offer_cap";
+
 export type Search = {
   id: number;
   userId: number;
@@ -48,6 +53,7 @@ export type Search = {
   excludeTerms: string | null; // comma/newline-separated title exclusions
   marketMedian: number | null; // daily unfiltered market baseline (poller-managed)
   marketSampledAt: string | null;
+  trackSold: boolean; // opt-in: follow surfaced listings to learn what they realized
   intervalMin: number;
   enabled: boolean;
   seeded: boolean;
@@ -63,9 +69,17 @@ export type SearchStats = Search & {
   // intervalMin stretched by the budget governor. Equal to intervalMin whenever the governor
   // is idle, which is the common case; larger only while the remaining saved work exceeds budget.
   effectiveIntervalMin: number;
-  // Calls a day this search costs, market sample included. Server-side so the per-row figures
-  // sum to StatusInfo.quota.projected instead of being derived twice from different formulas.
+  // Calls a day this search costs, market sample and due sold-price checks included. Server-side
+  // so the per-row figures sum to StatusInfo.quota.projected instead of being derived twice from
+  // different formulas.
   callsPerDay: number;
+  // Median of what this search's tracked listings actually sold for, or null when it isn't
+  // tracking or hasn't learned enough yet. Lives in poller memory, not a column.
+  soldMedian: number | null;
+  // Sold-price checks already scheduled inside the next 24h - the part of callsPerDay that
+  // varies with what the search is currently following rather than with its configuration. Sent
+  // so the edit dialog's estimate can match the figure the row beside it is showing.
+  checksDue24h: number;
 };
 
 // One eBay listing, normalized from Browse item_summary (or the mock generator)
@@ -80,16 +94,24 @@ export type Item = {
   conditionId: string | null; // eBay's stable numeric id; null when the category doesn't specify one
   imageUrl: string | null;
   itemUrl: string;
+  // Auctions only (null on fixed-price listings, and on any summary that omits it). Captured
+  // here because it is free on the search summary and absent from getItem's COMPACT view -
+  // it's what lets a tracked auction be checked exactly once, just after it ends.
+  itemEndDate: string | null;
+  // Accepts Best Offer, so the listed price is a ceiling on what it may sell for.
+  bestOffer: boolean;
 };
 
-// Price context for an alert embed. basis "market" = the daily unfiltered market median
-// (preferred, reflects the whole market); basis "recent" = median of prior priced alerts
-// for the search (in-band fallback, gated on `count` >= a real sample).
-export type PriceContext = { typical: number | null; count: number; basis: "market" | "recent" };
+// Price context for an alert embed, best basis first. "sold" = median of what this search's
+// tracked listings actually realized (opt-in, gated on a real sample); "market" = the daily
+// unfiltered market median of asking prices (reflects the whole market); "recent" = median of
+// prior priced alerts for the search (in-band fallback, gated on `count` >= a real sample).
+export type PriceContext = { typical: number | null; count: number; basis: "sold" | "market" | "recent" };
 
-// conditionId is dropped: it exists only to decide suppression while polling, which happens
-// before an alert row is written, so the alerts table has no column for it.
-export type Alert = Omit<Item, "conditionId"> & {
+// conditionId, itemEndDate and bestOffer are dropped: all three exist only to decide something
+// while polling (suppression, and how to follow the listing afterwards), which happens before an
+// alert row is written, so the alerts table has no column for any of them.
+export type Alert = Omit<Item, "conditionId" | "itemEndDate" | "bestOffer"> & {
   id: number;
   searchId: number | null;
   searchQ: string;

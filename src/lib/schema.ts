@@ -64,6 +64,10 @@ export const searches = pgTable("searches", {
   // ~$X" instead of only comparing to other in-band alerts. Poller-managed, not user-set.
   marketMedian: numeric("market_median", { mode: "number" }),
   marketSampledAt: timestamp("market_sampled_at", { withTimezone: true }),
+  // Opt-in: check back on listings this search surfaced to learn what they actually sold
+  // for (see tracked_items). Off by default because every check is an extra eBay call
+  // against the owner's daily quota.
+  trackSold: boolean("track_sold").notNull().default(false),
   intervalMin: integer("interval_min").notNull().default(5),
   enabled: boolean("enabled").notNull().default(true),
   seeded: boolean("seeded").notNull().default(false),
@@ -78,6 +82,44 @@ export const seenItems = pgTable(
       .references(() => searches.id, { onDelete: "cascade" }),
     itemId: text("item_id").notNull(),
     seenAt: timestamp("seen_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.searchId, t.itemId] })],
+);
+
+// Listings a track_sold search has surfaced, followed until we learn what they realized.
+// eBay's sold-search APIs are enterprise-only, so a "sold price" here is inferred by
+// re-fetching the item after it ends (Browse getItem): OUT_OF_STOCK with a sold quantity
+// means it sold at `sold_price`, anything else means it didn't. Rows are checked on a
+// schedule (`next_check_at`) and pruned on the same retention as seen_items.
+//
+// Separate from seen_items rather than columns on it: seen_items is a comprehensive dedupe
+// set written for every sighting on every search, while this holds only what an opted-in
+// search alerted or suppressed, and carries a lifecycle (checks, resolution) that one has no
+// business growing.
+export const trackedItems = pgTable(
+  "tracked_items",
+  {
+    searchId: integer("search_id")
+      .notNull()
+      .references(() => searches.id, { onDelete: "cascade" }),
+    itemId: text("item_id").notNull(),
+    // 'bid' = auction (the price is a live bid), 'fixed' = Buy It Now, 'offer_cap' = accepts
+    // Best Offer, so the listed price is only a ceiling on what it really sold for. offer_cap
+    // rows are still tracked but stay out of the sold median.
+    priceKind: text("price_kind").notNull().default("fixed"),
+    // Last price we saw it at: the first sighting's price, refreshed for free whenever a poll
+    // re-sights the listing. For a BIN item that sells, this is the sold price.
+    lastPrice: numeric("last_price", { mode: "number" }),
+    currency: text("currency").notNull().default("USD"),
+    // Auctions only, captured from the search summary (getItem's COMPACT view omits it).
+    // An auction without one isn't tracked - there'd be no way to know when to look.
+    itemEndDate: timestamp("item_end_date", { withTimezone: true }),
+    state: text("state").notNull().default("active"), // 'active' | 'sold' | 'unsold' | 'unknown'
+    soldPrice: numeric("sold_price", { mode: "number" }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    nextCheckAt: timestamp("next_check_at", { withTimezone: true }),
+    checksUsed: integer("checks_used").notNull().default(0),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.searchId, t.itemId] })],
 );

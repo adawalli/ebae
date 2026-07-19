@@ -62,6 +62,11 @@ test("no-op or non-match edits do not re-seed", () => {
   expect(matchCriteriaChanged(cur, { excludeTerms: "for parts" })).toBe(false); // client-side, seen stays complete
   expect(matchCriteriaChanged(cur, { conditions: null })).toBe(false); // unchanged
   expect(matchCriteriaChanged(cur, {})).toBe(false);
+  // trackSold decides what we check up on afterwards, not what the search matches or
+  // what the baseline sample covers: turning it on must cost neither the seen set nor
+  // the market median.
+  expect(matchCriteriaChanged(cur, { trackSold: true })).toBe(false);
+  expect(baselineInvalidated(curEx, { trackSold: true })).toBe(false);
 });
 
 // excludeMatch: the client-side negative-keyword filter. A false negative spams the
@@ -133,6 +138,19 @@ test("dealField: market basis labels 'Market' and needs no sample count", () => 
   expect(dealField(mkItem(250), { typical: 0, count: 9, basis: "market" })).toBeNull(); // still no divide-by-zero
 });
 
+// Sold basis: what listings actually realized, which beats any asking-price baseline. Labeled
+// so the reader knows which question the number answers, and sample-gated like "recent" - the
+// count here is real sales, and three of them is the difference between a going rate and an
+// anecdote.
+test("dealField: sold basis labels 'Sold' and is sample-gated", () => {
+  expect(dealField(mkItem(250), { typical: 500, count: 4, basis: "sold" })).toEqual({
+    name: "Sold",
+    value: "$500.00 · ▼ 50% under",
+    inline: true,
+  });
+  expect(dealField(mkItem(250), { typical: 500, count: 2, basis: "sold" })).toBeNull();
+});
+
 // parseSearchBody: the API trust boundary for the two new fields. conditions is
 // interpolated into the eBay filter, so anything but the whitelist must be rejected.
 test("parseSearchBody: conditions whitelist and excludeTerms trim/cap", () => {
@@ -150,6 +168,16 @@ test("parseSearchBody: conditions whitelist and excludeTerms trim/cap", () => {
   expect((parseSearchBody({ excludeTerms: ",," }, true) as Record<string, unknown>).excludeTerms).toBeNull(); // no real term
   const long = parseSearchBody({ excludeTerms: "a".repeat(999) }, true) as Record<string, unknown>;
   expect((long.excludeTerms as string).length).toBe(500);
+});
+
+// trackSold spends extra eBay calls, so an omitted field must never turn it on: a POST
+// without it saves false, and a PATCH without it leaves the stored value alone.
+test("parseSearchBody: trackSold defaults off and is untouched by a partial patch", () => {
+  expect((parseSearchBody({ q: "x" }, false) as Record<string, unknown>).trackSold).toBe(false);
+  expect((parseSearchBody({ q: "x", trackSold: true }, false) as Record<string, unknown>).trackSold).toBe(true);
+  expect((parseSearchBody({ trackSold: 1 }, true) as Record<string, unknown>).trackSold).toBe(true); // coerced
+  expect((parseSearchBody({ trackSold: false }, true) as Record<string, unknown>).trackSold).toBe(false);
+  expect((parseSearchBody({ q: "x" }, true) as Record<string, unknown>).trackSold).toBeUndefined();
 });
 
 test("undefined current (boot window) treats any provided field as changed", () => {

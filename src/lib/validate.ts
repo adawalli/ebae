@@ -60,6 +60,9 @@ export function parseSearchBody(b: any, partial: boolean): string | Record<strin
     const hasTerm = splitExcludeTerms(v).length > 0;
     out.excludeTerms = hasTerm ? v.slice(0, 500) : null; // cap: a title has nothing to match beyond this
   }
+  // Absent means off on a create and untouched on a patch: every tracked listing costs
+  // extra eBay calls, so a client that never heard of this field must not enable it.
+  if (!partial || b.trackSold !== undefined) out.trackSold = !!b.trackSold;
   if (partial && b.enabled !== undefined) out.enabled = !!b.enabled;
   return out;
 }

@@ -3,7 +3,8 @@ import { eq } from "drizzle-orm";
 import { freshTestDb } from "./helpers/db";
 import { SINGLE_USER_EMAIL } from "@/lib/authmode";
 import { db } from "@/lib/db";
-import { alerts, searches, seenItems, users } from "@/lib/schema";
+import { alerts, searches, seenItems, trackedItems, users } from "@/lib/schema";
+import { userCtx } from "@/lib/poller/boot"; // not on the barrel: the reload seam is internal
 import {
   GOV_MAX_FACTOR,
   createSearch,
@@ -37,6 +38,7 @@ const input = (over: Partial<SearchInput> = {}): SearchInput => ({
   includeAuctions: false,
   conditions: null,
   excludeTerms: null,
+  trackSold: false,
   intervalMin: 5,
   ...over,
 });
@@ -52,6 +54,8 @@ const injected = (over: Partial<Item> = {}): Item => ({
   conditionId: "3000",
   imageUrl: null,
   itemUrl: "https://www.ebay.com/itm/injected-1",
+  itemEndDate: null,
+  bestOffer: false,
   ...over,
 });
 
@@ -105,6 +109,21 @@ test("a new listing after seeding writes exactly one alert", async () => {
   // No channels and no push subscriptions, so the insert stamps delivery itself.
   expect(rows[0].deliveredAt).not.toBeNull();
   expect(await database.select().from(seenItems)).toHaveLength(MOCK_POOL_SIZE + 1);
+});
+
+test("turning on sold tracking persists without re-seeding", async () => {
+  const e = await seededEntry();
+
+  const updated = await updateSearch(userId, e.s.id, { trackSold: true });
+
+  expect(updated?.trackSold).toBe(true);
+  expect(updated?.seeded).toBe(true); // not a match field: the seen set survives
+  expect(e.s.trackSold).toBe(true); // write-through, so the next tick sees it without a reload
+  const [row] = await database
+    .select({ trackSold: searches.trackSold, seeded: searches.seeded })
+    .from(searches)
+    .where(eq(searches.id, e.s.id));
+  expect(row).toEqual({ trackSold: true, seeded: true });
 });
 
 test("an exclude-terms hit is marked seen but never alerts", async () => {
@@ -324,6 +343,27 @@ test("status projects the day's calls including each market sample", async () =>
   expect(listSearches(userId).reduce((n, s) => n + s.callsPerDay, 0)).toBe(quota.projected);
 });
 
+// The governor stretches intervals against the projection, so a check it can't see is a call
+// it never budgeted for. Every followed listing carries the exact moment it comes due, which
+// makes this an exact count rather than an estimate.
+test("status projects the checks that come due in the next day", async () => {
+  const e = await seededEntry({ intervalMin: 10, trackSold: true }); // 144 polls/day
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  expect(status(userId).quota.projected).toBe(144); // due in 3 days: not today's problem
+
+  e.tracked.get(item.itemId)!.nextCheckAt = Date.now() + 3600_000;
+
+  const { quota } = status(userId);
+  expect(quota.projected).toBe(144 + 1);
+  expect(listSearches(userId).reduce((n, s) => n + s.callsPerDay, 0)).toBe(quota.projected);
+
+  // and it stops being projected the moment the search stops tracking
+  await updateSearch(userId, e.s.id, { trackSold: false });
+  expect(status(userId).quota.projected).toBe(144);
+});
+
 test("status exposes the configured work still remaining today", async () => {
   await createSearch(userId, input({ intervalMin: 10 }));
   const u = g.__ebaeState.users.get(userId)!;
@@ -365,4 +405,229 @@ test("saving an inactive snooze does not re-kick every search", async () => {
     globalThis.setTimeout = real;
     g.__ebaeState.ready = false;
   }
+});
+
+// ---------- sold-price tracking ----------
+
+const trackedRows = () => database.select().from(trackedItems);
+
+// The seed pass is silent by design, and following its backlog would spend a check on every
+// listing that already existed when the search was created.
+test("seeding a tracking search follows nothing", async () => {
+  const s = await createSearch(userId, input({ trackSold: true }));
+  await pollOnce(g.__ebaeState.entries.get(s.id)!);
+
+  expect(await trackedRows()).toHaveLength(0);
+});
+
+test("an alerted listing is followed from the tick that alerted it", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+
+  await pollOnce(e);
+
+  const rows = await trackedRows();
+  expect(rows).toHaveLength(1);
+  expect(rows[0].itemId).toBe(item.itemId);
+  expect(rows[0].priceKind).toBe("fixed");
+  expect(rows[0].lastPrice).toBe(item.price);
+  expect(rows[0].state).toBe("active");
+  // first decay step, three days out
+  const days = (rows[0].nextCheckAt!.getTime() - Date.now()) / 86400_000;
+  expect(days).toBeGreaterThan(2.9);
+  expect(days).toBeLessThan(3.1);
+  expect(e.tracked.get(item.itemId)).toBeDefined(); // and in memory, so no reload is needed first
+});
+
+// A listing the user excluded is exactly the junk ("for parts", "broken") whose realized price
+// must not describe the thing they're hunting - the market baseline filters it for the same
+// reason.
+test("a suppressed listing is never followed", async () => {
+  const e = await seededEntry({ trackSold: true, excludeTerms: "broken, for parts" });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(injected({ title: "leica m6 - broken shutter" }));
+
+  await pollOnce(e);
+
+  expect(await trackedRows()).toHaveLength(0);
+});
+
+test("a search without the toggle follows nothing", async () => {
+  const e = await seededEntry();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(injected());
+
+  await pollOnce(e);
+
+  expect(await trackedRows()).toHaveLength(0);
+});
+
+// The whole point of the schedule: a due check resolves the listing, spends exactly one call,
+// and the realized price becomes the search's deal context.
+test("a due check resolves the listing as sold and bills one call", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  // drop it back out of the pool so the next poll doesn't re-sight it and defer the check
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const t = e.tracked.get(item.itemId)!;
+  t.nextCheckAt = Date.now() - 1000; // as if the three days had passed
+  const u = g.__ebaeState.users.get(userId)!;
+  const before = u.calls.used;
+
+  await pollOnce(e);
+
+  expect(u.calls.used).toBe(before + 2); // one for the poll, one for the check
+  const [row] = await trackedRows();
+  expect(row.state).toBe("sold");
+  expect(row.soldPrice).toBe(Math.round(item.price! * 90) / 100); // mock sells at 90%
+  expect(row.resolvedAt).not.toBeNull();
+  expect(e.tracked.size).toBe(0); // resolved rows leave the outstanding-work map
+  expect(e.soldPrices).toHaveLength(1);
+});
+
+// Re-sighting is free evidence the listing is still for sale, so the check that came due is
+// skipped rather than spent.
+test("a re-sighting defers the due check instead of spending a call", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  const t = e.tracked.get(item.itemId)!;
+  t.nextCheckAt = Date.now() - 1000;
+  const u = g.__ebaeState.users.get(userId)!;
+  const before = u.calls.used;
+
+  await pollOnce(e); // the item is still in the mock pool, so this poll re-sights it
+
+  expect(u.calls.used).toBe(before + 1); // the poll only - no check
+  expect(e.tracked.get(item.itemId)!.nextCheckAt).toBeGreaterThan(Date.now());
+  expect((await trackedRows())[0].state).toBe("active");
+});
+
+// Checks are the first thing to give up when the owner's budget is gone: they are a nicety,
+// and spending the last calls on them would starve the polls that actually find deals.
+test("an exhausted budget skips checks", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  e.tracked.get(item.itemId)!.nextCheckAt = Date.now() - 1000;
+  const u = g.__ebaeState.users.get(userId)!;
+  u.calls = { date: new Date().toDateString(), used: status(userId).quota.ceiling };
+
+  await pollOnce(e);
+
+  expect((await trackedRows())[0].state).toBe("active");
+});
+
+// Everything above lives in memory between reloads; a restart has to find it all again.
+test("a reload rehydrates outstanding follows and realized prices", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const sold = injected({ itemId: "v1|sold-1|0" });
+  await database.insert(trackedItems).values({
+    searchId: e.s.id,
+    itemId: sold.itemId,
+    priceKind: "fixed",
+    lastPrice: 500,
+    state: "sold",
+    soldPrice: 450,
+    resolvedAt: new Date(),
+  });
+
+  g.__ebaeState.users.delete(userId); // forces the next userCtx to rebuild the whole cache
+  await userCtx(userId);
+
+  const reloaded = g.__ebaeState.entries.get(e.s.id)!;
+  expect(reloaded.tracked.get(item.itemId)?.lastPrice).toBe(item.price);
+  expect(reloaded.soldPrices).toEqual([{ price: 450, atMs: expect.any(Number) }]);
+});
+
+// A check that throws (rate limit, 5xx, an HTML gateway page) is the dangerous failure: eBay
+// only returns a not-ok result for a listing it says is gone. If the row's schedule doesn't move,
+// it stays due forever - one billed call every tick, and the rest of the check loop skipped.
+test("a failing check moves the schedule instead of re-spending a call every tick", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const u = g.__ebaeState.users.get(userId)!;
+  // Creds alone pick the live branch, which is what puts a throwing fetch in the check path.
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const realFetch = globalThis.fetch;
+  let itemCalls = 0;
+  // The poll itself must succeed - only the item check fails, which is the whole point: a poll
+  // failure has its own backoff, while a check failure had no path out at all.
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
+    if (url.includes("/buy/browse/v1/item/")) {
+      itemCalls++;
+      return Response.json({ errors: [{ errorId: 2001 }] }, { status: 500 }); // not a "gone" code: throws
+    }
+    return Response.json({ itemSummaries: [] });
+  }) as typeof fetch;
+
+  try {
+    e.tracked.get(item.itemId)!.nextCheckAt = Date.now() - 1000;
+    const before = u.calls.used;
+    await pollOnce(e);
+
+    expect(itemCalls).toBe(1);
+    const t = e.tracked.get(item.itemId)!;
+    expect(t.nextCheckAt).toBeGreaterThan(Date.now()); // rescheduled, not left permanently due
+    expect(t.checksUsed).toBe(1); // the call it spent was accounted for
+    expect(u.calls.used - before).toBe(2); // one poll + one check, both billed
+
+    await pollOnce(e);
+    // Nothing is due any more, so the second tick spends nothing on checks. Before the fix this
+    // was another billed call, every tick, forever.
+    expect(itemCalls).toBe(1);
+  } finally {
+    globalThis.fetch = realFetch;
+    u.ebay = null;
+  }
+});
+
+// The sold median outranks every other basis, so a stale one is worse than a stale market
+// baseline - which this same edit already clears.
+test("editing what a search matches drops the realized prices with the baseline", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  e.tracked.get(item.itemId)!.nextCheckAt = Date.now() - 1000;
+  await pollOnce(e); // resolves it: one realized price on the books
+  expect(e.soldPrices).toHaveLength(1);
+  expect(await trackedRows()).toHaveLength(1);
+
+  await updateSearch(userId, e.s.id, { q: "something else entirely" });
+
+  expect(e.soldPrices).toHaveLength(0); // those sales describe the old search
+  expect(e.tracked.size).toBe(0); // and the outstanding follows would cost checks for it too
+  expect(await trackedRows()).toHaveLength(0);
+});
+
+// The counterpart: an edit that doesn't change what the search matches must keep everything.
+test("a non-criteria edit keeps the realized prices", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  e.tracked.get(item.itemId)!.nextCheckAt = Date.now() - 1000;
+  await pollOnce(e);
+  expect(e.soldPrices).toHaveLength(1);
+
+  await updateSearch(userId, e.s.id, { intervalMin: 15 });
+
+  expect(e.soldPrices).toHaveLength(1);
+  expect(await trackedRows()).toHaveLength(1);
 });

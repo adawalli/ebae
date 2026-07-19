@@ -1,7 +1,7 @@
 import type { EbayCreds } from "@/lib/ebay";
 import { log, redact } from "@/lib/log";
 import type { searches } from "@/lib/schema";
-import type { PollError, PushSub, Search } from "@/lib/types";
+import type { PollError, PriceKind, PushSub, Search } from "@/lib/types";
 
 export const plog = log.child({ component: "poller" });
 
@@ -12,6 +12,21 @@ export const plog = log.child({ component: "poller" });
 // can push very old listings off page 1). start/end = minutes from midnight in `tz`.
 export type SnoozeState = { enabled: boolean; start: number; end: number; tz: string | null };
 
+// One listing a track_sold search is following, mirroring its tracked_items row. Only
+// unresolved listings live in memory: resolving one drops it from the map and (when it sold)
+// appends to the entry's soldPrices, so the map holds exactly the outstanding work. Times are
+// epoch ms rather than Date, matching how the rest of the poller does arithmetic.
+export type TrackedItem = {
+  itemId: string;
+  priceKind: PriceKind;
+  lastPrice: number | null;
+  currency: string;
+  itemEndDate: number | null; // auctions only
+  firstSeenAt: number; // anchors the fixed-price decay schedule
+  nextCheckAt: number;
+  checksUsed: number; // eBay calls spent on this listing, which is what caps the auction retry
+};
+
 export type Entry = {
   s: Search;
   seen: Set<string>;
@@ -21,6 +36,15 @@ export type Entry = {
   timer: ReturnType<typeof setTimeout> | null;
   backoffMs: number; // 0 = healthy
   running: boolean; // a tick is in flight; blocks overlapping ticks
+  // Sold-price tracking. All three stay empty unless the search opts in (s.trackSold), and all
+  // three are rebuilt from tracked_items at reload.
+  tracked: Map<string, TrackedItem>; // outstanding follows, keyed by item id
+  // Realized prices this search has learned, newest appended. Held in memory so alert-time deal
+  // context and the searches list stay DB-free, the same bargain the seen set makes.
+  soldPrices: { price: number; atMs: number }[];
+  // Follows whose in-memory state has drifted from their row (a refreshed price, a deferred
+  // check). Written out on a tick that opens a connection anyway, so a quiet poll stays quiet.
+  trackDirty: Set<string>;
 };
 
 // Everything a poll needs about the owner of the search it's about to run: their keys, where
@@ -188,6 +212,7 @@ export function rowToSearch(r: typeof searches.$inferSelect, userId: number): Se
     excludeTerms: r.excludeTerms,
     marketMedian: r.marketMedian,
     marketSampledAt: r.marketSampledAt ? r.marketSampledAt.toISOString() : null,
+    trackSold: r.trackSold,
     intervalMin: r.intervalMin,
     enabled: r.enabled,
     seeded: r.seeded,

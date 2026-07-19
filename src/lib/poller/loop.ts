@@ -11,7 +11,8 @@ import { excludeMatch, maybeSampleMarket, priceContext } from "./market";
 import { projectedCalls } from "./projection";
 import { QUOTA_CEILING, flushCalls, governedDelayMs, governorFor } from "./quota";
 import { snoozeMinutes, snoozing } from "./snooze";
-import { type Entry, type UserCtx, bumpAlerts, message, plog, recordError, state } from "./state";
+import { type Entry, type TrackedItem, type UserCtx, bumpAlerts, message, plog, recordError, state } from "./state";
+import { flushTracked, harvest, insertTracked, newTracked, runDueChecks, soldContext } from "./track";
 
 export const MAX_BACKOFF_MS = 30 * 60_000;
 // How long a quota-exhausted search idles before re-checking. healthWindowMs treats this as
@@ -105,6 +106,18 @@ export async function pollOnce(e: Entry) {
     plog.debug({ searchId: e.s.id, fresh: fresh.length, of: items.length }, "dedup");
     let wrote = false; // did this tick open a connection? gates the piggyback flush below
 
+    // Every listing we're following that turns up again in these results is a free check: it's
+    // demonstrably still for sale, so its price refreshes and any check that came due is skipped
+    // rather than spent. Runs against the full result set, not `fresh` - a followed listing is
+    // by definition already in the seen set.
+    if (e.tracked.size) {
+      const at = Date.now();
+      for (const item of items) {
+        const t = e.tracked.get(item.itemId);
+        if (t && harvest(t, item, at)) e.trackDirty.add(item.itemId);
+      }
+    }
+
     if (!e.s.seeded) {
       // first poll seeds the seen set silently - no alert spam (DESIGN.md §3)
       if (fresh.length) {
@@ -123,11 +136,20 @@ export async function pollOnce(e: Entry) {
       // (so the new items don't skew their own "typical"). The recent-alert read is skipped
       // whenever a market baseline exists (dealField's market branch ignores its count) and
       // whenever the poll is empty, so steady-state polls stay DB-free.
+      // Realized prices beat asking prices when there are enough of them: "sold ~$X" is what
+      // the thing is actually worth, where a market median is only what sellers are asking.
+      const sold = e.s.trackSold ? soldContext(e.soldPrices, Date.now()) : null;
       const market = e.s.marketMedian;
-      const ctx: PriceContext =
-        market != null && market > 0
+      const ctx: PriceContext = sold
+        ? { ...sold, basis: "sold" }
+        : market != null && market > 0
           ? { typical: market, count: 0, basis: "market" }
           : { ...(fresh.length ? await priceContext(database, e.s.id) : { typical: null, count: 0 }), basis: "recent" };
+      // Listings this tick alerted on, to start following once the loop is done. Suppressed
+      // items are deliberately not here: an excluded listing ("for parts", "broken") is exactly
+      // the junk whose realized price must not describe what the user is hunting - the market
+      // baseline filters it out for the same reason.
+      const follow: TrackedItem[] = [];
       // Pin the owner's channel list for this batch: reload() swaps the UserCtx and its
       // channel list (never mutates), so a capture keeps the insert's deliveredAt seed and the
       // notify target consistent even if a reload lands mid-tick.
@@ -185,6 +207,10 @@ export async function pollOnce(e: Entry) {
         wrote = true;
         e.seen.add(item.itemId);
         if (alertId == null) continue; // duplicate: the row already existed, don't re-notify
+        if (e.s.trackSold) {
+          const t = newTracked(item, Date.now());
+          if (t) follow.push(t); // null = an auction with no end date, which there's no way to time
+        }
         bumpAlerts(e.s.userId); // the owner's alert list changed; their tabs must refetch
         const now = Date.now();
         e.hitTimes.push(now);
@@ -213,22 +239,30 @@ export async function pollOnce(e: Entry) {
           }
         }
       }
+      // One insert for the batch, on the connection the alerts above already opened.
+      await insertTracked(database, e, follow);
     }
 
     // Piggyback the daily-call-count persist on the connection these writes already
     // opened. Empty polls (seeded, nothing new) skip it and stay DB-free, so a
     // reboot loses at most the calls counted since the last write - by design.
-    if (wrote) await flushCalls(database, u.id, u.calls);
+    if (wrote) {
+      await flushCalls(database, u.id, u.calls);
+      await flushTracked(database, e); // same bargain: refreshed prices and deferrals ride along
+    }
     // Refresh the market baseline at most once/day per band-limited search. Self-throttled
     // and isolated: it opens a connection only when actually due, so steady-state empty
     // polls stay DB-free, and its own try/catch keeps a sample failure off the main poll.
     await maybeSampleMarket(e, u, database);
+    // Check in on followed listings that have come due. Same shape as the sample above:
+    // self-limiting, quota-guarded, isolated, and a no-op for a search that isn't tracking.
+    await runDueChecks(e, u, database);
     e.backoffMs = 0;
     // Governed only here, on the path that actually spent a call. The snooze, no-creds and
     // owner-not-cached reschedules above cost no quota, so stretching them would delay noticing
     // that the window ended or the keys arrived while saving nothing. The quota-exhausted retry
     // and the error backoff are already their own (longer) delays.
-    const active = [...st.entries.values()].filter((x) => x.s.userId === u.id && x.s.enabled).map((x) => x.s);
+    const active = [...st.entries.values()].filter((x) => x.s.userId === u.id && x.s.enabled);
     schedule(
       e,
       governedDelayMs(e.s.intervalMin, governorFor(u, projectedCalls(active, 1440 - snoozeMinutes(u.snooze)))),

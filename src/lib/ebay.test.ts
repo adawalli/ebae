@@ -1,5 +1,14 @@
 import { expect, test } from "bun:test";
-import { browseFilters, conditionExcluded, currencyFor, marketSampleSearch, mockMarket } from "./ebay";
+import {
+  browseFilters,
+  checkItem,
+  conditionExcluded,
+  currencyFor,
+  marketSampleSearch,
+  mockCheckItem,
+  mockMarket,
+  type EbayCreds,
+} from "./ebay";
 import { median } from "./poller";
 import type { Item, Search } from "./types";
 
@@ -14,6 +23,8 @@ const item: Item = {
   conditionId: "7000",
   imageUrl: null,
   itemUrl: "https://www.ebay.com/itm/1",
+  itemEndDate: null,
+  bestOffer: false,
 };
 
 const base: Search = {
@@ -29,6 +40,7 @@ const base: Search = {
   excludeTerms: null,
   marketMedian: null,
   marketSampledAt: null,
+  trackSold: false,
   intervalMin: 5,
   enabled: true,
   seeded: false,
@@ -139,6 +151,81 @@ test("mockMarket: the condition preset filters the sample by ID", () => {
   const notParts = mockMarket({ ...base, conditions: "NOT_PARTS" });
   expect(notParts.length).toBeGreaterThan(0);
   expect(notParts.every((i) => i.conditionId !== "7000")).toBe(true); // junk can't drag the median
+});
+
+// checkItem is the whole sold-price feature's read path and mock mode never exercises it, so
+// the request shape and the three response classes are pinned here. A wrong fieldgroup or an
+// unescaped item id (the stored ids are "v1|123|0" - the pipes MUST be percent-encoded) only
+// shows up as a 400 against the live API.
+function stubEbay(handler: (url: string) => Response): () => void {
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/identity/v1/oauth2/token")) return Response.json({ access_token: "tok", expires_in: 7200 });
+    return handler(url);
+  }) as typeof fetch;
+  return () => {
+    globalThis.fetch = real;
+  };
+}
+
+const creds = (userId: number): EbayCreds => ({
+  userId,
+  clientId: "id",
+  clientSecret: "secret",
+  env: "production",
+  marketplace: "EBAY_US",
+});
+
+test("checkItem: a sold listing reads back its availability, sold quantity and price", async () => {
+  let asked = "";
+  const restore = stubEbay((url) => {
+    asked = url;
+    return Response.json({
+      price: { value: "162.50", currency: "USD" },
+      estimatedAvailabilities: [{ estimatedAvailabilityStatus: "OUT_OF_STOCK", estimatedSoldQuantity: 1 }],
+    });
+  });
+  try {
+    expect(await checkItem(creds(901), "v1|123|0")).toEqual({
+      ok: true,
+      price: 162.5,
+      availability: "OUT_OF_STOCK",
+      soldQuantity: 1,
+    });
+  } finally {
+    restore();
+  }
+  expect(asked).toContain("/buy/browse/v1/item/v1%7C123%7C0");
+  expect(asked).toContain("fieldgroups=COMPACT");
+});
+
+// A listing eBay has dropped is an answer, not a failure: the caller resolves it rather than
+// retrying forever.
+test("checkItem: the gone errors report not-ok instead of throwing", async () => {
+  const restore = stubEbay(() => Response.json({ errors: [{ errorId: 11001 }] }, { status: 404 }));
+  try {
+    expect(await checkItem(creds(902), "v1|123|0")).toEqual({ ok: false, errorId: 11001 });
+  } finally {
+    restore();
+  }
+});
+
+// Anything else (auth, rate limit, an outage) must NOT read as an ended listing, or a bad hour
+// would resolve every followed item as unknown and throw the tracking away.
+test("checkItem: other failures throw", async () => {
+  const restore = stubEbay(() => Response.json({ errors: [{ errorId: 2001 }] }, { status: 500 }));
+  try {
+    await expect(checkItem(creds(903), "v1|123|0")).rejects.toThrow(/item check failed/);
+  } finally {
+    restore();
+  }
+});
+
+// The mock has to resolve as a sale, or a dev without eBay keys never sees a sold median form.
+test("mockCheckItem: resolves sold, just under the last seen price", () => {
+  expect(mockCheckItem(100)).toEqual({ ok: true, availability: "OUT_OF_STOCK", soldQuantity: 1, price: 90 });
+  expect(mockCheckItem(null).price).toBeNull();
 });
 
 // Mock market sample must center well above a deal-hunt band so the feature is visibly

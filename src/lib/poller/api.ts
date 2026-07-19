@@ -7,9 +7,10 @@ import type { PushSub, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types
 import { userCtx } from "./boot";
 import { MAX_BACKOFF_MS, QUOTA_SKIP_MS, kick, pollMode, schedule } from "./loop";
 import { MARKET_SAMPLES_PER_DAY } from "./market";
-import { callsPerDayFor, projectedCalls } from "./projection";
+import { callsPerDayFor, callsPerDayForEntry, checksDue24h, projectedCalls } from "./projection";
 import { GOV_MAX_FACTOR, QUOTA_CEILING, governedDelayMs, governorDecision, governorFor, usedToday } from "./quota";
 import { SNOOZE_DEFAULT, activeFracNow, hhmm, snoozeMinutes, snoozeWindow, snoozing } from "./snooze";
+import { resetTracked, soldContext } from "./track";
 import { type Entry, type SnoozeState, bumpAlerts, plog, rowToSearch, state } from "./state";
 
 export const DEFAULT_INTERVAL = Number(process.env.POLL_INTERVAL_DEFAULT ?? 5);
@@ -30,7 +31,7 @@ function activeMinFor(userId: number): number {
 function factorFor(userId: number): number {
   const u = state().users.get(userId);
   if (!u) return 1;
-  const active = [...state().entries.values()].filter((e) => e.s.userId === userId && e.s.enabled).map((e) => e.s);
+  const active = [...state().entries.values()].filter((e) => e.s.userId === userId && e.s.enabled);
   return governorDecision(
     usedToday(u.calls),
     QUOTA_CEILING,
@@ -41,7 +42,8 @@ function factorFor(userId: number): number {
 }
 
 export function listSearches(userId: number): SearchStats[] {
-  const cutoff = Date.now() - 24 * 3600_000;
+  const now = Date.now();
+  const cutoff = now - 24 * 3600_000;
   const st = state();
   const factor = factorFor(userId);
   const activeMin = activeMinFor(userId);
@@ -57,7 +59,9 @@ export function listSearches(userId: number): SearchStats[] {
         lastHitAt: e.lastHitAt ? new Date(e.lastHitAt).toISOString() : null,
         lastPolledAt: e.lastPolledAt ? new Date(e.lastPolledAt).toISOString() : null,
         effectiveIntervalMin: Math.round(e.s.intervalMin * factor * 10) / 10,
-        callsPerDay: callsPerDayFor(e.s, activeMin),
+        callsPerDay: callsPerDayForEntry(e, activeMin),
+        soldMedian: e.s.trackSold ? (soldContext(e.soldPrices, now)?.typical ?? null) : null,
+        checksDue24h: checksDue24h(e),
       };
     });
 }
@@ -71,6 +75,7 @@ export type SearchInput = {
   includeAuctions: boolean;
   conditions: string | null;
   excludeTerms: string | null;
+  trackSold: boolean;
   intervalMin: number;
 };
 
@@ -88,6 +93,7 @@ export async function createSearch(userId: number, input: SearchInput): Promise<
       includeAuctions: input.includeAuctions,
       conditions: input.conditions,
       excludeTerms: input.excludeTerms,
+      trackSold: input.trackSold,
       intervalMin: input.intervalMin,
     })
     .returning();
@@ -100,6 +106,9 @@ export async function createSearch(userId: number, input: SearchInput): Promise<
     timer: null,
     backoffMs: 0,
     running: false,
+    tracked: new Map(),
+    soldPrices: [],
+    trackDirty: new Set(),
   };
   state().entries.set(e.s.id, e);
   schedule(e, 0); // seed immediately
@@ -112,6 +121,8 @@ export async function createSearch(userId: number, input: SearchInput): Promise<
     lastPolledAt: null,
     effectiveIntervalMin: Math.round(e.s.intervalMin * factorFor(userId) * 10) / 10,
     callsPerDay: callsPerDayFor(e.s, activeMinFor(userId)),
+    soldMedian: null, // brand new: nothing tracked, nothing realized
+    checksDue24h: 0,
   };
 }
 
@@ -157,6 +168,9 @@ export async function updateSearch(
   if (patch.includeAuctions !== undefined) row.includeAuctions = patch.includeAuctions;
   if (patch.conditions !== undefined) row.conditions = patch.conditions;
   if (patch.excludeTerms !== undefined) row.excludeTerms = patch.excludeTerms;
+  // Not a match field and not part of the baseline sample: toggling it keeps both the seen
+  // set and the market median. Turning it off leaves the tracked rows to age out on their own.
+  if (patch.trackSold !== undefined) row.trackSold = patch.trackSold;
   if (patch.intervalMin !== undefined) row.intervalMin = patch.intervalMin;
   if (patch.enabled !== undefined) row.enabled = patch.enabled;
   // Editing what a search matches (query/category/price/buying-option/condition) invalidates
@@ -165,11 +179,12 @@ export async function updateSearch(
   // the same guarantee the first poll gives a brand-new search (DESIGN.md §3).
   const criteriaChanged = matchCriteriaChanged(cur, row);
   if (criteriaChanged) row.seeded = false;
+  const invalidated = baselineInvalidated(cur, row);
   // Clear the market baseline when the criteria or the exclude terms change (see
   // baselineInvalidated) so the next poll re-samples instead of comparing against a stale
   // market. An excludeTerms-only edit resets the baseline without re-seeding - the seen set
   // stays complete, matching the DESIGN.md §3 guarantee.
-  if (baselineInvalidated(cur, row)) {
+  if (invalidated) {
     row.marketMedian = null;
     row.marketSampledAt = null;
   }
@@ -183,6 +198,12 @@ export async function updateSearch(
       // unless this edit intentionally reset it to re-seed the new criteria.
       if (e.s.seeded && !criteriaChanged) s.seeded = true;
       e.s = s;
+      // Whatever invalidates the market baseline invalidates the realized prices too, and more
+      // urgently: the sold median outranks every other basis, so a stale one would keep
+      // captioning the edited search's alerts with the old search's going rate long after the
+      // baseline it beat was cleared. Drops the outstanding follows with it - they are listings
+      // this search no longer matches, still costing checks.
+      if (invalidated) await resetTracked(db(), e);
     } else {
       // dropped from the cache by a concurrent reload: DB was updated, return stub stats
       const s = rowToSearch(updated, userId);
@@ -194,6 +215,8 @@ export async function updateSearch(
         lastPolledAt: null,
         effectiveIntervalMin: Math.round(s.intervalMin * factorFor(userId) * 10) / 10,
         callsPerDay: callsPerDayFor(s, activeMinFor(userId)),
+        soldMedian: null, // no entry to read follows from; the next list call has the real figure
+        checksDue24h: 0,
       };
     }
   }
@@ -246,14 +269,7 @@ export async function setSnooze(userId: number, sn: SnoozeState): Promise<Snooze
     const now = new Date();
     u.snooze = sn;
     const active = [...state().entries.values()].filter((e) => e.s.userId === userId && e.s.enabled);
-    const factor = governorFor(
-      u,
-      projectedCalls(
-        active.map((e) => e.s),
-        activeMinFor(userId),
-      ),
-      now,
-    );
+    const factor = governorFor(u, projectedCalls(active, activeMinFor(userId)), now);
     for (const e of active) {
       schedule(e, snoozing(old, now) && !snoozing(sn, now) ? 0 : governedDelayMs(e.s.intervalMin, factor));
     }
@@ -356,7 +372,7 @@ export function status(userId: number): StatusInfo {
     },
     quota: (() => {
       const used = u ? usedToday(u.calls, today) : 0;
-      const enabled = [...st.entries.values()].filter((e) => e.s.userId === userId && e.s.enabled).map((e) => e.s);
+      const enabled = [...st.entries.values()].filter((e) => e.s.userId === userId && e.s.enabled);
       const projected = projectedCalls(enabled, activeMinFor(userId));
       const frac = activeFracNow(sn);
       const factor = factorFor(userId);

@@ -64,6 +64,13 @@
       "when": 1784237097925,
       "tag": "0008_young_rhino",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1784466080903,
+      "tag": "0009_dizzy_black_tarantula",
+      "breakpoints": true
     }
   ]
 }

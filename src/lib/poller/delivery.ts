@@ -108,6 +108,9 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
       conditionId: null,
       imageUrl: row.imageUrl,
       itemUrl: row.itemUrl,
+      // Same story: poll-time only. Tracking was already decided when this alert was written.
+      itemEndDate: null,
+      bestOffer: false,
     };
     // Only the market baseline is reconstructable here (the recent-alert median needs the
     // pre-batch snapshot, long gone); without one the embed just omits the deal line.

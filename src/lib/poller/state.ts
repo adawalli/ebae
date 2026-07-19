@@ -36,8 +36,7 @@ export type Entry = {
   timer: ReturnType<typeof setTimeout> | null;
   backoffMs: number; // 0 = healthy
   running: boolean; // a tick is in flight; blocks overlapping ticks
-  // Sold-price tracking. All three stay empty unless the search opts in (s.trackSold), and all
-  // three are rebuilt from tracked_items at reload.
+  // Sold-price tracking. All three are rebuilt from tracked_items at reload.
   tracked: Map<string, TrackedItem>; // outstanding follows, keyed by item id
   // Realized prices this search has learned, newest appended. Held in memory so alert-time deal
   // context and the searches list stay DB-free, the same bargain the seen set makes.

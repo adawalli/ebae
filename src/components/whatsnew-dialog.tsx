@@ -31,11 +31,14 @@ const CACHE_TTL = 6 * 60 * 60 * 1000;
 
 /** The feed is public and immutable per tag, so a few hours of staleness costs nothing and keeps us clear of GitHub's unauthenticated rate limit. */
 async function loadReleases(): Promise<GhRelease[] | null> {
+  const raw = read(LS_CACHE);
   try {
-    const raw = localStorage.getItem(LS_CACHE);
     if (raw) {
       const cached = JSON.parse(raw) as { at: number; releases: GhRelease[] };
-      if (Date.now() - cached.at < CACHE_TTL) return cached.releases;
+      // A negative age means the clock moved back since the write, so treat it as stale
+      // rather than as "fresh forever".
+      const age = Date.now() - cached.at;
+      if (age >= 0 && age < CACHE_TTL) return cached.releases;
     }
   } catch {
     // corrupt cache entry - fall through and refetch
@@ -61,7 +64,6 @@ async function loadReleases(): Promise<GhRelease[] | null> {
 
 export function WhatsNewDialog({ version }: { version: string }) {
   const [open, setOpen] = useState(false);
-  const [since, setSince] = useState("");
   const [releases, setReleases] = useState<GhRelease[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [dontShow, setDontShow] = useState(false);
@@ -93,8 +95,8 @@ export function WhatsNewDialog({ version }: { version: string }) {
         if (feed.some((r) => r.tag_name.replace(/^v/, "") === version)) store(LS_LAST_SEEN, version);
         return;
       }
-      setSince(seen);
       setReleases(picked);
+      setDontShow(false); // a second upgrade in this tab must not inherit the last one's checkbox
       setOpen(true);
     });
     return () => {
@@ -104,7 +106,9 @@ export function WhatsNewDialog({ version }: { version: string }) {
 
   // Every exit counts as read - the X, Escape, click-outside and "Got it" all land here.
   function dismiss() {
-    store(LS_LAST_SEEN, version);
+    // Bank the newest release actually shown, not the live prop: the status poll can
+    // advance `version` while the dialog is open, and its notes would then be skipped.
+    store(LS_LAST_SEEN, releases[0].tag_name.replace(/^v/, ""));
     if (dontShow) {
       store(LS_DISABLED, "1");
       // Status & Settings may be on screen behind this dialog, showing the old value.
@@ -134,9 +138,9 @@ export function WhatsNewDialog({ version }: { version: string }) {
 
   const newest = parsed[0].ver;
   const oldest = parsed[parsed.length - 1].ver;
-  const range =
-    `${parsed.length} release${parsed.length === 1 ? "" : "s"} since v${since} · v${oldest}` +
-    (parsed.length === 1 ? "" : ` → v${newest}`);
+  // Describe what's on screen. Naming lastSeen here would lie whenever the feed page
+  // doesn't reach back that far.
+  const range = parsed.length === 1 ? `1 release · v${newest}` : `${parsed.length} releases · v${oldest} → v${newest}`;
 
   return (
     <Dialog

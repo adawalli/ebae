@@ -234,12 +234,9 @@ function ReleaseNotesCard({ version }: { version: string }) {
 
   function toggle(next: boolean) {
     setEnabled(next);
+    // Both readers test for "1", so clearing the flag is just another guarded write.
     if (next) {
-      try {
-        localStorage.removeItem(LS_DISABLED);
-      } catch {
-        // storage blocked - nothing was ever written to remove
-      }
+      store(LS_DISABLED, "0");
       return;
     }
     store(LS_DISABLED, "1");

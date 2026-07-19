@@ -96,7 +96,6 @@ export function WhatsNewDialog({ version }: { version: string }) {
         return;
       }
       setReleases(picked);
-      setDontShow(false); // a second upgrade in this tab must not inherit the last one's checkbox
       setOpen(true);
     });
     return () => {
@@ -115,6 +114,10 @@ export function WhatsNewDialog({ version }: { version: string }) {
       window.dispatchEvent(new Event(WHATSNEW_EVENT));
     }
     setOpen(false);
+    // Clear on the way out, not on the way in: this component never unmounts, and
+    // resetting at open would untick a box the user had already ticked if the status
+    // poll re-ran the effect while they were reading.
+    setDontShow(false);
   }
 
   // Unmount rather than render a closed Dialog: Radix's exit animation never completes

@@ -8,6 +8,7 @@ import { SearchesView } from "@/components/searches-view";
 import { AlertsView } from "@/components/alerts-view";
 import { StatusView } from "@/components/status-view";
 import { SearchFormDialog, emptyForm } from "@/components/search-form-dialog";
+import { WhatsNewDialog } from "@/components/whatsnew-dialog";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 
 export default function Home() {
@@ -345,6 +346,8 @@ export default function Home() {
           pendingChecks={editId == null ? 0 : (searches.find((s) => s.id === editId)?.checksDue24h ?? 0)}
         />
       )}
+
+      {status && <WhatsNewDialog version={status.version} />}
     </SidebarProvider>
   );
 }

@@ -42,7 +42,7 @@ release:
   # An annotated tag can add user-facing release cards without maintaining a second changelog.
   # Lightweight tags fall back to their target commit message, so require the explicit heading.
   header: |
-    {{- if contains .TagBody "## Highlights" }}
+    {{- if contains "## Highlights" .TagBody }}
     {{ .TagBody }}
     {{- end }}
 

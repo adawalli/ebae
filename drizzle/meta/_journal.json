@@ -71,6 +71,13 @@
       "when": 1784466080903,
       "tag": "0009_dizzy_black_tarantula",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1784472530622,
+      "tag": "0010_cool_doctor_octopus",
+      "breakpoints": true
     }
   ]
 }

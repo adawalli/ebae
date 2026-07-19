@@ -38,7 +38,7 @@ Projected usage is computed server-side from the cached entries (`projectedCalls
 
 **Sold prices without Marketplace Insights.** eBay's sold-search APIs are Limited Release/enterprise-only, so a realized price is inferred instead: `GET /buy/browse/v1/item/{itemId}?fieldgroups=COMPACT` on a listing already seen. Ended listings stay readable for days, and one rule reads both listing types (verified by live probing): `OUT_OF_STOCK` with `estimatedSoldQuantity > 0` means **sold at `price`** - for an ended auction that mirrors the frozen final bid - while `IN_STOCK` past an auction's end means nobody bid. `bidCount` and `reservePriceMet` are unusable (null even where they should be set). Bulk `getItems` is partner-only, so a check is one call.
 
-Timing is what keeps that affordable, and it comes free: search summaries already carry `itemEndDate`, so an **auction costs exactly one check** (end + 5 min, late enough to catch a snipe). A **fixed-price listing decays** over 3/7/14/30 days, at most four checks ever, and any poll that re-sights it skips the next check outright. Opt-in per search (`searches.track_sold`), capped at 3 checks per tick, and dropped first when the budget runs low.
+Timing is what keeps that affordable, and it comes free: search summaries already carry `itemEndDate`, so an **auction costs exactly one check** (end + 5 min, late enough to catch a snipe). A **fixed-price listing decays** over 3/7/14/30 days, at most four checks ever, and any poll that re-sights it skips the next check outright. Enabled by default per search (`searches.track_sold`) with a per-search opt-out, capped at 3 checks per tick, and dropped first when the budget runs low.
 
 **Budget governor.** Spending the daily budget by noon used to mean polling stopped dead until midnight. The governor stretches poll intervals as spend runs ahead of the day, so the budget lasts instead of running out:
 
@@ -107,7 +107,7 @@ Embed layout per new item:
 - Title: listing title, hyperlinked to the item
 - Fields: price (+ shipping if present), **Buy It Now** / Auction badge, condition, listing time
 - Deal context, best basis first:
-  - **Sold**: median of what this search's tracked listings actually realized, when the search opts in (`searches.track_sold`) and ≥3 sales inside 30 days agree. See §3 for how a realized price is obtained without the Marketplace Insights API.
+  - **Sold**: median of what this search's tracked listings actually realized, when tracking is enabled (`searches.track_sold`) and ≥3 sales inside 30 days agree. See §3 for how a realized price is obtained without the Marketplace Insights API.
   - **Market**: comparison against a daily market baseline (median asking price of the same criteria with the price **cap removed but the floor kept** — the floor keeps sub-band accessories that share the query's keywords out of the median, the removed cap reveals the true going rate above the deal-hunt ceiling). Poller-managed on `searches.market_median` / `market_sampled_at`, refreshed once/day for searches with both a floor and a cap (`MARKET_SAMPLE_HOURS`)
   - **Typical**: median of recent alerts for the search, when there is no baseline yet; shown once ≥3 priced alerts exist
 - Footer: which saved search matched
@@ -163,7 +163,7 @@ Config stopped being strictly env-only with multi-user: a shared deployment can'
 - Telegram bot notifications (outbound send; long-polling if commands are wanted)
 - Generic webhook channel (POST JSON → ntfy, Slack, Home Assistant, ...)
 - Richer per-search filters: price caps ✓, condition ✓, exclude-keywords ✓, seller location
-- Deal context: within-band **Typical** median ✓, daily **Market** baseline ✓ (cap removed, floor kept; asking prices), realized **Sold** median ✓ (opt-in per search; see §3, no Marketplace Insights access required)
+- Deal context: within-band **Typical** median ✓, daily **Market** baseline ✓ (cap removed, floor kept; asking prices), realized **Sold** median ✓ (enabled by default with per-search opt-out; see §3, no Marketplace Insights access required)
 - Quota dashboard ✓ + adaptive polling: slow down to protect the daily budget ✓ (see §3). Speeding up on hot searches is deliberately **not** built - polling faster than the interval a user set is a promise ebae doesn't make.
 
 **Phase 3 - Nice-to-haves**

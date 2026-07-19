@@ -282,6 +282,7 @@ async function reload() {
         soldPrices: [],
         trackDirty: new Set(),
         trackEpoch: 0,
+        trackLock: Promise.resolve(),
       };
       st.entries.set(s.id, entry);
       // rows inserted into the DB directly start polling on the next refresh

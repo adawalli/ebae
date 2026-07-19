@@ -165,12 +165,19 @@ export async function insertTracked(
   fresh: readonly TrackedItem[],
   epoch: number,
 ): Promise<void> {
-  if (!fresh.length || stale(e, epoch)) return;
-  await database
-    .insert(trackedItems)
-    .values(fresh.map((t) => toRow(e.s.id, t)))
-    .onConflictDoNothing();
-  for (const t of fresh) e.tracked.set(t.itemId, t);
+  if (!fresh.length) return;
+  await serialize(e, async () => {
+    if (stale(e, epoch)) return;
+    await database
+      .insert(trackedItems)
+      .values(fresh.map((t) => toRow(e.s.id, t)))
+      .onConflictDoNothing();
+    // A reset requested while that statement ran bumped the epoch immediately but is queued
+    // behind this lock, so its DELETE will clear the rows we just wrote. Skipping the map keeps
+    // memory agreeing with the disk that is about to be emptied.
+    if (stale(e, epoch)) return;
+    for (const t of fresh) e.tracked.set(t.itemId, t);
+  });
 }
 
 // Persists follows whose in-memory state has drifted. One statement for the batch: a busy poll
@@ -178,27 +185,36 @@ export async function insertTracked(
 // The rows all exist already, so every conflict is the update this is really doing.
 export async function flushTracked(database: ReturnType<typeof db>, e: Entry): Promise<void> {
   if (!e.trackDirty.size) return;
-  const ids = [...e.trackDirty];
-  const rows = ids.map((id) => e.tracked.get(id)).filter((t): t is TrackedItem => t != null);
-  if (!rows.length) {
-    e.trackDirty.clear(); // every dirty row resolved out from under us; nothing to write
-    return;
-  }
-  await database
-    .insert(trackedItems)
-    .values(rows.map((t) => toRow(e.s.id, t)))
-    .onConflictDoUpdate({
-      target: [trackedItems.searchId, trackedItems.itemId],
-      set: {
-        lastPrice: sql`excluded.last_price`,
-        nextCheckAt: sql`excluded.next_check_at`,
-        checksUsed: sql`excluded.checks_used`,
-      },
-    });
-  // Cleared only once the write has landed. Clearing first would mean a failed flush silently
-  // forgot the deferral it was persisting, and the next reload would hand back the older
-  // schedule - spending the check this poll had already established wasn't needed.
-  for (const id of ids) e.trackDirty.delete(id);
+  // The whole read-then-upsert runs under the lock: this statement is an INSERT with a conflict
+  // clause, so a reset landing between picking the rows and writing them re-creates every row it
+  // had just deleted - and those survive the reload that would otherwise clean up.
+  await serialize(e, async () => {
+    if (!e.trackDirty.size) return;
+    const ids = [...e.trackDirty];
+    const rows = ids.map((id) => e.tracked.get(id)).filter((t): t is TrackedItem => t != null);
+    if (!rows.length) {
+      e.trackDirty.clear(); // every dirty row resolved out from under us; nothing to write
+      return;
+    }
+    await database
+      .insert(trackedItems)
+      .values(rows.map((t) => toRow(e.s.id, t)))
+      .onConflictDoUpdate({
+        target: [trackedItems.searchId, trackedItems.itemId],
+        set: {
+          lastPrice: sql`excluded.last_price`,
+          nextCheckAt: sql`excluded.next_check_at`,
+          checksUsed: sql`excluded.checks_used`,
+        },
+      });
+    // No post-await staleness check here, unlike insertTracked and resolve: a reset replaced
+    // trackDirty outright, so deleting the old generation's ids from the fresh set is a no-op,
+    // and the rows this upsert re-created are taken by the DELETE queued behind our lock.
+    // Cleared only once the write has landed. Clearing first would mean a failed flush silently
+    // forgot the deferral it was persisting, and the next reload would hand back the older
+    // schedule - spending the check this poll had already established wasn't needed.
+    for (const id of ids) e.trackDirty.delete(id);
+  });
 }
 
 // Writes a follow's final outcome and retires it from memory. Resolution is written immediately
@@ -209,26 +225,37 @@ async function resolve(
   e: Entry,
   t: TrackedItem,
   out: Extract<CheckOutcome, { kind: "resolved" }>,
+  epoch: number,
 ): Promise<void> {
-  await database
-    .update(trackedItems)
-    .set({
-      state: out.state,
-      soldPrice: out.soldPrice,
-      resolvedAt: new Date(),
-      checksUsed: t.checksUsed,
-      lastPrice: t.lastPrice,
-      nextCheckAt: null, // nothing left to schedule; also what keeps it out of the projection
-    })
-    .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, t.itemId)));
-  e.tracked.delete(t.itemId);
-  e.trackDirty.delete(t.itemId);
-  // Best Offer listings are followed but never counted: eBay keeps showing the asking price
-  // after the sale, so this figure is a ceiling and would bias the median upward.
-  if (out.state === "sold" && out.soldPrice != null && t.priceKind !== "offer_cap") {
-    e.soldPrices.push({ price: out.soldPrice, atMs: Date.now() });
-  }
-  plog.info({ searchId: e.s.id, itemId: t.itemId, state: out.state, soldPrice: out.soldPrice }, "item resolved");
+  await serialize(e, async () => {
+    // The sale is the dangerous half: soldPrices feeds the median, which outranks every other
+    // basis, so a reset landing between the update and the push seeds the fresh median with the
+    // price of a listing the search no longer matches.
+    if (stale(e, epoch)) return;
+    await database
+      .update(trackedItems)
+      .set({
+        state: out.state,
+        soldPrice: out.soldPrice,
+        resolvedAt: new Date(),
+        checksUsed: t.checksUsed,
+        lastPrice: t.lastPrice,
+        nextCheckAt: null, // nothing left to schedule; also what keeps it out of the projection
+      })
+      .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, t.itemId)));
+    // Requested mid-statement: the queued DELETE takes the row, and the containers below are the
+    // fresh ones, so pushing this sale would seed the new median with the old criteria's price -
+    // the exact thing the edit cleared it to prevent.
+    if (stale(e, epoch)) return;
+    e.tracked.delete(t.itemId);
+    e.trackDirty.delete(t.itemId);
+    // Best Offer listings are followed but never counted: eBay keeps showing the asking price
+    // after the sale, so this figure is a ceiling and would bias the median upward.
+    if (out.state === "sold" && out.soldPrice != null && t.priceKind !== "offer_cap") {
+      e.soldPrices.push({ price: out.soldPrice, atMs: Date.now() });
+    }
+    plog.info({ searchId: e.s.id, itemId: t.itemId, state: out.state, soldPrice: out.soldPrice }, "item resolved");
+  });
 }
 
 // Drops everything a search has learned about realized prices, in memory and on disk. Called
@@ -236,11 +263,14 @@ async function resolve(
 // sold median outranks every other basis, so keeping them would caption the new search's alerts
 // with the old search's going rate.
 export async function resetTracked(database: ReturnType<typeof db>, e: Entry): Promise<void> {
+  // Bump before taking the lock so a tick already queued behind it sees the new epoch and bails
+  // rather than writing, and take the lock so a write already in progress finishes before the
+  // DELETE runs - otherwise its INSERT lands after the delete and the row outlives the edit.
   e.trackEpoch++;
   e.tracked = new Map();
   e.soldPrices = [];
   e.trackDirty = new Set();
-  await database.delete(trackedItems).where(eq(trackedItems.searchId, e.s.id));
+  await serialize(e, () => database.delete(trackedItems).where(eq(trackedItems.searchId, e.s.id)));
 }
 
 // A tick that started before a resetTracked is holding references into containers that no longer
@@ -250,6 +280,23 @@ export async function resetTracked(database: ReturnType<typeof db>, e: Entry): P
 // window that matters is the one the network call opens.
 function stale(e: Entry, epoch: number): boolean {
   return e.trackEpoch !== epoch;
+}
+
+// Runs fn with the entry's tracking state to itself. Every writer below checks `stale` and then
+// awaits a statement, and a reset landing inside that await makes the check a lie: it deletes
+// between the check and the write, so the write puts the row back. Chaining through this makes
+// check-and-write atomic with respect to resetTracked, which takes the same lock.
+//
+// A plain promise chain rather than a real mutex because that's all the shape needs: one entry,
+// no re-entrancy, and each critical section is a couple of statements. Failures are swallowed
+// into the chain (not the caller) so one rejected write can't wedge every later one.
+function serialize<T>(e: Entry, fn: () => Promise<T>): Promise<T> {
+  const run = e.trackLock.then(fn, fn);
+  e.trackLock = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
 }
 
 // The tick's side-task: spend up to MAX_CHECKS_PER_TICK calls finding out how followed listings
@@ -285,7 +332,7 @@ export async function runDueChecks(
         if (stale(e, epoch)) break;
         t.checksUsed++;
         if (t.checksUsed >= MAX_CHECK_ATTEMPTS) {
-          await resolve(database, e, t, { kind: "resolved", state: "unknown", soldPrice: null });
+          await resolve(database, e, t, { kind: "resolved", state: "unknown", soldPrice: null }, epoch);
         } else {
           t.nextCheckAt = Date.now() + AUCTION_RETRY_MS;
           e.trackDirty.add(t.itemId);
@@ -306,7 +353,7 @@ export async function runDueChecks(
         e.trackDirty.add(t.itemId);
         continue;
       }
-      await resolve(database, e, t, out);
+      await resolve(database, e, t, out, epoch);
     }
     await flushTracked(database, e);
     await flushCalls(database, u.id, u.calls); // piggyback the calls this side-task just spent

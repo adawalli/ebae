@@ -50,6 +50,12 @@ export type Entry = {
   // reset replaced: without this, an edit landing while a tick awaits eBay would be undone by
   // that tick writing its now-orphaned results into the fresh generation.
   trackEpoch: number;
+  // Serializes the tracking writes against each other and against resetTracked. The epoch alone
+  // can't do it: every write checks it and then awaits a statement, so a reset landing inside
+  // that await passes a check that was true and lands a write that no longer is - the DELETE runs
+  // between the check and the INSERT it was supposed to prevent. Holding this for check-and-write
+  // together is what makes the check mean anything.
+  trackLock: Promise<unknown>;
 };
 
 // Everything a poll needs about the owner of the search it's about to run: their keys, where

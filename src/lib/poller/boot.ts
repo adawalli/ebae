@@ -4,11 +4,12 @@ import { claimLegacyRows } from "@/lib/claim";
 import { decryptSecret } from "@/lib/crypto";
 import { db, migrateToLatest } from "@/lib/db";
 import type { EbayCreds } from "@/lib/ebay";
-import { alerts, channels, pushSubs, searches, seenItems, users } from "@/lib/schema";
+import { alerts, channels, pushSubs, searches, seenItems, trackedItems, users } from "@/lib/schema";
 import type { PushSub } from "@/lib/types";
 import { redeliverPending } from "./delivery";
 import { schedule } from "./loop";
 import { flushCalls, mergeCalls } from "./quota";
+import { flushTracked, hydrateTracked } from "./track";
 import { type Entry, type UserCtx, message, plog, recordError, rowToSearch, state } from "./state";
 
 const REFRESH_HOURS = Number(process.env.CACHE_REFRESH_HOURS ?? 12);
@@ -157,13 +158,30 @@ function envCreds(userId: number): EbayCreds | null {
 async function reload() {
   const database = db();
   const today = new Date().toDateString();
+  // Write out any follow whose in-memory state hasn't reached its row yet. Must happen before
+  // the snapshot below, or the rebuild would hand back the schedule those changes moved - and a
+  // deferred check would be spent after all.
+  for (const e of state().entries.values()) {
+    if (e.trackDirty.size) await flushTracked(database, e);
+  }
   // prune the dedupe set so it can't grow unbounded (SEEN_RETENTION_DAYS, default 90)
   await database
     .delete(seenItems)
     .where(lt(seenItems.seenAt, sql`now() - (${SEEN_RETENTION_DAYS} * interval '1 day')`));
-  const [searchRows, seenRows, hitRows, lastHitRows, channelRows, pushRows, userRows] = await Promise.all([
+  // Same retention for the follows, measured from whenever the row last mattered: when it
+  // resolved, or when it was first seen if it never did.
+  await database
+    .delete(trackedItems)
+    .where(
+      lt(
+        sql`coalesce(${trackedItems.resolvedAt}, ${trackedItems.firstSeenAt})`,
+        sql`now() - (${SEEN_RETENTION_DAYS} * interval '1 day')`,
+      ),
+    );
+  const [searchRows, seenRows, trackedRows, hitRows, lastHitRows, channelRows, pushRows, userRows] = await Promise.all([
     database.select().from(searches),
     database.select({ searchId: seenItems.searchId, itemId: seenItems.itemId }).from(seenItems),
+    database.select().from(trackedItems),
     database
       .select({ searchId: alerts.searchId, createdAt: alerts.createdAt })
       .from(alerts)
@@ -260,6 +278,9 @@ async function reload() {
         timer: null,
         backoffMs: 0,
         running: false,
+        tracked: new Map(),
+        soldPrices: [],
+        trackDirty: new Set(),
       };
       st.entries.set(s.id, entry);
       // rows inserted into the DB directly start polling on the next refresh
@@ -283,6 +304,12 @@ async function reload() {
     if (!set) seenBySearch.set(r.searchId, (set = new Set()));
     set.add(r.itemId);
   }
+  const trackedBySearch = new Map<number, typeof trackedRows>();
+  for (const r of trackedRows) {
+    const list = trackedBySearch.get(r.searchId);
+    if (list) list.push(r);
+    else trackedBySearch.set(r.searchId, [r]);
+  }
 
   for (const [id, e] of st.entries) {
     if (!fresh.has(id)) {
@@ -295,7 +322,15 @@ async function reload() {
     // never mid-tick. A running tick adds items to e.seen after the snapshot above was
     // queried; overwriting would drop those adds and re-alert them next tick. Skip it;
     // the next reload reclaims that entry's memory once the tick has finished.
-    if (!e.running) e.seen = seenBySearch.get(id) ?? new Set();
+    if (!e.running) {
+      e.seen = seenBySearch.get(id) ?? new Set();
+      // Same rule, same reason: a tick mid-flight may have resolved a follow or started a new
+      // one since the snapshot, and both would be lost by overwriting.
+      const t = hydrateTracked(trackedBySearch.get(id) ?? []);
+      e.tracked = t.tracked;
+      e.soldPrices = t.soldPrices;
+      e.trackDirty = new Set(); // flushed above, and the maps just came from the DB
+    }
   }
   for (const r of hitRows) {
     if (r.searchId != null) st.entries.get(r.searchId)?.hitTimes.push(r.createdAt.getTime());

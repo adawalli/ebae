@@ -52,9 +52,17 @@ export function SearchesView({
     if (!s.enabled) return "paused";
     if (!s.seeded) return "seeding baseline — first matches silenced";
     const hit = s.lastHitAt ? `last hit ${ago(s.lastHitAt, true)}` : "no hits yet";
-    // market baseline (band-limited searches only): the true going rate an alert compares against
-    const market = s.marketMedian != null ? ` · market ~${money(s.marketMedian, status?.ebay.currency)}` : "";
-    return `${hit} · seen ${fmt(s.seenCount)}${market}`;
+    // The baseline an alert compares against, best first: what tracked listings actually sold
+    // for beats what sellers are asking. Only one is shown - two medians side by side invite a
+    // comparison that isn't the point.
+    const cur = status?.ebay.currency;
+    const baseline =
+      s.soldMedian != null
+        ? ` · sold ~${money(s.soldMedian, cur)}`
+        : s.marketMedian != null
+          ? ` · market ~${money(s.marketMedian, cur)}`
+          : "";
+    return `${hit} · seen ${fmt(s.seenCount)}${baseline}`;
   }
 
   return (

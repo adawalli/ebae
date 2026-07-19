@@ -173,6 +173,7 @@ type EbaySummary = {
   image?: { imageUrl: string };
   thumbnailImages?: { imageUrl: string }[];
   itemWebUrl: string;
+  itemEndDate?: string;
 };
 
 function normalize(i: EbaySummary): Item {
@@ -188,6 +189,58 @@ function normalize(i: EbaySummary): Item {
     conditionId: i.conditionId ?? null,
     imageUrl: i.image?.imageUrl ?? i.thumbnailImages?.[0]?.imageUrl ?? null,
     itemUrl: i.itemWebUrl,
+    itemEndDate: i.itemEndDate ?? null,
+    bestOffer: i.buyingOptions?.includes("BEST_OFFER") ?? false,
+  };
+}
+
+// ---------- item check (sold-price tracking) ----------
+
+// What one getItem check can tell us about a followed listing. Deliberately narrow: bidCount
+// and reservePriceMet are NOT here, because live probing showed both unusable (bidCount comes
+// back null even for an ended auction that took no bids, reservePriceMet was null throughout).
+// Availability plus sold quantity is the one signal that reads the same for both listing types.
+export type CheckResult =
+  | { ok: true; price: number | null; availability: string | null; soldQuantity: number }
+  | { ok: false; errorId: number | null };
+
+// eBay's "this listing is gone" errors: 11001 not found, 11004 unavailable. Any other failure
+// is ours or theirs (auth, rate limit, an outage) and must not be mistaken for a listing that
+// ended - hence a throw, so the caller retries on the normal cadence instead of resolving.
+const GONE_ERROR_IDS = new Set([11001, 11004]);
+
+type EbayItemDetail = {
+  price?: { value: string };
+  estimatedAvailabilities?: { estimatedAvailabilityStatus?: string; estimatedSoldQuantity?: number }[];
+};
+
+// Re-fetch one previously seen listing to find out how it ended. COMPACT is the cheapest
+// fieldgroup that still carries price and availability, and ended listings stay readable for
+// days after the fact (verified: a BIN item sold three days prior, auctions minutes after the
+// hammer), which is what makes a periodic check-in workable at all.
+export async function checkItem(creds: EbayCreds, itemId: string): Promise<CheckResult> {
+  const res = await fetch(
+    `${hostFor(creds.env)}/buy/browse/v1/item/${encodeURIComponent(itemId)}?fieldgroups=COMPACT`,
+    { headers: { Authorization: `Bearer ${await token(creds)}`, "X-EBAY-C-MARKETPLACE-ID": creds.marketplace } },
+  );
+  if (!res.ok) {
+    const body = await res.text();
+    let errorId: number | null = null;
+    try {
+      errorId = (JSON.parse(body) as { errors?: { errorId?: number }[] }).errors?.[0]?.errorId ?? null;
+    } catch {
+      // a non-JSON error body (a gateway page) is never one of the gone codes; fall through and throw
+    }
+    if (errorId != null && GONE_ERROR_IDS.has(errorId)) return { ok: false, errorId };
+    throw new Error(`eBay item check failed (${itemId}): ${res.status} ${body}`);
+  }
+  const data = (await res.json()) as EbayItemDetail;
+  const avail = data.estimatedAvailabilities?.[0];
+  return {
+    ok: true,
+    price: data.price ? parseFloat(data.price.value) : null,
+    availability: avail?.estimatedAvailabilityStatus ?? null,
+    soldQuantity: avail?.estimatedSoldQuantity ?? 0,
   };
 }
 
@@ -239,6 +292,21 @@ function mockItem(s: Search, n: number): Item {
     conditionId,
     imageUrl: `https://picsum.photos/seed/ebae-${s.id}-${n}/264/264`,
     itemUrl: `https://www.ebay.com/itm/mock-${s.id}-${n}`,
+    // Short enough that a mock auction's one post-end check lands inside a dev session.
+    itemEndDate: auction ? new Date(Date.now() + 30 * 60_000).toISOString() : null,
+    bestOffer: !auction && n % 5 === 0,
+  };
+}
+
+// Mock counterpart to checkItem: every followed listing "sells" at 90% of the price we last
+// saw it at, so a dev without eBay keys still watches rows resolve, a sold median build, and
+// the deal context switch over to it.
+export function mockCheckItem(lastPrice: number | null): CheckResult {
+  return {
+    ok: true,
+    availability: "OUT_OF_STOCK",
+    soldQuantity: 1,
+    price: lastPrice == null ? null : Math.round(lastPrice * 90) / 100,
   };
 }
 

@@ -8,19 +8,23 @@ function money(n: number | null, currency: string) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(n);
 }
 
-// "Is this a deal?" at a glance. basis "market" = a dedicated unfiltered market sample
-// (labeled "Market", trusted on its own); basis "recent" = median of this search's prior
-// in-band alerts (labeled "Typical", gated on >=3 so one alert can't masquerade as typical).
-// Needs a price and a positive baseline, else null and the field is omitted. Pure + exported.
+// "Is this a deal?" at a glance. basis "sold" = median of what this search's tracked listings
+// actually realized (labeled "Sold", the strongest answer there is); basis "market" = a
+// dedicated unfiltered market sample (labeled "Market", trusted on its own); basis "recent" =
+// median of this search's prior in-band alerts (labeled "Typical"). Both counted bases are
+// gated on >=3 so a single data point can't masquerade as a going rate; the market sample
+// carries its own sample size and is exempt. Needs a price and a positive baseline, else null
+// and the field is omitted. Pure + exported.
+const DEAL_LABELS = { sold: "Sold", market: "Market", recent: "Typical" } as const;
+
 export function dealField(item: Item, ctx?: PriceContext): { name: string; value: string; inline: boolean } | null {
   // typical <= 0 (e.g. a $0 starting-bid auction dominating the sample) would make the
   // percentage divide by zero -> "Infinity% over"; treat it as no usable baseline.
   if (!ctx || ctx.typical == null || ctx.typical <= 0 || item.price == null) return null;
-  if (ctx.basis === "recent" && ctx.count < 3) return null; // in-band median needs a real sample
+  if (ctx.basis !== "market" && ctx.count < 3) return null; // a counted median needs a real sample
   const pct = Math.round(((item.price - ctx.typical) / ctx.typical) * 100);
   const rel = pct <= -1 ? `▼ ${-pct}% under` : pct >= 1 ? `▲ ${pct}% over` : "≈ typical";
-  const name = ctx.basis === "market" ? "Market" : "Typical";
-  return { name, value: `${money(ctx.typical, item.currency)} · ${rel}`, inline: true };
+  return { name: DEAL_LABELS[ctx.basis], value: `${money(ctx.typical, item.currency)} · ${rel}`, inline: true };
 }
 
 // DESIGN.md §5: thumbnail, linked title, price/type/condition fields, matched-search footer

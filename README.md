@@ -32,6 +32,40 @@ Browse API default quota is 5,000 calls/day per eBay app, so `EBAY_DAILY_QUOTA` 
 
 The Status page shows what you've spent today against what an evenly-paced day would have spent by now, so 90% used reads differently at 09:00 than at 23:00. If the saved intervals still require more calls than the budget left today, a **budget governor** stretches them so polling lasts rather than running out at noon and leaving the rest of the day dark. It only ever slows polling down—never below the interval you set—is capped at 4x, and releases once the remaining workload has a 5% buffer. Changing an interval, pausing a search, or extending snooze can therefore restore the saved cadence before midnight. The Saved searches bar separates calls spent, work requested, and any overflow the governor must slow down. Nothing to configure.
 
+## Sold prices
+
+An alert is only useful if you know what the thing is worth. By default ebae compares a listing
+against **asking** prices - a daily unfiltered sample of the same search, shown as "Market". Turn
+on **Track sold prices** on a search and it also learns what listings _actually went for_, and
+prefers that: alerts then read "Sold ~$420 · ▼ 30% under", and the search's subtitle shows
+`sold ~$420`.
+
+eBay's sold-search APIs are enterprise-only, so ebae gets there by checking back on listings the
+search already found:
+
+- **Auctions** are checked **once**, five minutes after they end. The end time arrives free with
+  every poll, so nothing is spent guessing - and a snipe in the closing seconds is still captured.
+- **Buy It Now** listings are checked at **3, 7, 14 and 30 days**, at most four times ever. Any
+  poll that sees the listing again skips the next check for free: it's obviously still for sale.
+- Listings you excluded (exclude-terms, "for parts") are never followed - their prices would
+  describe junk, not what you're hunting.
+- Best Offer listings are followed but kept out of the median: eBay keeps showing the asking
+  price after a sale, so what we can read is a ceiling, not the realized price.
+- The deal context appears once **three** sales inside the last 30 days agree; below that it falls
+  back to the market baseline.
+
+Checks come out of the same `EBAY_DAILY_QUOTA` as polling and are counted in the projection on the
+Status page, so the budget governor accounts for them. They're the first thing dropped when the
+budget runs low, and at most three run per tick, so a backlog drains gradually instead of crowding
+out the polls that find deals. A check that fails outright (rate limit, an eBay outage) waits an
+hour rather than retrying immediately, and a listing is abandoned after six failed attempts.
+
+Turning the toggle off stops new checks immediately; listings already being followed age out with
+`SEEN_RETENTION_DAYS`. **Editing what a search matches clears its sold history**, the same way it
+clears the market baseline. Those sales describe the old criteria, and since the sold median
+outranks every other basis, keeping them would caption the new search's alerts with the old
+search's going rate.
+
 ## Notifications
 
 Alerts go to Discord webhooks, push notifications on your own devices, or both. Every target that accepts an alert gets it; an alert is retried after a restart only while no target has taken it.
@@ -77,7 +111,7 @@ Config is env vars - see [.env.example](.env.example). Searches, webhooks and (i
 | `LEGACY_OWNER_EMAIL`                     | one-time claim of pre-multi-user rows                    | unset                          |
 | `POLL_INTERVAL_DEFAULT`                  | fallback poll interval (min)                             | 5                              |
 | `CACHE_REFRESH_HOURS`                    | DB → cache refresh cadence                               | 12                             |
-| `SEEN_RETENTION_DAYS`                    | seen_items dedupe retention (days)                       | 90                             |
+| `SEEN_RETENTION_DAYS`                    | seen_items and tracked_items retention (days)            | 90                             |
 | `MARKET_SAMPLE_HOURS`                    | market-baseline resample gap (band-limited searches)     | 24                             |
 | `EBAY_DAILY_QUOTA`                       | enforced daily call budget, per user                     | 5000                           |
 | `LOG_LEVEL`                              | `error`/`warn`/`info`/`debug`                            | `info`                         |

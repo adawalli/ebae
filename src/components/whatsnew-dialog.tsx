@@ -9,6 +9,7 @@ import {
   RELEASES_PAGE,
   RELEASES_URL,
   WHATSNEW_EVENT,
+  cacheFresh,
   parseReleaseBody,
   parseSemver,
   read,
@@ -27,18 +28,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-const CACHE_TTL = 6 * 60 * 60 * 1000;
-
-/** The feed is public and immutable per tag, so a few hours of staleness costs nothing and keeps us clear of GitHub's unauthenticated rate limit. */
-async function loadReleases(): Promise<GhRelease[] | null> {
+/** Caching the feed for a few hours keeps us clear of GitHub's unauthenticated rate limit; `cacheFresh` decides when that is still safe. */
+async function loadReleases(version: string): Promise<GhRelease[] | null> {
   const raw = read(LS_CACHE);
   try {
     if (raw) {
       const cached = JSON.parse(raw) as { at: number; releases: GhRelease[] };
-      // A negative age means the clock moved back since the write, so treat it as stale
-      // rather than as "fresh forever".
-      const age = Date.now() - cached.at;
-      if (age >= 0 && age < CACHE_TTL) return cached.releases;
+      if (cacheFresh(cached, Date.now(), version)) return cached.releases;
     }
   } catch {
     // corrupt cache entry - fall through and refetch
@@ -81,7 +77,7 @@ export function WhatsNewDialog({ version }: { version: string }) {
     if (!semverGt(version, seen)) return;
 
     let cancelled = false;
-    loadReleases().then((feed) => {
+    loadReleases(version).then((feed) => {
       if (cancelled || !feed) return;
       const picked = selectReleases(feed, seen, version);
       const worthShowing = picked.some((r) => {

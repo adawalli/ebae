@@ -187,3 +187,30 @@ docker compose up -d        # uses .env; bundled Postgres available in the compo
 Kubernetes: `deploy/k8s.yaml` (single replica - poll timers and the seen-item cache are in-process).
 
 Recommended setup: run it on a home box and expose the UI through a Cloudflare Tunnel behind Cloudflare Access. All app traffic is outbound-only. Add `AUTH_MODE=cloudflare` and you can share it with other people - see [Multi-user](#multi-user).
+
+## Releasing
+
+Push an annotated semver tag. `docker.yml` builds and pushes the matching container image, while
+`release.yml` publishes GoReleaser's grouped changelog.
+
+For an ordinary release:
+
+```sh
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+For a release worth calling out, run `git tag -a vX.Y.Z`, then use this tag message:
+
+```text
+vX.Y.Z
+
+## Highlights
+
+**Short title** — One friendly, user-facing sentence.
+```
+
+Add one line per highlight. GoReleaser prepends that block above the generated changelog; without
+the `## Highlights` heading, it publishes the usual changelog and container-image footer only.
+The annotated tag is the canonical source: PR-template highlight candidates are never copied into a
+release automatically.

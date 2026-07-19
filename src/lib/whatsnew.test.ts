@@ -168,6 +168,14 @@ describe("parseReleaseBody", () => {
     ]);
   });
 
+  test("accepts an en dash or a hyphen as the separator", () => {
+    const { highlights } = parseReleaseBody("## Highlights\n\n**En** – One.\n\n**Plain** - Two.\n");
+    expect(highlights).toEqual([
+      { title: "En", body: "One.", meta: null },
+      { title: "Plain", body: "Two.", meta: null },
+    ]);
+  });
+
   test("ignores highlight lines that are not title — sentence", () => {
     const { highlights } = parseReleaseBody("## Highlights\n\nJust a loose sentence.\n**No dash here**\n");
     expect(highlights).toEqual([]);

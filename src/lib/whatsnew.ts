@@ -63,7 +63,8 @@ export function selectReleases(releases: GhRelease[], lastSeen: string, current:
     .sort((a, b) => (semverGt(a.tag_name.replace(/^v/, ""), b.tag_name.replace(/^v/, "")) ? -1 : 1));
 }
 
-const HIGHLIGHT = /^\*\*(.+?)\*\*\s*[—-]\s*(.+)$/;
+// Em dash, en dash or hyphen: the separator is hand-typed into an annotated tag.
+const HIGHLIGHT = /^\*\*(.+?)\*\*\s*[—–-]\s*(.+)$/;
 const ENTRY = /^\* ([0-9a-f]{7,40}) (.+)$/;
 
 /**

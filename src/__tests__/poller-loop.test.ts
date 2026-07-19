@@ -25,6 +25,7 @@ type Cached = { ready: boolean; entries: Map<number, Entry>; users: Map<number, 
 const g = globalThis as typeof globalThis & {
   __ebaeState: Cached;
   __ebaeMock: { pools: Map<number, Item[]> };
+  __ebaeDb: unknown;
 };
 
 const MOCK_POOL_SIZE = 8; // mockSearch seeds this many on a search's first poll
@@ -676,6 +677,100 @@ test("an edit landing mid-check can't book a sale against the cleared criteria",
     globalThis.fetch = realFetch;
     u.ebay = null;
   }
+});
+
+// The two tests above close the window around the eBay call. This one closes the narrower window
+// inside the database call: every tracking write checks the epoch and THEN awaits a statement, so
+// an edit arriving during that statement passes a check that was true and lands a write that no
+// longer is. Fires the edit from inside the statement without awaiting it - an edit arrives on an
+// API route, concurrently, never nested in the tick's own write.
+function resetDuring(kind: "update" | "insert", fire: () => Promise<unknown>): () => Promise<unknown> {
+  const real = g.__ebaeDb as Record<string, (t: unknown) => unknown>;
+  let started: Promise<unknown> = Promise.resolve();
+  let fired = false;
+  const once = () => {
+    if (fired) return;
+    fired = true;
+    started = fire();
+  };
+  g.__ebaeDb = new Proxy(real, {
+    get(t, p, r) {
+      if (p !== kind) return Reflect.get(t as object, p, r);
+      return (tbl: unknown) => {
+        const b = (t as never)[kind](tbl);
+        if (tbl !== trackedItems) return b;
+        if (kind === "update") {
+          return {
+            set: (v: unknown) => {
+              const w = b.set(v);
+              return {
+                where: async (c: unknown) => (once(), w.where(c)),
+              };
+            },
+          };
+        }
+        return {
+          values: (v: unknown) => {
+            const w = b.values(v);
+            return {
+              onConflictDoNothing: async (...a: unknown[]) => (once(), w.onConflictDoNothing(...a)),
+              onConflictDoUpdate: async (...a: unknown[]) => (once(), w.onConflictDoUpdate(...a)),
+            };
+          },
+        };
+      };
+    },
+  });
+  return async () => {
+    g.__ebaeDb = real;
+    await started;
+  };
+}
+
+test("an edit during the follow insert doesn't leave the follow behind", async () => {
+  const e = await seededEntry({ trackSold: true });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(injected());
+  const settle = resetDuring("insert", () => updateSearch(userId, e.s.id, { q: "something else entirely" }));
+
+  await pollOnce(e);
+  await settle();
+
+  expect(e.tracked.size).toBe(0);
+  expect(await trackedRows()).toHaveLength(0);
+});
+
+test("an edit during the deferral flush doesn't resurrect the row", async () => {
+  const e = await seededEntry({ trackSold: true, excludeTerms: "broken" });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  expect(e.tracked.size).toBe(1);
+  // Re-sighted at a new price (so harvest dirties it), alongside an excluded listing that opens
+  // the connection without adding a follow - which is what makes the flush the tick's first write.
+  g.__ebaeMock.pools.get(e.s.id)!.find((i) => i.itemId === item.itemId)!.price = 999;
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(injected({ itemId: "v1|junk|0", title: "leica m6 broken" }));
+  const settle = resetDuring("insert", () => updateSearch(userId, e.s.id, { q: "something else entirely" }));
+
+  await pollOnce(e);
+  await settle();
+
+  expect(await trackedRows()).toHaveLength(0);
+});
+
+test("an edit during the resolution write doesn't book the sale", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  e.tracked.get(item.itemId)!.nextCheckAt = Date.now() - 1000;
+  const settle = resetDuring("update", () => updateSearch(userId, e.s.id, { q: "something else entirely" }));
+
+  await pollOnce(e);
+  await settle();
+
+  expect(e.soldPrices).toHaveLength(0);
+  expect(await trackedRows()).toHaveLength(0);
 });
 
 // The counterpart: an edit that doesn't change what the search matches must keep everything.

@@ -62,6 +62,10 @@ export function pollMode(u: UserCtx): "live" | "mock" | "no-creds" {
 
 export async function pollOnce(e: Entry) {
   const st = state();
+  // Which generation of the tracking state this tick belongs to. An edit that invalidates the
+  // baseline can land in any of the awaits below and wipe all of it; the writes at the end check
+  // this before putting back what that edit removed.
+  const epoch = e.trackEpoch;
   const u = st.users.get(e.s.userId);
   if (!u) {
     // Owner isn't cached (a row created since the last reload). Nothing to bill or notify
@@ -240,7 +244,7 @@ export async function pollOnce(e: Entry) {
         }
       }
       // One insert for the batch, on the connection the alerts above already opened.
-      await insertTracked(database, e, follow);
+      await insertTracked(database, e, follow, epoch);
     }
 
     // Piggyback the daily-call-count persist on the connection these writes already
@@ -256,7 +260,7 @@ export async function pollOnce(e: Entry) {
     await maybeSampleMarket(e, u, database);
     // Check in on followed listings that have come due. Same shape as the sample above:
     // self-limiting, quota-guarded, isolated, and a no-op for a search that isn't tracking.
-    await runDueChecks(e, u, database);
+    await runDueChecks(e, u, database, epoch);
     e.backoffMs = 0;
     // Governed only here, on the path that actually spent a call. The snooze, no-creds and
     // owner-not-cached reschedules above cost no quota, so stretching them would delay noticing

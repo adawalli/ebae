@@ -109,6 +109,7 @@ export async function createSearch(userId: number, input: SearchInput): Promise<
     tracked: new Map(),
     soldPrices: [],
     trackDirty: new Set(),
+    trackEpoch: 0,
   };
   state().entries.set(e.s.id, e);
   schedule(e, 0); // seed immediately

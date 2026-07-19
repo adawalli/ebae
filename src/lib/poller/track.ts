@@ -163,8 +163,9 @@ export async function insertTracked(
   database: ReturnType<typeof db>,
   e: Entry,
   fresh: readonly TrackedItem[],
+  epoch: number,
 ): Promise<void> {
-  if (!fresh.length) return;
+  if (!fresh.length || stale(e, epoch)) return;
   await database
     .insert(trackedItems)
     .values(fresh.map((t) => toRow(e.s.id, t)))
@@ -235,17 +236,32 @@ async function resolve(
 // sold median outranks every other basis, so keeping them would caption the new search's alerts
 // with the old search's going rate.
 export async function resetTracked(database: ReturnType<typeof db>, e: Entry): Promise<void> {
+  e.trackEpoch++;
   e.tracked = new Map();
   e.soldPrices = [];
   e.trackDirty = new Set();
   await database.delete(trackedItems).where(eq(trackedItems.searchId, e.s.id));
 }
 
+// A tick that started before a resetTracked is holding references into containers that no longer
+// belong to the entry, so anything it learned describes criteria the search has dropped. Writing
+// it would put back what the reset removed - a resurrected row, or worse a sale in the median,
+// which outranks every other basis. Checked after each await rather than once at the top: the
+// window that matters is the one the network call opens.
+function stale(e: Entry, epoch: number): boolean {
+  return e.trackEpoch !== epoch;
+}
+
 // The tick's side-task: spend up to MAX_CHECKS_PER_TICK calls finding out how followed listings
 // ended. Modelled on maybeSampleMarket - quota-guarded, billed through the same counter, and
 // wrapped in its own try/catch so a failure here never backs off the poll that called it.
-export async function runDueChecks(e: Entry, u: UserCtx, database: ReturnType<typeof db>): Promise<void> {
-  if (!e.s.trackSold || !e.tracked.size) return;
+export async function runDueChecks(
+  e: Entry,
+  u: UserCtx,
+  database: ReturnType<typeof db>,
+  epoch: number,
+): Promise<void> {
+  if (!e.s.trackSold || !e.tracked.size || stale(e, epoch)) return;
   const due = [...e.tracked.values()].filter((t) => t.nextCheckAt <= Date.now()).slice(0, MAX_CHECKS_PER_TICK);
   if (!due.length) return;
   try {
@@ -263,6 +279,10 @@ export async function runDueChecks(e: Entry, u: UserCtx, database: ReturnType<ty
         // an expired token, an HTML gateway page) throws. The call was spent and told us
         // nothing, so the row MUST move off `now`: left due it would be re-picked every single
         // tick, spending a call each time, aborting the rest of this loop, and never resolving.
+        // Unless a reset landed while this was in flight, in which case t is orphaned and
+        // rescheduling it would put back a follow the edit dropped. Break rather than return so
+        // the call this did spend is still billed by the flush below.
+        if (stale(e, epoch)) break;
         t.checksUsed++;
         if (t.checksUsed >= MAX_CHECK_ATTEMPTS) {
           await resolve(database, e, t, { kind: "resolved", state: "unknown", soldPrice: null });
@@ -276,6 +296,9 @@ export async function runDueChecks(e: Entry, u: UserCtx, database: ReturnType<ty
         recordError(u.id, e.s.q, `sold check: ${message(err)}`);
         break;
       }
+      // Same window on the way out: this answer describes a listing the search may no longer
+      // match, and booking its sale would seed the fresh median with the old criteria's prices.
+      if (stale(e, epoch)) break;
       const out = inferOutcome(t, res, Date.now());
       t.checksUsed++;
       if (out.kind === "defer") {

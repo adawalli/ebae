@@ -19,6 +19,14 @@ jobs:
         with:
           fetch-depth: 1
 
+      # The review is static reading without these: it can describe what the diff says, but not
+      # check whether a suspected bug actually reproduces. Installing here rather than letting the
+      # review shell out to `bun install` keeps the slow part off the review's own clock.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.x" # mirrors ci.yml and the Dockerfile's oven/bun:1
+      - run: bun install --frozen-lockfile
+
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
@@ -30,4 +38,4 @@ jobs:
           prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
           show_full_output: true
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(bun test:*),Bash(bun run lint:*),Bash(bun run build:*),Bash(bunx tsc:*)"

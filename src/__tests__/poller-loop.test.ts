@@ -615,6 +615,69 @@ test("editing what a search matches drops the realized prices with the baseline"
   expect(await trackedRows()).toHaveLength(0);
 });
 
+// The clear above is only half the guarantee. A tick that started before the edit is still
+// holding references into the containers resetTracked replaced, and it resumes after the delete
+// has already run - so its own writes land in the fresh generation and put back exactly what the
+// edit removed. Both halves of that window are pinned below.
+test("an edit landing mid-delivery can't insert follows the edit just cleared", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const u = g.__ebaeState.users.get(userId)!;
+  u.channels = ["https://discord.com/api/webhooks/1/test"];
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(injected());
+  const realFetch = globalThis.fetch;
+  // Delivery is the seam: the follow has been collected by now, but the batch insert that
+  // persists it is still ahead of us.
+  globalThis.fetch = (async () => {
+    await updateSearch(userId, e.s.id, { q: "something else entirely" });
+    return new Response("", { status: 204 });
+  }) as typeof fetch;
+
+  try {
+    await pollOnce(e);
+    expect(e.tracked.size).toBe(0);
+    expect(await trackedRows()).toHaveLength(0); // and these rows would have survived a reload
+  } finally {
+    globalThis.fetch = realFetch;
+    u.channels = [];
+  }
+});
+
+test("an edit landing mid-check can't book a sale against the cleared criteria", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const u = g.__ebaeState.users.get(userId)!;
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
+    if (url.includes("/buy/browse/v1/item/")) {
+      // The edit lands while the check is in flight, so the sale it reports describes the old
+      // criteria - the exact thing the edit cleared the median to get rid of.
+      await updateSearch(userId, e.s.id, { q: "something else entirely" });
+      return Response.json({
+        price: { value: "450.00", currency: "USD" },
+        estimatedAvailabilities: [{ estimatedAvailabilityStatus: "OUT_OF_STOCK", estimatedSoldQuantity: 1 }],
+      });
+    }
+    return Response.json({ itemSummaries: [] });
+  }) as typeof fetch;
+
+  try {
+    e.tracked.get(item.itemId)!.nextCheckAt = Date.now() - 1000;
+    await pollOnce(e);
+    expect(e.soldPrices).toHaveLength(0); // the sold median outranks every other basis
+    expect(e.tracked.size).toBe(0);
+    expect(await trackedRows()).toHaveLength(0);
+  } finally {
+    globalThis.fetch = realFetch;
+    u.ebay = null;
+  }
+});
+
 // The counterpart: an edit that doesn't change what the search matches must keep everything.
 test("a non-criteria edit keeps the realized prices", async () => {
   const e = await seededEntry({ trackSold: true });

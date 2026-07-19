@@ -45,6 +45,11 @@ export type Entry = {
   // Follows whose in-memory state has drifted from their row (a refreshed price, a deferred
   // check). Written out on a tick that opens a connection anyway, so a quiet poll stays quiet.
   trackDirty: Set<string>;
+  // Bumped every time resetTracked wipes the three containers above. A tick reads it once at the
+  // start and re-checks before each write, because it holds references into the containers the
+  // reset replaced: without this, an edit landing while a tick awaits eBay would be undone by
+  // that tick writing its now-orphaned results into the fresh generation.
+  trackEpoch: number;
 };
 
 // Everything a poll needs about the owner of the search it's about to run: their keys, where

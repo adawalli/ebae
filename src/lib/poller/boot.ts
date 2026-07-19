@@ -281,6 +281,7 @@ async function reload() {
         tracked: new Map(),
         soldPrices: [],
         trackDirty: new Set(),
+        trackEpoch: 0,
       };
       st.entries.set(s.id, entry);
       // rows inserted into the DB directly start polling on the next refresh

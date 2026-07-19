@@ -5,6 +5,7 @@ import { Check, Trash2 } from "lucide-react";
 import { MARKETPLACE_CURRENCY, type Channel, type SnoozeConfig, type StatusInfo } from "@/lib/types";
 import { ago, duration, fmt, until } from "@/lib/format";
 import { currentSubscription, disablePush, enablePush, pushSupported } from "@/lib/push-client";
+import { LS_DISABLED, LS_LAST_SEEN, WHATSNEW_EVENT, parseSemver, read, store } from "@/lib/whatsnew";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -171,6 +172,8 @@ export function StatusView({
           </Card>
         )}
 
+        {status && <ReleaseNotesCard version={status.version} />}
+
         {status && (
           // Remounted when the saved creds change (a save or a remove), which re-seeds the
           // inputs from the server. A plain effect would instead clobber whatever the user is
@@ -214,6 +217,51 @@ export function StatusView({
         )}
       </div>
     </div>
+  );
+}
+
+function ReleaseNotesCard({ version }: { version: string }) {
+  const [enabled, setEnabled] = useState(true);
+
+  useEffect(() => {
+    // localStorage is client-only, so seed after mount instead of during render. The
+    // event covers the release-notes dialog closing over this card with "don't show" ticked.
+    const sync = () => setEnabled(read(LS_DISABLED) !== "1");
+    sync();
+    window.addEventListener(WHATSNEW_EVENT, sync);
+    return () => window.removeEventListener(WHATSNEW_EVENT, sync);
+  }, []);
+
+  function toggle(next: boolean) {
+    setEnabled(next);
+    if (next) {
+      try {
+        localStorage.removeItem(LS_DISABLED);
+      } catch {
+        // storage blocked - nothing was ever written to remove
+      }
+      return;
+    }
+    store(LS_DISABLED, "1");
+    // Don't bank a backlog while they're off - turning them back on shouldn't replay old releases.
+    if (parseSemver(version)) store(LS_LAST_SEEN, version);
+  }
+
+  return (
+    <Card className="mb-5">
+      <CardContent>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold">Release notes</div>
+            <div className="mt-[3px] max-w-[440px] text-[12.5px] text-muted-foreground">
+              Show what changed the first time you open ebae after an upgrade. Notes are read from the GitHub releases
+              feed in your browser.
+            </div>
+          </div>
+          <Switch aria-label="Release notes" checked={enabled} onCheckedChange={toggle} />
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

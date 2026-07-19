@@ -37,6 +37,21 @@ export function read(key: string): string | null {
   }
 }
 
+export const CACHE_TTL = 6 * 60 * 60 * 1000;
+
+/**
+ * A cached feed is usable while it is recent *and* already lists the running version.
+ * Each tag's body never changes, but the list does: an upgrade that lands mid-TTL would
+ * otherwise be answered from a feed that predates it, showing the previous release's notes.
+ */
+export function cacheFresh(cached: { at: number; releases: GhRelease[] }, now: number, version: string): boolean {
+  // A negative age means the clock moved back since the write, so treat it as stale
+  // rather than as "fresh forever".
+  const age = now - cached.at;
+  if (age < 0 || age >= CACHE_TTL) return false;
+  return cached.releases.some((r) => r.tag_name.replace(/^v/, "") === version);
+}
+
 /** Strict x.y.z only. Rejects "dev" (the Docker default) and prereleases, so unreleased builds never pop the modal. */
 export function parseSemver(v: string): [number, number, number] | null {
   const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);

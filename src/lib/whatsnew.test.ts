@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { parseReleaseBody, parseSemver, selectReleases, semverGt, store, type GhRelease } from "./whatsnew";
+import {
+  CACHE_TTL,
+  cacheFresh,
+  parseReleaseBody,
+  parseSemver,
+  selectReleases,
+  semverGt,
+  store,
+  type GhRelease,
+} from "./whatsnew";
 
 // Bodies copied verbatim from the live GitHub releases feed.
 const V31 =
@@ -183,5 +192,27 @@ describe("parseReleaseBody", () => {
 
   test("survives an empty body", () => {
     expect(parseReleaseBody("")).toEqual({ highlights: [], groups: [] });
+  });
+});
+
+describe("cacheFresh", () => {
+  const feed = { at: 1000, releases: [rel("v0.1.32"), rel("v0.1.31")] };
+
+  test("reuses a recent feed that knows the running version", () => {
+    expect(cacheFresh(feed, 1000 + CACHE_TTL - 1, "0.1.32")).toBe(true);
+  });
+
+  test("expires once the feed is older than the TTL", () => {
+    expect(cacheFresh(feed, 1000 + CACHE_TTL, "0.1.32")).toBe(false);
+  });
+
+  test("rejects a feed written after now, which means the clock moved back", () => {
+    expect(cacheFresh(feed, 999, "0.1.32")).toBe(false);
+  });
+
+  test("refetches when the running version is missing, however recent the feed", () => {
+    // The upgrade landed after this feed was cached, so the list is stale even though
+    // every tag body in it still is not.
+    expect(cacheFresh(feed, 1001, "0.1.33")).toBe(false);
   });
 });

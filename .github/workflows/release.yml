@@ -16,7 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.ref }} # preserve the annotated tag body instead of checking out its SHA
           fetch-depth: 0 # changelog diffs against the previous tag, so shallow won't do
+      - name: Verify annotated tag
+        run: test "$(git cat-file -t "$GITHUB_REF")" = tag
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"

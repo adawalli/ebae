@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 import {
+  BONUS_HEADROOM,
   GOV_MAX_FACTOR,
   GOV_MIN_SPEND,
   MAX_BACKOFF_MS,
   QUOTA_SKIP_MS,
   activeFracElapsed,
   baselineInvalidated,
+  bonusBudget,
   excludeMatch,
   governedDelayMs,
   governorDecision,
@@ -16,6 +18,7 @@ import {
   median,
   mergeCalls,
   snoozeMinutes,
+  surplusFrac,
   usedToday,
 } from "./poller";
 import { dealField } from "./discord";
@@ -301,6 +304,71 @@ test("usedToday reads a counter only on the day it was counted", () => {
   // The counter is not cleared at midnight - the next poll rolls it over - so every reader that
   // isn't that poll has to treat a stale date as no spend rather than as a full day of it.
   expect(usedToday({ date: "Thu Jul 16 2026", used: 4500 }, "Fri Jul 17 2026")).toBe(0);
+});
+
+// Budget that isn't spent by local midnight expires worthless, so a user whose saved
+// configuration doesn't need it all can afford extra sold checks. bonusBudget is how much of
+// that surplus is available right now - the two bounds below are the whole feature.
+test("bonusBudget stays out of what the saved configuration still needs", () => {
+  // Midday, 100 spent, a config that costs 1000/day. The afternoon needs 500, the 5% headroom
+  // is 250, so 4150 of the ceiling is genuinely spare - but pace caps it at half the day's
+  // spendable budget: floor(0.5 * 4750) - 100.
+  expect(bonusBudget(100, 5000, 0.5, 1000)).toBe(2275);
+  // An over-configured day: the reserve (3000) is now the binding bound, not the pace.
+  expect(bonusBudget(100, 5000, 0.5, 6000)).toBe(1650);
+});
+
+// "Use the budget throughout the day" - surplus trickles out in proportion to the elapsed
+// pollable day rather than being dumped the moment it's identified.
+test("bonusBudget paces the surplus across the day", () => {
+  expect(bonusBudget(0, 5000, 0, 1000)).toBe(0); // just after midnight: nothing is surplus yet
+  expect(bonusBudget(2500, 5000, 0.5, 1000)).toBe(0); // already at pace: no more today
+  // Monotonic in elapsed day, at a fixed spend.
+  let prev = -1;
+  for (const f of [0.1, 0.25, 0.5, 0.75, 0.9, 1]) {
+    const b = bonusBudget(100, 5000, f, 1000);
+    expect(b).toBeGreaterThanOrEqual(prev);
+    prev = b;
+  }
+  expect(bonusBudget(100, 5000, 1, 1000)).toBe(4650); // end of day: everything but the headroom
+});
+
+// The guarantee that makes this safe to turn on: spending the entire bonus budget must never
+// make the governor slow the user's polls. That is what the reserve + headroom buy.
+test("bonusBudget never spends the governor into engaging", () => {
+  for (const frac of [0.1, 0.25, 0.5, 0.75, 0.99]) {
+    for (const projected of [0, 500, 1000, 3000, 6000]) {
+      for (const used of [0, 100, 1000, 2500, 4000]) {
+        const bonus = bonusBudget(used, 5000, frac, projected);
+        const spent = used + bonus;
+        // Spending it all leaves the factor exactly where it was: the surplus is only ever what
+        // the configuration doesn't need. A user the governor is already slowing gets no bonus
+        // at all, so the two factors agree there too.
+        expect(governorFactor(spent, 5000, frac, projected)).toBe(governorFactor(used, 5000, frac, projected));
+        if (bonus > 0) {
+          expect(governorFactor(spent, 5000, frac, projected)).toBe(1);
+          expect(spent).toBeLessThanOrEqual(5000 - Math.ceil(BONUS_HEADROOM * 5000));
+        }
+      }
+    }
+  }
+});
+
+// The daily counter rolls on the server's calendar day, but activeFrac is measured in the user's
+// own zone. A user 14 hours ahead would read as most of the way through their day at the instant
+// their budget resets, and the pace bound would release the whole surplus in the first hour.
+test("surplusFrac paces against the day the counter actually rolls on", () => {
+  const at = (h: number, m = 0) => new Date(2026, 6, 19, h, m, 0);
+  expect(surplusFrac(0.58, at(0))).toBe(0); // their afternoon, the server's midnight: nothing yet
+  expect(surplusFrac(0.58, at(6))).toBe(0.25); // still the server's morning
+  expect(surplusFrac(0.25, at(18))).toBe(0.25); // behind the server: their own clock still rules
+  expect(surplusFrac(0.5, at(12))).toBe(0.5); // same zone: unchanged
+});
+
+test("bonusBudget guards degenerate inputs", () => {
+  expect(bonusBudget(0, 0, 0.5, 1000)).toBe(0); // ceiling unset
+  expect(bonusBudget(0, 5000, -1, 1000)).toBe(0);
+  expect(bonusBudget(9999, 5000, 0.5, 1000)).toBe(0); // already overspent
 });
 
 test("governedDelayMs never polls faster than the user's interval", () => {

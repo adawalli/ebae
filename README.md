@@ -60,6 +60,11 @@ budget runs low, and at most three run per tick, so a backlog drains gradually i
 out the polls that find deals. A check that fails outright (rate limit, an eBay outage) waits an
 hour rather than retrying immediately, and a listing is abandoned after six failed attempts.
 
+Quota you don't use expires at midnight, so if your saved searches don't need the whole budget the
+poller spends the leftovers looking in on followed listings early - catching sales that would
+otherwise happen in a gap and be unreadable by the next scheduled check. It's paced across the day,
+never touches what your searches still need, and can't slow your polling down. Nothing to configure.
+
 Turning the toggle off stops new checks immediately; listings already being followed age out with
 `SEEN_RETENTION_DAYS`. **Editing what a search matches clears its sold history**, the same way it
 clears the market baseline. Those sales describe the old criteria, and since the sold median

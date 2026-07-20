@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { freshTestDb } from "./helpers/db";
 import { SINGLE_USER_EMAIL } from "@/lib/authmode";
@@ -64,7 +64,14 @@ let database: Awaited<ReturnType<typeof freshTestDb>>;
 let userId: number;
 let realRandom: () => number;
 
+// A wall-clock hour today, in the server's own zone - which is the zone an unset snooze reads.
+const atLocal = (hour: number) => new Date(2026, 6, 19, hour, 0, 0);
+
 beforeEach(async () => {
+  // Pinned at local midnight, where no pollable time has elapsed yet and so no quota is surplus.
+  // Without this every test below would spend a bonus check whenever the suite happened to run
+  // after ~01:00, and mock mode sells whatever it is asked about.
+  setSystemTime(atLocal(0));
   database = await freshTestDb();
   [{ id: userId }] = await database.insert(users).values({ email: SINGLE_USER_EMAIL }).returning({ id: users.id });
   // 0.5 fails mockSearch's `< 0.4` roll, so the pool only ever grows when a test injects.
@@ -74,6 +81,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   Math.random = realRandom;
+  setSystemTime();
 });
 
 async function seededEntry(over: Partial<SearchInput> = {}): Promise<Entry> {
@@ -295,8 +303,9 @@ async function delayAfterPoll(e: Entry): Promise<number> {
 
 test("a poll within budget reschedules at exactly the configured interval", async () => {
   const e = await seededEntry({ intervalMin: 5 });
+  setSystemTime(atLocal(12)); // midday, or the governor is inert before it ever looks at spend
   const u = g.__ebaeState.users.get(userId)!;
-  // A tenth of the budget spent - nowhere near the day's pace, whatever time the suite runs at.
+  // A tenth of the budget spent by midday - past the inert floor, nowhere near the day's pace.
   u.calls = { date: new Date().toDateString(), used: Math.floor(status(userId).quota.ceiling * 0.1) };
 
   expect(await delayAfterPoll(e)).toBe(5 * 60_000);
@@ -307,8 +316,11 @@ test("a poll running ahead of budget reschedules slower, and says so", async () 
   const e = await seededEntry({ intervalMin: 5 });
   const u = g.__ebaeState.users.get(userId)!;
   const ceiling = status(userId).quota.ceiling;
-  // Effectively the whole budget gone. However far into the day the suite runs, the remaining
-  // budget cannot cover the remaining hours, so the governor is pinned at its cap.
+  // Midday: the governor is deliberately inert at the midnight the suite otherwise pins, since
+  // no pollable time has elapsed for a projection to mean anything.
+  setSystemTime(atLocal(12));
+  // Effectively the whole budget gone, so the remaining budget cannot cover the remaining hours
+  // and the governor is pinned at its cap.
   u.calls = { date: new Date().toDateString(), used: ceiling - 1 };
 
   const delay = await delayAfterPoll(e);
@@ -325,6 +337,7 @@ test("a counter left over from yesterday engages nothing", async () => {
   await seededEntry({ intervalMin: 5 });
   const u = g.__ebaeState.users.get(userId)!;
   const ceiling = status(userId).quota.ceiling;
+  setSystemTime(atLocal(12)); // midday, so reading the counter raw really would pin every path
   // Local midnight has passed but this user hasn't polled since, so their counter still holds
   // yesterday's total. Read raw, that spend measured against a minutes-old day projects way
   // past the ceiling and pins every read path to the cap - for a user who has spent nothing.
@@ -592,6 +605,179 @@ test("a failing check moves the schedule instead of re-spending a call every tic
     // Nothing is due any more, so the second tick spends nothing on checks. Before the fix this
     // was another billed call, every tick, forever.
     expect(itemCalls).toBe(1);
+  } finally {
+    globalThis.fetch = realFetch;
+    u.ebay = null;
+  }
+});
+
+// ---------- surplus-funded checks ----------
+
+// A fixed-price listing gets four scheduled checks in its whole life, so it can sell in a gap
+// and be unreadable by the time the next one lands - the price is gone. Quota that would expire
+// at midnight instead buys the check early.
+test("surplus quota pulls a sold check forward", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []); // no re-sighting, so nothing but a check can resolve it
+  const u = g.__ebaeState.users.get(userId)!;
+  const t = e.tracked.get(item.itemId)!;
+  expect(t.nextCheckAt).toBeGreaterThan(Date.now()); // days from due: the schedule wants nothing yet
+
+  setSystemTime(atLocal(12)); // half the pollable day gone, a 5-minute search barely dented it
+  const before = u.calls.used;
+  await pollOnce(e);
+
+  expect(u.calls.used).toBe(before + 2); // the poll, plus a check nothing had scheduled
+  const [row] = await trackedRows();
+  expect(row.state).toBe("sold");
+  expect(row.soldPrice).toBe(Math.round(item.price! * 90) / 100); // mock sells at 90%
+  expect(e.tracked.size).toBe(0);
+  expect(e.soldPrices).toHaveLength(1); // the realized price the gap would have swallowed
+});
+
+// The surplus is only what the saved configuration will never need. A user already spending at
+// or ahead of pace has none, and their polls must not be competing with a nicety.
+test("no surplus buys no early check", async () => {
+  const e = await seededEntry({ trackSold: true });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(injected());
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const u = g.__ebaeState.users.get(userId)!;
+
+  setSystemTime(atLocal(12));
+  u.calls = { date: new Date().toDateString(), used: 4000 }; // way past half the budget at midday
+  await pollOnce(e);
+
+  expect(u.calls.used).toBe(4001); // the poll only
+  expect((await trackedRows())[0].state).toBe("active");
+});
+
+// An early look that finds the listing still for sale has to leave the schedule exactly as it
+// was. Spending a scheduled check here would mean the surplus quietly shortens the listing's
+// real coverage - paying for extra looks by taking later ones away.
+test("an early check that finds the listing still listed costs it nothing", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const u = g.__ebaeState.users.get(userId)!;
+  const t = e.tracked.get(item.itemId)!;
+  const boundary = t.nextCheckAt;
+  // Creds alone pick the live branch, which is what lets the stub decide what the check finds.
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const realFetch = globalThis.fetch;
+  let itemCalls = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
+    if (url.includes("/buy/browse/v1/item/")) {
+      itemCalls++;
+      return Response.json({
+        price: { value: "1234.56", currency: "USD" },
+        estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
+      });
+    }
+    return Response.json({ itemSummaries: [] });
+  }) as typeof fetch;
+
+  try {
+    setSystemTime(atLocal(12));
+    await pollOnce(e);
+
+    expect(itemCalls).toBe(1);
+    expect(t.checksUsed).toBe(0); // the four the schedule owes it are all still there
+    expect(t.nextCheckAt).toBe(boundary); // and it is still due when it was always due
+
+    await pollOnce(e);
+    // One extra look per listing per day: without that, every tick of a five-minute search would
+    // re-check the same listing until the surplus ran out.
+    expect(itemCalls).toBe(1);
+  } finally {
+    globalThis.fetch = realFetch;
+    u.ebay = null;
+  }
+});
+
+// The due loop answers a failed check by moving the schedule and counting an attempt, because a
+// row left due would be re-picked every tick forever. A surplus check has no such problem - it
+// was never due - so it must not touch either, or a rate-limited afternoon would walk listings
+// toward "unknown" on checks the schedule never asked for.
+test("a failing early check leaves the listing's schedule alone", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const u = g.__ebaeState.users.get(userId)!;
+  const t = e.tracked.get(item.itemId)!;
+  const boundary = t.nextCheckAt;
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
+    if (url.includes("/buy/browse/v1/item/")) {
+      return Response.json({ errors: [{ errorId: 2001 }] }, { status: 500 }); // not a "gone" code: throws
+    }
+    return Response.json({ itemSummaries: [] });
+  }) as typeof fetch;
+
+  try {
+    setSystemTime(atLocal(12));
+    const before = u.calls.used;
+    await pollOnce(e);
+
+    expect(u.calls.used - before).toBe(2); // the call was spent, so it is billed
+    expect(t.checksUsed).toBe(0);
+    expect(t.nextCheckAt).toBe(boundary);
+    expect((await trackedRows())[0].state).toBe("active");
+  } finally {
+    globalThis.fetch = realFetch;
+    u.ebay = null;
+  }
+});
+
+// The two check paths run back to back in one tick, and a scheduled check that finds the listing
+// still for sale pushes it to the next decay step - which is exactly the profile the surplus pass
+// hunts for. Without a shared ledger it would re-ask, in the same tick, the question the call a
+// moment earlier had just answered.
+test("a listing the schedule just checked is not checked again by the surplus pass", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const u = g.__ebaeState.users.get(userId)!;
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const realFetch = globalThis.fetch;
+  let itemCalls = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
+    if (url.includes("/buy/browse/v1/item/")) {
+      itemCalls++;
+      return Response.json({
+        price: { value: "1234.56", currency: "USD" },
+        estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
+      });
+    }
+    return Response.json({ itemSummaries: [] });
+  }) as typeof fetch;
+
+  try {
+    setSystemTime(atLocal(12)); // surplus available, so the bonus pass really does run
+    const t = e.tracked.get(item.itemId)!;
+    t.nextCheckAt = Date.now() - 1000; // due: the scheduled path takes it first
+    const before = u.calls.used;
+    await pollOnce(e);
+
+    expect(itemCalls).toBe(1); // the due check, and nothing else
+    expect(u.calls.used - before).toBe(2); // one poll, one check
+    expect(t.nextCheckAt).toBeGreaterThan(Date.now()); // deferred to its next step, as usual
   } finally {
     globalThis.fetch = realFetch;
     u.ebay = null;

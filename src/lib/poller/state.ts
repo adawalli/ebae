@@ -24,7 +24,11 @@ export type TrackedItem = {
   itemEndDate: number | null; // auctions only
   firstSeenAt: number; // anchors the fixed-price decay schedule
   nextCheckAt: number;
-  checksUsed: number; // eBay calls spent on this listing, which is what caps the auction retry
+  // Scheduled checks spent on this listing, which is what caps the auction retry and the
+  // failure loop. Surplus-funded checks (runBonusChecks) deliberately don't count: they are
+  // extra looks, and letting them run this up would retire a listing whose real schedule is
+  // barely started the first time a check errors.
+  checksUsed: number;
 };
 
 export type Entry = {
@@ -44,6 +48,11 @@ export type Entry = {
   // Follows whose in-memory state has drifted from their row (a refreshed price, a deferred
   // check). Written out on a tick that opens a connection anyway, so a quiet poll stays quiet.
   trackDirty: Set<string>;
+  // Listings this search has already spent surplus quota on today, and the local day that set
+  // belongs to. One extra look per listing per day: without it every tick would re-check the
+  // same furthest-out follow instead of working across the backlog. In memory only - a restart
+  // costs at most one duplicate check per listing, which is a call, not a wrong answer.
+  bonus: { date: string; done: Set<string> };
   // Bumped every time resetTracked wipes the three containers above. A tick reads it once at the
   // start and re-checks before each write, because it holds references into the containers the
   // reset replaced: without this, an edit landing while a tick awaits eBay would be undone by

@@ -12,7 +12,7 @@ import { projectedCalls } from "./projection";
 import { QUOTA_CEILING, flushCalls, governedDelayMs, governorFor } from "./quota";
 import { snoozeMinutes, snoozing } from "./snooze";
 import { type Entry, type TrackedItem, type UserCtx, bumpAlerts, message, plog, recordError, state } from "./state";
-import { flushTracked, harvest, insertTracked, newTracked, runDueChecks, soldContext } from "./track";
+import { flushTracked, harvest, insertTracked, newTracked, runBonusChecks, runDueChecks, soldContext } from "./track";
 
 export const MAX_BACKOFF_MS = 30 * 60_000;
 // How long a quota-exhausted search idles before re-checking. healthWindowMs treats this as
@@ -261,16 +261,19 @@ export async function pollOnce(e: Entry) {
     // Check in on followed listings that have come due. Same shape as the sample above:
     // self-limiting, quota-guarded, isolated, and a no-op for a search that isn't tracking.
     await runDueChecks(e, u, database, epoch);
+    const active = [...st.entries.values()].filter((x) => x.s.userId === u.id && x.s.enabled);
+    const projected = projectedCalls(active, 1440 - snoozeMinutes(u.snooze));
+    // Last, so the budget it reads has this tick's poll, sample and due checks already in it.
+    // Deliberately absent from `projected`: these calls are the surplus that projection leaves
+    // over, and budgeting for them would engage the governor against the very thing it makes
+    // affordable. Resolving a listing early only ever shrinks the projection (checksDue24h).
+    await runBonusChecks(e, u, database, epoch, projected);
     e.backoffMs = 0;
     // Governed only here, on the path that actually spent a call. The snooze, no-creds and
     // owner-not-cached reschedules above cost no quota, so stretching them would delay noticing
     // that the window ended or the keys arrived while saving nothing. The quota-exhausted retry
     // and the error backoff are already their own (longer) delays.
-    const active = [...st.entries.values()].filter((x) => x.s.userId === u.id && x.s.enabled);
-    schedule(
-      e,
-      governedDelayMs(e.s.intervalMin, governorFor(u, projectedCalls(active, 1440 - snoozeMinutes(u.snooze)))),
-    );
+    schedule(e, governedDelayMs(e.s.intervalMin, governorFor(u, projected)));
   } catch (err) {
     plog.error({ err, searchId: e.s.id, q: e.s.q }, "poll failed"); // stack goes to stdout; recordError keeps only the message for the UI
     recordError(u.id, e.s.q, message(err));

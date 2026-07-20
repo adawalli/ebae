@@ -48,11 +48,13 @@ export type Entry = {
   // Follows whose in-memory state has drifted from their row (a refreshed price, a deferred
   // check). Written out on a tick that opens a connection anyway, so a quiet poll stays quiet.
   trackDirty: Set<string>;
-  // Listings this search has already spent surplus quota on today, and the local day that set
-  // belongs to. One extra look per listing per day: without it every tick would re-check the
-  // same furthest-out follow instead of working across the backlog. In memory only - a restart
-  // costs at most one duplicate check per listing, which is a call, not a wrong answer.
-  bonus: { date: string; done: Map<string, number> }; // itemId -> last checked at, spaced by BONUS_MIN_GAP_MS
+  // When each of this search's follows was last looked at, and the local day the map was last
+  // swept on. A listing is off limits until BONUS_MIN_GAP_MS has passed, and the least recently
+  // checked goes first: without that every tick would re-check the same furthest-out follow
+  // instead of working across the backlog. The day only triggers the sweep that bounds the map -
+  // the gap itself carries across it. In memory only, so a restart costs at most one duplicate
+  // check per listing, which is a call, not a wrong answer.
+  bonus: { date: string; done: Map<string, number> }; // itemId -> last checked at
   // Bumped every time resetTracked wipes the three containers above. A tick reads it once at the
   // start and re-checks before each write, because it holds references into the containers the
   // reset replaced: without this, an edit landing while a tick awaits eBay would be undone by

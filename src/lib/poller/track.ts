@@ -150,11 +150,21 @@ export const MAX_CHECKS_PER_TICK = 3;
 // one tick, including on the listing the scheduled pass just checked.
 export const BONUS_MIN_GAP_MS = 4 * 3600_000;
 
-// The entry's ledger of when each listing was last looked at, rolled when the local day turns
-// to keep it from growing without bound. Both check paths stamp it, so a listing the scheduled
-// pass just checked is not re-asked, in the same tick, the question that call just answered.
+// The entry's ledger of when each listing was last looked at. Both check paths stamp it, so a
+// listing the scheduled pass just checked is not re-asked, in the same tick, the question that
+// call just answered.
+//
+// Swept at the local day turn to keep it from growing without bound, but pruned rather than
+// cleared: these are last-checked stamps, not a per-day allowance, so a listing checked at 23:59
+// has to keep its gap across midnight. It would otherwise be checked again minutes later - the
+// counter's own day rolls at the same moment, which resets usedToday and reopens the budget. A
+// stamp older than the gap can no longer block anything, so dropping those is what bounds the map.
 function bonusDone(e: Entry, today = new Date().toDateString()): Map<string, number> {
-  if (e.bonus.date !== today) e.bonus = { date: today, done: new Map() };
+  if (e.bonus.date !== today) {
+    const cutoff = Date.now() - BONUS_MIN_GAP_MS;
+    for (const [itemId, at] of e.bonus.done) if (at <= cutoff) e.bonus.done.delete(itemId);
+    e.bonus.date = today;
+  }
   return e.bonus.done;
 }
 

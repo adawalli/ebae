@@ -4,7 +4,8 @@ import { type CheckResult, checkItem, mockCheckItem } from "@/lib/ebay";
 import { trackedItems } from "@/lib/schema";
 import type { Item, PriceKind } from "@/lib/types";
 import { median } from "./market";
-import { QUOTA_CEILING, flushCalls } from "./quota";
+import { QUOTA_CEILING, bonusBudget, flushCalls, surplusFrac, usedToday } from "./quota";
+import { activeFracNow } from "./snooze";
 import { type Entry, type TrackedItem, type UserCtx, message, plog, recordError } from "./state";
 
 // Sold-price tracking: what a followed listing actually went for, inferred by re-fetching it
@@ -140,6 +141,31 @@ export function inferOutcome(t: TrackedItem, res: CheckResult, now: number): Che
 // quota pause) can come back with a large backlog; draining it a few at a time keeps a burst of
 // checks from crowding out the polls that actually find deals.
 export const MAX_CHECKS_PER_TICK = 3;
+
+// The entry's ledger of listings already looked at today, rolled when the local day turns. Both
+// check paths go through it, so a listing the schedule just checked can't also be handed a
+// surplus check moments later in the same tick - a second call for an answer we already have.
+function bonusDone(e: Entry, today = new Date().toDateString()): Set<string> {
+  if (e.bonus.date !== today) e.bonus = { date: today, done: new Set() };
+  return e.bonus.done;
+}
+
+// Which follows surplus quota may buy an unscheduled check on, best candidates first.
+//
+// Not due: a check that has come due belongs to runDueChecks, which will spend it anyway.
+// Not an auction: before its end an auction reads IN_STOCK, which inferOutcome resolves as
+// "nobody bid" - a correct reading only after the hammer falls, so an early one books a lie.
+// Not already done today: `done` is the entry's per-day set, which is what keeps the surplus
+// from re-checking one listing over and over instead of spreading across the backlog.
+//
+// Sorted by how far out the next scheduled check is, furthest first: that listing has the
+// longest stretch in which it could sell and then stop being readable, which is exactly the
+// realized price this whole feature exists to catch.
+export function bonusEligible(tracked: Iterable<TrackedItem>, done: ReadonlySet<string>, now: number): TrackedItem[] {
+  return [...tracked]
+    .filter((t) => t.priceKind !== "bid" && t.nextCheckAt > now && !done.has(t.itemId))
+    .sort((a, b) => b.nextCheckAt - a.nextCheckAt);
+}
 
 // A followed listing as its row. Shared by the initial insert and the flush below, so the two
 // can't disagree about what a row looks like.
@@ -317,6 +343,10 @@ export async function runDueChecks(
       // the owner's remaining calls belong to the polls that find deals in the first place.
       if (u.calls.used >= QUOTA_CEILING) break;
       u.calls.used++;
+      // This listing has had its look for today. Without this the surplus pass below would pick
+      // up whatever this check defers - a fresh future nextCheckAt makes it a prime candidate -
+      // and spend a second call re-asking the question this one just answered.
+      bonusDone(e).add(t.itemId);
       let res: CheckResult;
       try {
         // Same mode gate as the poll that called us: live keys, or single mode's mock.
@@ -359,6 +389,70 @@ export async function runDueChecks(
     await flushCalls(database, u.id, u.calls); // piggyback the calls this side-task just spent
   } catch (err) {
     recordError(u.id, e.s.q, `sold check: ${message(err)}`); // warn only; the poll keeps its cadence
+  }
+}
+
+// The other side of the same tick: spend quota that would otherwise expire at local midnight on
+// checks the schedule hasn't asked for yet. A fixed-price listing gets four checks in its life,
+// so it can sell inside a gap and stop being readable before the next one - the realized price
+// is simply lost. Surplus buys those checks early.
+//
+// Everything that makes this safe lives in the two pure functions above: bonusBudget hands out
+// only what the saved configuration will never need (so this can't slow a single poll, and
+// can't engage the governor), and bonusEligible refuses the listings where an early answer would
+// be a wrong one. `projected` is the caller's daily projection, the same figure the governor is
+// about to be judged against.
+export async function runBonusChecks(
+  e: Entry,
+  u: UserCtx,
+  database: ReturnType<typeof db>,
+  epoch: number,
+  projected: number,
+): Promise<void> {
+  if (!e.s.trackSold || !e.tracked.size || stale(e, epoch)) return;
+  const now = new Date();
+  const today = now.toDateString();
+  const done = bonusDone(e, today);
+  const frac = surplusFrac(activeFracNow(u.snooze, now), now); // paced by the day the counter rolls on
+  const spare = bonusBudget(usedToday(u.calls, today), QUOTA_CEILING, frac, projected);
+  if (spare <= 0) return;
+  const picks = bonusEligible(e.tracked.values(), done, now.getTime()).slice(0, Math.min(spare, MAX_CHECKS_PER_TICK));
+  if (!picks.length) return;
+  try {
+    for (const t of picks) {
+      u.calls.used++;
+      // Marked before the call, not after: an item whose check throws has still cost a call, and
+      // retrying it on the next tick would spend the day's surplus on one broken listing.
+      done.add(t.itemId);
+      let res: CheckResult;
+      try {
+        res = u.ebay ? await checkItem(u.ebay, t.itemId) : mockCheckItem(t.lastPrice);
+      } catch (err) {
+        // Nothing is mutated on the way out, unlike the due loop: this listing's schedule was
+        // never the reason we called, so there is nothing to move, and counting the attempt
+        // would spend a real check the schedule still owes it. Break for the same reason the
+        // due loop does - a failing check is nearly always rate limiting or auth.
+        recordError(u.id, e.s.q, `surplus sold check: ${message(err)}`);
+        break;
+      }
+      if (stale(e, epoch)) break; // an edit landed mid-call; this answer describes dropped criteria
+      const out = inferOutcome(t, res, Date.now());
+      if (out.kind === "defer") {
+        // Normally the same boundary it already had, so this writes nothing. It differs only
+        // when the row was sitting on a failure retry, and taking the schedule's own answer
+        // back is the right move there.
+        if (out.nextCheckAt !== t.nextCheckAt) {
+          t.nextCheckAt = out.nextCheckAt;
+          e.trackDirty.add(t.itemId);
+        }
+        continue;
+      }
+      await resolve(database, e, t, out, epoch);
+    }
+    await flushTracked(database, e);
+    await flushCalls(database, u.id, u.calls);
+  } catch (err) {
+    recordError(u.id, e.s.q, `surplus sold check: ${message(err)}`); // warn only, like the due loop
   }
 }
 

@@ -47,6 +47,46 @@ export function governorFactor(
   return Math.round(factor * 1000) / 1000;
 }
 
+// ---------- surplus budget ----------
+// The mirror image of the governor: it slows a user who needs more calls than they have left,
+// this hands calls to a user who has more than their configuration will ever use. Unspent quota
+// expires at local midnight, so the alternative to spending it is throwing it away.
+
+export const BONUS_HEADROOM = 0.05; // fraction of the ceiling the surplus never touches
+
+// Calls that can be spent on extra work right now without ever costing the saved configuration
+// a poll. Two bounds, both necessary:
+//
+//   reserve - what the current configuration still needs for the rest of the day (the same
+//             expression the governor projects against). Staying above it is what guarantees
+//             requiredGovernorFactor stays below 1 after the surplus is spent, so a user can
+//             never be throttled for having accepted bonus work.
+//   pace    - surplus is released in proportion to the pollable day already elapsed, so it
+//             trickles out all day instead of being dumped the moment it's identified. Near
+//             midnight activeFrac is ~0, which also makes this the min-spend guard the governor
+//             needs GOV_MIN_SPEND for.
+//
+// The headroom absorbs the overshoot from concurrent ticks: several of one user's searches can
+// each read the same budget before any of them bills, and each spends at most MAX_CHECKS_PER_TICK.
+export function bonusBudget(used: number, ceiling: number, activeFrac: number, projected: number): number {
+  if (ceiling <= 0 || activeFrac <= 0) return 0;
+  const headroom = Math.ceil(BONUS_HEADROOM * ceiling);
+  const reserve = Math.ceil(projected * (1 - activeFrac));
+  const hard = ceiling - used - reserve - headroom;
+  const pace = Math.floor(activeFrac * (ceiling - headroom)) - used;
+  return Math.max(0, Math.min(hard, pace));
+}
+
+// The fraction of the day the surplus is allowed to pace against. Two clocks meet here:
+// activeFrac is measured in the user's own zone (their snooze window is theirs), but the counter
+// the surplus spends from rolls on the server's calendar day. A user whose zone runs ahead of
+// the server's would look most of the way through their day at the instant their budget resets,
+// and the pace bound would hand over the whole surplus in the first hour of a day it then has to
+// last. Take whichever day is less far along - that only ever spends less.
+export function surplusFrac(activeFrac: number, now: Date): number {
+  return Math.min(activeFrac, (now.getHours() * 60 + now.getMinutes()) / 1440);
+}
+
 export function governorDecision(
   used: number,
   ceiling: number,

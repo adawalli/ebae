@@ -24,13 +24,16 @@ export { redeliverPending } from "./delivery";
 export { MAX_BACKOFF_MS, QUOTA_SKIP_MS, pollOnce } from "./loop";
 export { excludeMatch, median } from "./market";
 export {
+  BONUS_HEADROOM,
   GOV_MAX_FACTOR,
   GOV_MIN_SPEND,
   GOV_RELEASE_HEADROOM,
+  bonusBudget,
   governedDelayMs,
   governorDecision,
   governorFactor,
   mergeCalls,
+  surplusFrac,
   usedToday,
 } from "./quota";
 export { activeFracElapsed, inWindow, snoozeMinutes } from "./snooze";

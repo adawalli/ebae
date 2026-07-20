@@ -927,6 +927,76 @@ test("an edit during the follow insert doesn't leave the follow behind", async (
   expect(await trackedRows()).toHaveLength(0);
 });
 
+// The last window, and the widest: reload() reads every follow in one snapshot and then hands
+// the rebuilt maps to each entry. An edit is an API route, not a tick, so `running` is false the
+// whole time - and the snapshot it rebuilds from was taken before the edit's DELETE ran. Fires
+// the edit from inside the follow query, after the rows are in hand, which is exactly the
+// interleaving that puts them back.
+function resetDuringTrackedSelect(fire: () => Promise<unknown>): () => void {
+  const real = g.__ebaeDb as Record<string, () => unknown>;
+  let fired = false;
+  g.__ebaeDb = new Proxy(real, {
+    get(t, p, r) {
+      if (p !== "select") return Reflect.get(t as object, p, r);
+      return (...args: unknown[]) => {
+        const b = (t as never).select(...args);
+        return new Proxy(b as object, {
+          get(bt, bp, br) {
+            if (bp !== "from") return Reflect.get(bt, bp, br);
+            return (tbl: unknown) => {
+              const q = (bt as never).from(tbl);
+              // Only the follow query, and only once: every other select still returns a builder
+              // the caller goes on to chain .where/.groupBy onto.
+              if (tbl !== trackedItems || fired) return q;
+              fired = true;
+              return (async () => {
+                const rows = await q;
+                await fire();
+                return rows;
+              })();
+            };
+          },
+        });
+      };
+    },
+  });
+  return () => {
+    g.__ebaeDb = real;
+  };
+}
+
+test("an edit during a cache refresh can't restore the follows it just dropped", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  // A realized price on the books alongside the outstanding follow: the sold median outranks
+  // every other basis, so it is the half that must not come back.
+  await database.insert(trackedItems).values({
+    searchId: e.s.id,
+    itemId: "v1|sold-1|0",
+    priceKind: "fixed",
+    lastPrice: 500,
+    state: "sold",
+    soldPrice: 450,
+    resolvedAt: new Date(),
+  });
+  const restore = resetDuringTrackedSelect(() => updateSearch(userId, e.s.id, { q: "something else entirely" }));
+
+  try {
+    g.__ebaeState.users.delete(userId); // forces userCtx to run a full reload
+    await userCtx(userId);
+  } finally {
+    restore();
+  }
+
+  const reloaded = g.__ebaeState.entries.get(e.s.id)!;
+  expect(reloaded.soldPrices).toHaveLength(0); // that sale describes criteria the search dropped
+  expect(reloaded.tracked.size).toBe(0);
+  expect(await trackedRows()).toHaveLength(0);
+});
+
 test("an edit during the deferral flush doesn't resurrect the row", async () => {
   const e = await seededEntry({ trackSold: true, excludeTerms: "broken" });
   const item = injected();

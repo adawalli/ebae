@@ -158,6 +158,14 @@ function envCreds(userId: number): EbayCreds | null {
 async function reload() {
   const database = db();
   const today = new Date().toDateString();
+  // Each entry's tracking generation, before this function awaits anything. An edit landing while
+  // the queries below run bumps it and deletes that search's follows; the rebuild further down
+  // works from a snapshot that predates the DELETE, and `running` doesn't cover it because an
+  // edit arrives on an API route rather than in a tick. Without this the rebuild puts back the
+  // follows and - worse - the realized prices the edit dropped, and the sold median outranks
+  // every other basis, so the new criteria's alerts would carry the old search's going rate.
+  const epochs = new Map<number, number>();
+  for (const [id, e] of state().entries) epochs.set(id, e.trackEpoch);
   // Write out any follow whose in-memory state hasn't reached its row yet. Must happen before
   // the snapshot below, or the rebuild would hand back the schedule those changes moved - and a
   // deferred check would be spent after all.
@@ -328,11 +336,15 @@ async function reload() {
     if (!e.running) {
       e.seen = seenBySearch.get(id) ?? new Set();
       // Same rule, same reason: a tick mid-flight may have resolved a follow or started a new
-      // one since the snapshot, and both would be lost by overwriting.
-      const t = hydrateTracked(trackedBySearch.get(id) ?? []);
-      e.tracked = t.tracked;
-      e.soldPrices = t.soldPrices;
-      e.trackDirty = new Set(); // flushed above, and the maps just came from the DB
+      // one since the snapshot, and both would be lost by overwriting. Plus the epoch, which
+      // catches the edit `running` can't see - an entry whose generation moved keeps what the
+      // reset left it, and the next reload reclaims its memory.
+      if (e.trackEpoch === (epochs.get(id) ?? e.trackEpoch)) {
+        const t = hydrateTracked(trackedBySearch.get(id) ?? []);
+        e.tracked = t.tracked;
+        e.soldPrices = t.soldPrices;
+        e.trackDirty = new Set(); // flushed above, and the maps just came from the DB
+      }
     }
   }
   for (const r of hitRows) {

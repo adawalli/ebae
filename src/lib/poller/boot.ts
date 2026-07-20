@@ -289,7 +289,7 @@ async function reload() {
         tracked: new Map(),
         soldPrices: [],
         trackDirty: new Set(),
-        bonus: { date: "", done: new Set() },
+        bonus: { date: "", done: new Map() },
         trackEpoch: 0,
         trackLock: Promise.resolve(),
       };

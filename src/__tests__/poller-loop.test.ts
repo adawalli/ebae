@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import { alerts, apiUsage, searches, seenItems, trackedItems, users } from "@/lib/schema";
 import { userCtx } from "@/lib/poller/boot"; // not on the barrel: the reload seam is internal
 import { flushCalls } from "@/lib/poller/quota"; // ditto: persistence is the poller's own business
+import { BONUS_MIN_GAP_MS } from "@/lib/poller/track"; // ditto: the check schedule is internal
 import {
   GOV_MAX_FACTOR,
   createSearch,
@@ -709,9 +710,17 @@ test("an early check that finds the listing still listed costs it nothing", asyn
     expect(t.nextCheckAt).toBe(boundary); // and it is still due when it was always due
 
     await pollOnce(e);
-    // One extra look per listing per day: without that, every tick of a five-minute search would
-    // re-check the same listing until the surplus ran out.
+    // Spaced by BONUS_MIN_GAP_MS: without that, every tick of a five-minute search would re-check
+    // the same listing until the surplus ran out.
     expect(itemCalls).toBe(1);
+
+    // Once the gap has passed the listing is eligible again, and still on the same schedule -
+    // that is what makes a second look free to take.
+    setSystemTime(atLocal(12) + BONUS_MIN_GAP_MS);
+    await pollOnce(e);
+    expect(itemCalls).toBe(2);
+    expect(t.checksUsed).toBe(0);
+    expect(t.nextCheckAt).toBe(boundary);
   } finally {
     globalThis.fetch = realFetch;
     u.ebay = null;

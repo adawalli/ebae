@@ -52,7 +52,7 @@ export type Entry = {
   // belongs to. One extra look per listing per day: without it every tick would re-check the
   // same furthest-out follow instead of working across the backlog. In memory only - a restart
   // costs at most one duplicate check per listing, which is a call, not a wrong answer.
-  bonus: { date: string; done: Set<string> };
+  bonus: { date: string; done: Map<string, number> }; // itemId -> last checked at, spaced by BONUS_MIN_GAP_MS
   // Bumped every time resetTracked wipes the three containers above. A tick reads it once at the
   // start and re-checks before each write, because it holds references into the containers the
   // reset replaced: without this, an edit landing while a tick awaits eBay would be undone by

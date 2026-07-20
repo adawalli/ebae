@@ -142,11 +142,19 @@ export function inferOutcome(t: TrackedItem, res: CheckResult, now: number): Che
 // checks from crowding out the polls that actually find deals.
 export const MAX_CHECKS_PER_TICK = 3;
 
-// The entry's ledger of listings already looked at today, rolled when the local day turns. Both
-// check paths go through it, so a listing the schedule just checked can't also be handed a
-// surplus check moments later in the same tick - a second call for an answer we already have.
-function bonusDone(e: Entry, today = new Date().toDateString()): Set<string> {
-  if (e.bonus.date !== today) e.bonus = { date: today, done: new Set() };
+// How long one listing must go unlooked-at before surplus may buy it another check. A bonus
+// check costs the listing nothing - it never advances BIN_CHECK_DAYS or checksUsed - so the only
+// thing a shorter gap buys is a narrower window in which the listing can sell and stop being
+// readable before anyone looks. A gap rather than a per-day count because it also spaces the
+// checks out: a count alone would let a five-minute search spend the whole day's allowance in
+// one tick, including on the listing the scheduled pass just checked.
+export const BONUS_MIN_GAP_MS = 4 * 3600_000;
+
+// The entry's ledger of when each listing was last looked at, rolled when the local day turns
+// to keep it from growing without bound. Both check paths stamp it, so a listing the scheduled
+// pass just checked is not re-asked, in the same tick, the question that call just answered.
+function bonusDone(e: Entry, today = new Date().toDateString()): Map<string, number> {
+  if (e.bonus.date !== today) e.bonus = { date: today, done: new Map() };
   return e.bonus.done;
 }
 
@@ -155,16 +163,23 @@ function bonusDone(e: Entry, today = new Date().toDateString()): Set<string> {
 // Not due: a check that has come due belongs to runDueChecks, which will spend it anyway.
 // Not an auction: before its end an auction reads IN_STOCK, which inferOutcome resolves as
 // "nobody bid" - a correct reading only after the hammer falls, so an early one books a lie.
-// Not already done today: `done` is the entry's per-day set, which is what keeps the surplus
-// from re-checking one listing over and over instead of spreading across the backlog.
+// Not looked at inside BONUS_MIN_GAP_MS: that gap is what keeps the surplus from pouring into
+// one listing instead of spreading across the backlog.
 //
-// Sorted by how far out the next scheduled check is, furthest first: that listing has the
-// longest stretch in which it could sell and then stop being readable, which is exactly the
-// realized price this whole feature exists to catch.
-export function bonusEligible(tracked: Iterable<TrackedItem>, done: ReadonlySet<string>, now: number): TrackedItem[] {
+// Sorted least-recently-looked-at first, then by how far out the next scheduled check is,
+// furthest first. A listing gets a second look only once every other listing has had one (never
+// checked sorts as 0, so it leads), and among equals the one with the longest unwatched stretch
+// goes first, because that is where a sale is likeliest to happen and stop being readable. That
+// realized price is the whole point.
+export function bonusEligible(
+  tracked: Iterable<TrackedItem>,
+  done: ReadonlyMap<string, number>,
+  now: number,
+): TrackedItem[] {
+  const seenAt = (t: TrackedItem) => done.get(t.itemId) ?? 0;
   return [...tracked]
-    .filter((t) => t.priceKind === "fixed" && t.nextCheckAt > now && !done.has(t.itemId))
-    .sort((a, b) => b.nextCheckAt - a.nextCheckAt);
+    .filter((t) => t.priceKind === "fixed" && t.nextCheckAt > now && seenAt(t) <= now - BONUS_MIN_GAP_MS)
+    .sort((a, b) => seenAt(a) - seenAt(b) || b.nextCheckAt - a.nextCheckAt);
 }
 
 // A followed listing as its row. Shared by the initial insert and the flush below, so the two
@@ -343,10 +358,10 @@ export async function runDueChecks(
       // the owner's remaining calls belong to the polls that find deals in the first place.
       if (u.calls.used >= QUOTA_CEILING) break;
       u.calls.used++;
-      // This listing has had its look for today. Without this the surplus pass below would pick
-      // up whatever this check defers - a fresh future nextCheckAt makes it a prime candidate -
-      // and spend a second call re-asking the question this one just answered.
-      bonusDone(e).add(t.itemId);
+      // Stamped so the gap applies. Without this the surplus pass below would pick up whatever
+      // this check defers - a fresh future nextCheckAt makes it a prime candidate - and spend a
+      // second call re-asking the question this one just answered.
+      bonusDone(e).set(t.itemId, Date.now());
       let res: CheckResult;
       try {
         // Same mode gate as the poll that called us: live keys, or single mode's mock.
@@ -424,9 +439,9 @@ export async function runBonusChecks(
       // The one path that bills the surplus. Both counters move together, so `used` stays the
       // full billing total and the difference is what the configuration itself spent.
       u.calls.surplus++;
-      // Marked before the call, not after: an item whose check throws has still cost a call, and
+      // Stamped before the call, not after: an item whose check throws has still cost a call, and
       // retrying it on the next tick would spend the day's surplus on one broken listing.
-      done.add(t.itemId);
+      done.set(t.itemId, now.getTime());
       let res: CheckResult;
       try {
         res = u.ebay ? await checkItem(u.ebay, t.itemId) : mockCheckItem(t.lastPrice);

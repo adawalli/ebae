@@ -117,7 +117,7 @@ export async function createSearch(userId: number, input: SearchInput): Promise<
     tracked: new Map(),
     soldPrices: [],
     trackDirty: new Set(),
-    bonus: { date: "", done: new Set() },
+    bonus: { date: "", done: new Map() },
     trackEpoch: 0,
     trackLock: Promise.resolve(),
   };

@@ -18,7 +18,7 @@ import {
   median,
   mergeCalls,
   snoozeMinutes,
-  surplusFrac,
+  counterDayFracAt,
   surplusToday,
   usedToday,
 } from "./poller";
@@ -377,15 +377,48 @@ test("bonusBudget never spends the governor into engaging", () => {
   }
 });
 
-// The daily counter rolls on the server's calendar day, but activeFrac is measured in the user's
-// own zone. A user 14 hours ahead would read as most of the way through their day at the instant
-// their budget resets, and the pace bound would release the whole surplus in the first hour.
-test("surplusFrac paces against the day the counter actually rolls on", () => {
-  const at = (h: number, m = 0) => new Date(2026, 6, 19, h, m, 0);
-  expect(surplusFrac(0.58, at(0))).toBe(0); // their afternoon, the server's midnight: nothing yet
-  expect(surplusFrac(0.58, at(6))).toBe(0.25); // still the server's morning
-  expect(surplusFrac(0.25, at(18))).toBe(0.25); // behind the server: their own clock still rules
-  expect(surplusFrac(0.5, at(12))).toBe(0.5); // same zone: unchanged
+// Everything that judges the daily counter has to pace on the counter's own day. The counter
+// rolls on the server's calendar day; the snooze window is in the user's zone. Measuring the
+// elapsed fraction from the user's midnight charges spend to a window that hasn't started yet.
+const NIGHT = { enabled: true, start: 30, end: 390, tz: "x" }; // 00:30-06:30, 1080 pollable
+
+test("counterDayFracAt is activeFracElapsed when the zones agree", () => {
+  for (const m of [0, 30, 200, 390, 720, 1023, 1439]) {
+    expect(counterDayFracAt(NIGHT, m, m)).toBeCloseTo(activeFracElapsed(NIGHT, m), 10);
+  }
+});
+
+test("counterDayFracAt credits spend from before the user's midnight", () => {
+  // 17:03 for a user 4h behind the server, so the counter rolled at their 20:00 yesterday.
+  // Pollable since then: 20:00->00:30 is 270, plus 06:30->17:03 is 633.
+  expect(counterDayFracAt(NIGHT, 1023, 1263)).toBeCloseTo(903 / 1080, 10);
+  expect(activeFracElapsed(NIGHT, 1023)).toBeCloseTo(663 / 1080, 10); // what it used to read
+});
+
+test("counterDayFracAt restarts at the counter's rollover, not the user's midnight", () => {
+  expect(counterDayFracAt(NIGHT, 1200, 0)).toBe(0); // their 20:00 = the server's midnight
+  expect(counterDayFracAt(NIGHT, 1260, 60)).toBeCloseTo(60 / 1080, 10); // an hour in
+  expect(counterDayFracAt(NIGHT, 0, 240)).toBeCloseTo(240 / 1080, 10); // rolls past their midnight
+});
+
+test("counterDayFracAt never exceeds a full pollable day", () => {
+  for (let nowMin = 0; nowMin < 1440; nowMin += 7) {
+    for (let serverMin = 0; serverMin < 1440; serverMin += 11) {
+      const f = counterDayFracAt(NIGHT, nowMin, serverMin);
+      expect(f).toBeGreaterThanOrEqual(0);
+      expect(f).toBeLessThanOrEqual(1);
+    }
+  }
+});
+
+// The production case this was found in: UTC container, America/New_York snooze. The pace bound
+// read the user as 663/1080 through the day while the counter held 903/1080 worth of spend, so
+// it withheld a surplus that the hard bound said was free all day.
+test("the counter-day fraction unblocks a surplus the user's-midnight fraction withheld", () => {
+  const used = 3155;
+  const projected = 3246;
+  expect(bonusBudget(used, 5000, activeFracElapsed(NIGHT, 1023), projected)).toBe(0);
+  expect(bonusBudget(used, 5000, counterDayFracAt(NIGHT, 1023, 1263), projected)).toBeGreaterThan(0);
 });
 
 test("bonusBudget guards degenerate inputs", () => {

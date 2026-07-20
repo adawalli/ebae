@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { db } from "@/lib/db";
 import { apiUsage } from "@/lib/schema";
-import { activeFracNow } from "./snooze";
+import { counterDayFrac } from "./snooze";
 import { type UserCtx, plog } from "./state";
 
 // A per-user ceiling, not a per-deployment one: each user brings their own eBay app, so each
@@ -77,16 +77,6 @@ export function bonusBudget(used: number, ceiling: number, activeFrac: number, p
   return Math.max(0, Math.min(hard, pace));
 }
 
-// The fraction of the day the surplus is allowed to pace against. Two clocks meet here:
-// activeFrac is measured in the user's own zone (their snooze window is theirs), but the counter
-// the surplus spends from rolls on the server's calendar day. A user whose zone runs ahead of
-// the server's would look most of the way through their day at the instant their budget resets,
-// and the pace bound would hand over the whole surplus in the first hour of a day it then has to
-// last. Take whichever day is less far along - that only ever spends less.
-export function surplusFrac(activeFrac: number, now: Date): number {
-  return Math.min(activeFrac, (now.getHours() * 60 + now.getMinutes()) / 1440);
-}
-
 export function governorDecision(
   used: number,
   ceiling: number,
@@ -136,7 +126,7 @@ export function governorFor(u: UserCtx, projected: number, now = new Date()): nu
   const { factor, active: engaged } = governorDecision(
     used,
     QUOTA_CEILING,
-    activeFracNow(u.snooze, now),
+    counterDayFrac(u.snooze, now),
     projected,
     u.governorEngaged,
   );

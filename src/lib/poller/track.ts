@@ -4,8 +4,8 @@ import { type CheckResult, checkItem, mockCheckItem } from "@/lib/ebay";
 import { trackedItems } from "@/lib/schema";
 import type { Item, PriceKind } from "@/lib/types";
 import { median } from "./market";
-import { QUOTA_CEILING, bonusBudget, flushCalls, surplusFrac, usedToday } from "./quota";
-import { activeFracNow } from "./snooze";
+import { QUOTA_CEILING, bonusBudget, flushCalls, usedToday } from "./quota";
+import { counterDayFrac } from "./snooze";
 import { type Entry, type TrackedItem, type UserCtx, message, plog, recordError } from "./state";
 
 // Sold-price tracking: what a followed listing actually went for, inferred by re-fetching it
@@ -163,7 +163,7 @@ function bonusDone(e: Entry, today = new Date().toDateString()): Set<string> {
 // realized price this whole feature exists to catch.
 export function bonusEligible(tracked: Iterable<TrackedItem>, done: ReadonlySet<string>, now: number): TrackedItem[] {
   return [...tracked]
-    .filter((t) => t.priceKind !== "bid" && t.nextCheckAt > now && !done.has(t.itemId))
+    .filter((t) => t.priceKind === "fixed" && t.nextCheckAt > now && !done.has(t.itemId))
     .sort((a, b) => b.nextCheckAt - a.nextCheckAt);
 }
 
@@ -413,7 +413,7 @@ export async function runBonusChecks(
   const now = new Date();
   const today = now.toDateString();
   const done = bonusDone(e, today);
-  const frac = surplusFrac(activeFracNow(u.snooze, now), now); // paced by the day the counter rolls on
+  const frac = counterDayFrac(u.snooze, now); // paced by the day the counter rolls on
   const spare = bonusBudget(usedToday(u.calls, today), QUOTA_CEILING, frac, projected);
   if (spare <= 0) return;
   const picks = bonusEligible(e.tracked.values(), done, now.getTime()).slice(0, Math.min(spare, MAX_CHECKS_PER_TICK));

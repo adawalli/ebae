@@ -3,6 +3,11 @@ export const fmt = (n: number) => n.toLocaleString("en-US");
 // minutes (1440 minus the snoozed span), not the whole day.
 export const callsFor = (interval: number, activeMin = 1440) => Math.round(activeMin / interval);
 
+// Surplus worth showing. Below half a percent of the ceiling the bar segment is sub-pixel, so
+// its swatch and legend entry buy nothing and split `spent` into two numbers the reader has to
+// add back. Both surfaces gate on this so their `configured` totals agree.
+export const shownSurplus = (surplus: number, ceiling: number) => (surplus / ceiling >= 0.005 ? surplus : 0);
+
 export function money(n: number | null, currency = "USD") {
   if (n == null) return "—";
   return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(n);

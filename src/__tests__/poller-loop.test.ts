@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import { alerts, apiUsage, searches, seenItems, trackedItems, users } from "@/lib/schema";
 import { userCtx } from "@/lib/poller/boot"; // not on the barrel: the reload seam is internal
 import { flushCalls } from "@/lib/poller/quota"; // ditto: persistence is the poller's own business
+import { BONUS_MIN_GAP_MS } from "@/lib/poller/track"; // ditto: the check schedule is internal
 import {
   GOV_MAX_FACTOR,
   createSearch,
@@ -709,9 +710,65 @@ test("an early check that finds the listing still listed costs it nothing", asyn
     expect(t.nextCheckAt).toBe(boundary); // and it is still due when it was always due
 
     await pollOnce(e);
-    // One extra look per listing per day: without that, every tick of a five-minute search would
-    // re-check the same listing until the surplus ran out.
+    // Spaced by BONUS_MIN_GAP_MS: without that, every tick of a five-minute search would re-check
+    // the same listing until the surplus ran out.
     expect(itemCalls).toBe(1);
+
+    // Once the gap has passed the listing is eligible again, and still on the same schedule -
+    // that is what makes a second look free to take.
+    setSystemTime(atLocal(12) + BONUS_MIN_GAP_MS);
+    await pollOnce(e);
+    expect(itemCalls).toBe(2);
+    expect(t.checksUsed).toBe(0);
+    expect(t.nextCheckAt).toBe(boundary);
+  } finally {
+    globalThis.fetch = realFetch;
+    u.ebay = null;
+  }
+});
+
+// The stamp ledger is rolled at the local day turn to bound its size, and that roll must not
+// take the gap with it. A listing checked just before midnight is one the counter's fresh day
+// makes affordable again within minutes, so a cleared map would re-ask, two minutes later, the
+// question a call moments earlier had already answered.
+test("the day roll does not hand a listing checked before midnight a free early look", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const u = g.__ebaeState.users.get(userId)!;
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const realFetch = globalThis.fetch;
+  let itemCalls = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
+    if (url.includes("/buy/browse/v1/item/")) {
+      itemCalls++;
+      return Response.json({
+        price: { value: "1234.56", currency: "USD" },
+        estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
+      });
+    }
+    return Response.json({ itemSummaries: [] });
+  }) as typeof fetch;
+
+  try {
+    setSystemTime(atLocal(23));
+    await pollOnce(e);
+    expect(itemCalls).toBe(1); // stamped just before the day turns
+
+    // Two minutes past midnight: a new date, and usedToday resets on the same roll, so the pace
+    // term opens a small budget immediately - the bonus pass really does run here.
+    setSystemTime(new Date(2026, 6, 20, 0, 2, 0));
+    await pollOnce(e);
+    expect(itemCalls).toBe(1); // the gap survived the roll
+
+    // And it still releases on the gap, measured from the check itself rather than from midnight.
+    setSystemTime(atLocal(23).getTime() + BONUS_MIN_GAP_MS);
+    await pollOnce(e);
+    expect(itemCalls).toBe(2);
   } finally {
     globalThis.fetch = realFetch;
     u.ebay = null;

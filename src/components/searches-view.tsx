@@ -4,7 +4,7 @@ import { ExternalLink, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { CONDITION_BADGE, type ConditionKey, type SearchStats, type StatusInfo } from "@/lib/types";
 import { splitExcludeTerms } from "@/lib/exclude-terms";
 import { ebayWebUrl } from "@/lib/utils";
-import { ago, fmt, money } from "@/lib/format";
+import { ago, fmt, money, shownSurplus } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -48,7 +48,7 @@ export function SearchesView({
   // The spent bar splits in two: what the configuration asked for, then the surplus sold checks
   // riding on quota that expires tonight. Same total width as before, so `requested` still starts
   // at spentPct - a day with no surplus draws exactly the two-segment bar it always did.
-  const surplus = quota?.surplus ?? 0;
+  const surplus = shownSurplus(quota?.surplus ?? 0, ceiling);
   const configuredPct = quota ? Math.min(100, ((quota.used - surplus) / ceiling) * 100) : 0;
   const surplusPct = Math.min(100 - configuredPct, (surplus / ceiling) * 100);
   const requestedPct = quota ? Math.min(100 - spentPct, (quota.configuredRemaining / ceiling) * 100) : 0;
@@ -158,7 +158,10 @@ export function SearchesView({
                 {quota.overage > 0 ? (
                   <span className="text-[var(--eb-amber)]">{fmt(quota.overage)} to slow down</span>
                 ) : (
-                  <span>{fmt(quota.remaining)} remaining</span>
+                  // `quota.remaining` is ceiling - used, which already contains `requested` - so
+                  // the legend read as a partition of the ceiling but summed past it. Report the
+                  // headroom neither spent nor claimed, which is the bar's own grey tail.
+                  <span>{fmt(quota.remaining - quota.configuredRemaining)} spare</span>
                 )}
               </div>
               {quota.governor.active && (

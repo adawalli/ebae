@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { BIN_CHECK_DAYS, bonusEligible, harvest, inferOutcome, newTracked, soldContext } from "./track";
+import {
+  BIN_CHECK_DAYS,
+  BONUS_MIN_GAP_MS,
+  bonusEligible,
+  harvest,
+  inferOutcome,
+  newTracked,
+  soldContext,
+} from "./track";
 import type { TrackedItem } from "./state";
 import type { Item } from "@/lib/types";
 
@@ -154,7 +162,7 @@ test("inferOutcome: a vanished fixed-price listing is unknown, not a sale", () =
 });
 
 // Surplus quota buys checks the schedule hasn't asked for yet. What it may buy them on is
-// narrow: a fixed-price listing that isn't due, hasn't had a bonus check today, and whose
+// narrow: a fixed-price listing that isn't due, not looked at inside BONUS_MIN_GAP_MS, and whose
 // answer means the same thing early as it would on schedule.
 test("bonusEligible: only not-yet-due fixed-price follows, worst gap first", () => {
   const soon = tracked({ itemId: "soon", nextCheckAt: NOW + DAY });
@@ -167,18 +175,36 @@ test("bonusEligible: only not-yet-due fixed-price follows, worst gap first", () 
   // true only after the hammer falls. Checking one early would book a false outcome.
   const auction = tracked({ itemId: "auction", priceKind: "bid", nextCheckAt: NOW + 2 * DAY });
   const due = tracked({ itemId: "due", nextCheckAt: NOW - 1000 }); // the scheduled path owns this
-  const already = tracked({ itemId: "already", nextCheckAt: NOW + 3 * DAY });
+  const justChecked = tracked({ itemId: "justChecked", nextCheckAt: NOW + 30 * DAY });
 
-  const picks = bonusEligible([soon, late, cap, auction, due, already], new Set(["already"]), NOW);
+  const picks = bonusEligible(
+    [soon, late, cap, auction, due, justChecked],
+    new Map([["justChecked", NOW - BONUS_MIN_GAP_MS + 1]]),
+    NOW,
+  );
 
   // Furthest-out first: those are the listings with the longest stretch in which they could sell
   // and then stop being readable, which is exactly the price this feature exists to save.
+  // `justChecked` is furthest of all and still excluded, so the gap dropped it, not the ordering.
   expect(picks.map((t) => t.itemId)).toEqual(["late", "soon"]);
 });
 
+// Breadth before depth: a listing gets a second look only once every other listing has had one.
+// Without this the furthest-out follow would take every check the surplus can buy.
+test("bonusEligible: least recently checked first, gap breaks the tie", () => {
+  const far = tracked({ itemId: "far", nextCheckAt: NOW + 20 * DAY });
+  const near = tracked({ itemId: "near", nextCheckAt: NOW + DAY });
+  const fresh = tracked({ itemId: "fresh", nextCheckAt: NOW + 2 * DAY });
+
+  // `far` is exactly at the gap, so it is eligible again - just behind the two never looked at.
+  const picks = bonusEligible([far, near, fresh], new Map([["far", NOW - BONUS_MIN_GAP_MS]]), NOW);
+
+  expect(picks.map((t) => t.itemId)).toEqual(["fresh", "near", "far"]);
+});
+
 test("bonusEligible: nothing to do is an empty list, not a throw", () => {
-  expect(bonusEligible([], new Set(), NOW)).toEqual([]);
-  expect(bonusEligible([tracked({ nextCheckAt: NOW - 1 })], new Set(), NOW)).toEqual([]);
+  expect(bonusEligible([], new Map(), NOW)).toEqual([]);
+  expect(bonusEligible([tracked({ nextCheckAt: NOW - 1 })], new Map(), NOW)).toEqual([]);
 });
 
 // The gate on the whole feature: too few or too stale realized prices must read as "no

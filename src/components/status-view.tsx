@@ -3,7 +3,7 @@
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useState } from "react";
 import { Check, Trash2 } from "lucide-react";
 import { MARKETPLACE_CURRENCY, type Channel, type SnoozeConfig, type StatusInfo } from "@/lib/types";
-import { ago, duration, fmt, until } from "@/lib/format";
+import { ago, duration, fmt, shownSurplus, until } from "@/lib/format";
 import { currentSubscription, disablePush, enablePush, pushSupported } from "@/lib/push-client";
 import { LS_DISABLED, LS_LAST_SEEN, WHATSNEW_EVENT, parseSemver, read, store } from "@/lib/whatsnew";
 import { Button } from "@/components/ui/button";
@@ -41,7 +41,7 @@ export function StatusView({
   refresh: () => void;
 }) {
   const noCreds = status?.ebay.mode === "no-creds";
-  const surplus = status?.quota.surplus ?? 0;
+  const surplus = shownSurplus(status?.quota.surplus ?? 0, ceiling);
   const configured = (status?.quota.used ?? 0) - surplus; // what the saved searches themselves spent
   const expected = status?.quota.expected ?? 0;
   const overage = status?.quota.overage ?? 0;

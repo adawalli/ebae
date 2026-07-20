@@ -161,6 +161,10 @@ export type StatusInfo = {
   };
   quota: {
     used: number;
+    // The part of `used` spent on surplus sold checks, not on the saved configuration. A subset,
+    // not a sibling: `remaining` and the governor still judge the whole of `used`, and the UI
+    // subtracts this only to ask whether the configuration itself is running hot.
+    surplus: number;
     ceiling: number;
     // What the current configuration will spend over a full day, and how much of that should
     // already be spent at this point in the day. Both computed server-side, off the same

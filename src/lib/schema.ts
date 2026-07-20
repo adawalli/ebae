@@ -175,6 +175,10 @@ export const apiUsage = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     day: text("day").notNull(),
     used: integer("used").notNull().default(0),
+    // The subset of `used` spent on surplus sold checks - quota that would have expired
+    // tonight anyway. Persisted beside `used` so the attribution survives a restart, and
+    // so the tile can tell an overspend from a user's configuration simply running fast.
+    surplus: integer("surplus").notNull().default(0),
   },
   (t) => [primaryKey({ columns: [t.userId, t.day] })],
 );

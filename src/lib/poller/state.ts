@@ -82,7 +82,11 @@ export type UserCtx = {
   // A sibling of `channels` rather than a widening of it: every consumer of that list
   // assumes a URL string, and a push target is three values. Two lists, two senders.
   push: PushSub[];
-  calls: { date: string; used: number };
+  // `used` is every eBay call billed today; `surplus` is the subset of it spent on bonus sold
+  // checks (runBonusChecks), so used - surplus is what the saved configuration actually asked
+  // for. Kept as a subset rather than a sibling total because `used` is the number the ceiling,
+  // the governor and the hard cliff all judge - the split is only ever for attribution.
+  calls: { date: string; used: number; surplus: number };
   // Whether the budget governor is currently stretching this user's intervals. Derived from
   // `calls` and the clock, held only to detect the engage/release edge for logging - never
   // read as the factor itself, which is always recomputed.

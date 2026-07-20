@@ -84,7 +84,7 @@ export async function pollOnce(e: Entry) {
     return;
   }
   const today = new Date().toDateString();
-  if (u.calls.date !== today) u.calls = { date: today, used: 0 };
+  if (u.calls.date !== today) u.calls = { date: today, used: 0, surplus: 0 };
   if (u.calls.used >= QUOTA_CEILING) {
     recordError(u.id, e.s.q, "daily API budget exhausted - poll skipped");
     schedule(e, QUOTA_SKIP_MS);

@@ -19,6 +19,7 @@ import {
   mergeCalls,
   snoozeMinutes,
   surplusFrac,
+  surplusToday,
   usedToday,
 } from "./poller";
 import { dealField } from "./discord";
@@ -191,13 +192,27 @@ test("undefined current (boot window) treats any provided field as changed", () 
 // stale DB snapshot clobber the live in-memory counter.
 const TODAY = "Mon Jul 06 2026";
 test("fresh boot adopts the persisted count", () => {
-  expect(mergeCalls({ date: TODAY, used: 0 }, TODAY, 4000)).toEqual({ date: TODAY, used: 4000 });
+  expect(mergeCalls({ date: TODAY, used: 0, surplus: 0 }, TODAY, { used: 4000, surplus: 300 })).toEqual({
+    date: TODAY,
+    used: 4000,
+    surplus: 300,
+  });
 });
 test("live refresh keeps the larger in-memory count (un-flushed increments)", () => {
-  expect(mergeCalls({ date: TODAY, used: 4500 }, TODAY, 4000)).toEqual({ date: TODAY, used: 4500 });
+  // Per field: a flush can land between the two increments, so the larger `used` and the larger
+  // `surplus` need not have come from the same side.
+  expect(mergeCalls({ date: TODAY, used: 4500, surplus: 100 }, TODAY, { used: 4000, surplus: 300 })).toEqual({
+    date: TODAY,
+    used: 4500,
+    surplus: 300,
+  });
 });
 test("day rollover discards the stale prior-day count", () => {
-  expect(mergeCalls({ date: "Sun Jul 05 2026", used: 4999 }, TODAY, 0)).toEqual({ date: TODAY, used: 0 });
+  expect(mergeCalls({ date: "Sun Jul 05 2026", used: 4999, surplus: 800 }, TODAY, { used: 0, surplus: 0 })).toEqual({
+    date: TODAY,
+    used: 0,
+    surplus: 0,
+  });
 });
 
 // Snooze window membership. Guards the quota saver: an off-by-one boundary or a
@@ -300,10 +315,18 @@ test("governorFactor guards degenerate inputs", () => {
 // The one guarantee the feature rests on: the governed delay is never shorter than the
 // interval the user asked for, at any factor the governor can produce.
 test("usedToday reads a counter only on the day it was counted", () => {
-  expect(usedToday({ date: "Fri Jul 17 2026", used: 4500 }, "Fri Jul 17 2026")).toBe(4500);
+  expect(usedToday({ date: "Fri Jul 17 2026", used: 4500, surplus: 200 }, "Fri Jul 17 2026")).toBe(4500);
   // The counter is not cleared at midnight - the next poll rolls it over - so every reader that
   // isn't that poll has to treat a stale date as no spend rather than as a full day of it.
-  expect(usedToday({ date: "Thu Jul 16 2026", used: 4500 }, "Fri Jul 17 2026")).toBe(0);
+  expect(usedToday({ date: "Thu Jul 16 2026", used: 4500, surplus: 200 }, "Fri Jul 17 2026")).toBe(0);
+});
+
+// The surplus half of the same counter, guarded the same way: a reader that trusted it past
+// midnight would subtract yesterday's bonus checks from today's spend and report less than
+// was actually billed.
+test("surplusToday reads a counter only on the day it was counted", () => {
+  expect(surplusToday({ date: "Fri Jul 17 2026", used: 4500, surplus: 200 }, "Fri Jul 17 2026")).toBe(200);
+  expect(surplusToday({ date: "Thu Jul 16 2026", used: 4500, surplus: 200 }, "Fri Jul 17 2026")).toBe(0);
 });
 
 // Budget that isn't spent by local midnight expires worthless, so a user whose saved

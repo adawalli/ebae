@@ -421,6 +421,9 @@ export async function runBonusChecks(
   try {
     for (const t of picks) {
       u.calls.used++;
+      // The one path that bills the surplus. Both counters move together, so `used` stays the
+      // full billing total and the difference is what the configuration itself spent.
+      u.calls.surplus++;
       // Marked before the call, not after: an item whose check throws has still cost a call, and
       // retrying it on the next tick would spend the day's surplus on one broken listing.
       done.add(t.itemId);

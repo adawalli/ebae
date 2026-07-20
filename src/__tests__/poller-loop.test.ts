@@ -3,8 +3,9 @@ import { eq } from "drizzle-orm";
 import { freshTestDb } from "./helpers/db";
 import { SINGLE_USER_EMAIL } from "@/lib/authmode";
 import { db } from "@/lib/db";
-import { alerts, searches, seenItems, trackedItems, users } from "@/lib/schema";
+import { alerts, apiUsage, searches, seenItems, trackedItems, users } from "@/lib/schema";
 import { userCtx } from "@/lib/poller/boot"; // not on the barrel: the reload seam is internal
+import { flushCalls } from "@/lib/poller/quota"; // ditto: persistence is the poller's own business
 import {
   GOV_MAX_FACTOR,
   createSearch,
@@ -154,7 +155,7 @@ test("an exhausted daily budget spends nothing and records the reason", async ()
   const e = g.__ebaeState.entries.get(s.id)!;
   const u = g.__ebaeState.users.get(userId)!;
   const ceiling = status(userId).quota.ceiling;
-  u.calls = { date: new Date().toDateString(), used: ceiling - 1 };
+  u.calls = { date: new Date().toDateString(), used: ceiling - 1, surplus: 0 };
 
   await pollOnce(e);
 
@@ -306,7 +307,7 @@ test("a poll within budget reschedules at exactly the configured interval", asyn
   setSystemTime(atLocal(12)); // midday, or the governor is inert before it ever looks at spend
   const u = g.__ebaeState.users.get(userId)!;
   // A tenth of the budget spent by midday - past the inert floor, nowhere near the day's pace.
-  u.calls = { date: new Date().toDateString(), used: Math.floor(status(userId).quota.ceiling * 0.1) };
+  u.calls = { date: new Date().toDateString(), used: Math.floor(status(userId).quota.ceiling * 0.1), surplus: 0 };
 
   expect(await delayAfterPoll(e)).toBe(5 * 60_000);
   expect(u.governorEngaged).toBe(false);
@@ -321,7 +322,7 @@ test("a poll running ahead of budget reschedules slower, and says so", async () 
   setSystemTime(atLocal(12));
   // Effectively the whole budget gone, so the remaining budget cannot cover the remaining hours
   // and the governor is pinned at its cap.
-  u.calls = { date: new Date().toDateString(), used: ceiling - 1 };
+  u.calls = { date: new Date().toDateString(), used: ceiling - 1, surplus: 0 };
 
   const delay = await delayAfterPoll(e);
 
@@ -341,7 +342,7 @@ test("a counter left over from yesterday engages nothing", async () => {
   // Local midnight has passed but this user hasn't polled since, so their counter still holds
   // yesterday's total. Read raw, that spend measured against a minutes-old day projects way
   // past the ceiling and pins every read path to the cap - for a user who has spent nothing.
-  u.calls = { date: new Date(Date.now() - 86_400_000).toDateString(), used: ceiling - 1 };
+  u.calls = { date: new Date(Date.now() - 86_400_000).toDateString(), used: ceiling - 1, surplus: 0 };
 
   expect(status(userId).quota.used).toBe(0);
   expect(status(userId).quota.governor).toEqual({ active: false, factor: 1 });
@@ -383,7 +384,7 @@ test("status projects the checks that come due in the next day", async () => {
 test("status exposes the configured work still remaining today", async () => {
   await createSearch(userId, input({ intervalMin: 10 }));
   const u = g.__ebaeState.users.get(userId)!;
-  u.calls = { date: new Date().toDateString(), used: 700 };
+  u.calls = { date: new Date().toDateString(), used: 700, surplus: 0 };
 
   const quota = status(userId).quota;
 
@@ -531,7 +532,7 @@ test("an exhausted budget skips checks", async () => {
   g.__ebaeMock.pools.set(e.s.id, []);
   e.tracked.get(item.itemId)!.nextCheckAt = Date.now() - 1000;
   const u = g.__ebaeState.users.get(userId)!;
-  u.calls = { date: new Date().toDateString(), used: status(userId).quota.ceiling };
+  u.calls = { date: new Date().toDateString(), used: status(userId).quota.ceiling, surplus: 0 };
 
   await pollOnce(e);
 
@@ -631,6 +632,9 @@ test("surplus quota pulls a sold check forward", async () => {
   await pollOnce(e);
 
   expect(u.calls.used).toBe(before + 2); // the poll, plus a check nothing had scheduled
+  // Only the check is surplus-funded. `used` stays the billing total (both calls hit eBay);
+  // `surplus` is the slice the tile subtracts before judging the configuration's pace.
+  expect(u.calls.surplus).toBe(1);
   const [row] = await trackedRows();
   expect(row.state).toBe("sold");
   expect(row.soldPrice).toBe(Math.round(item.price! * 90) / 100); // mock sells at 90%
@@ -648,11 +652,23 @@ test("no surplus buys no early check", async () => {
   const u = g.__ebaeState.users.get(userId)!;
 
   setSystemTime(atLocal(12));
-  u.calls = { date: new Date().toDateString(), used: 4000 }; // way past half the budget at midday
+  u.calls = { date: new Date().toDateString(), used: 4000, surplus: 0 }; // way past half the budget at midday
   await pollOnce(e);
 
   expect(u.calls.used).toBe(4001); // the poll only
+  expect(u.calls.surplus).toBe(0); // a configured poll is never attributed to the surplus
   expect((await trackedRows())[0].state).toBe("active");
+});
+
+// The two counters persist through the same upsert, and each column takes its own greatest().
+// A late flush carrying a stale snapshot (the shutdown path racing a piggyback) must not walk
+// either one backwards.
+test("flushCalls persists surplus beside used and never regresses either", async () => {
+  const today = new Date().toDateString();
+  expect(await flushCalls(database, userId, { date: today, used: 10, surplus: 3 })).toEqual({ used: 10, surplus: 3 });
+  expect(await flushCalls(database, userId, { date: today, used: 7, surplus: 1 })).toEqual({ used: 10, surplus: 3 });
+  const [row] = await database.select().from(apiUsage).where(eq(apiUsage.userId, userId));
+  expect({ used: row.used, surplus: row.surplus }).toEqual({ used: 10, surplus: 3 });
 });
 
 // An early look that finds the listing still for sale has to leave the schedule exactly as it

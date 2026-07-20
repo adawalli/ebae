@@ -33,9 +33,8 @@ export {
   governorDecision,
   governorFactor,
   mergeCalls,
-  surplusFrac,
   surplusToday,
   usedToday,
 } from "./quota";
-export { activeFracElapsed, inWindow, snoozeMinutes } from "./snooze";
+export { activeFracElapsed, counterDayFrac, counterDayFracAt, inWindow, snoozeMinutes } from "./snooze";
 export { alertsTag, bumpAlerts, markStalePush, pushIsStale, type Entry, type UserCtx } from "./state";

@@ -17,7 +17,7 @@ import {
   surplusToday,
   usedToday,
 } from "./quota";
-import { SNOOZE_DEFAULT, activeFracNow, hhmm, snoozeMinutes, snoozeWindow, snoozing } from "./snooze";
+import { SNOOZE_DEFAULT, counterDayFrac, hhmm, snoozeMinutes, snoozeWindow, snoozing } from "./snooze";
 import { resetTracked, soldContext } from "./track";
 import { type Entry, type SnoozeState, bumpAlerts, plog, rowToSearch, state } from "./state";
 
@@ -43,7 +43,7 @@ function factorFor(userId: number): number {
   return governorDecision(
     usedToday(u.calls),
     QUOTA_CEILING,
-    activeFracNow(u.snooze),
+    counterDayFrac(u.snooze),
     projectedCalls(active, activeMinFor(userId)),
     u.governorEngaged,
   ).factor;
@@ -385,7 +385,7 @@ export function status(userId: number): StatusInfo {
       const used = u ? usedToday(u.calls, today) : 0;
       const enabled = [...st.entries.values()].filter((e) => e.s.userId === userId && e.s.enabled);
       const projected = projectedCalls(enabled, activeMinFor(userId));
-      const frac = activeFracNow(sn);
+      const frac = counterDayFrac(sn);
       const factor = factorFor(userId);
       const configuredRemaining = Math.ceil(projected * (1 - frac));
       const remaining = Math.max(QUOTA_CEILING - used, 0);

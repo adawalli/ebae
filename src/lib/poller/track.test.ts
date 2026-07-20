@@ -159,6 +159,9 @@ test("inferOutcome: a vanished fixed-price listing is unknown, not a sale", () =
 test("bonusEligible: only not-yet-due fixed-price follows, worst gap first", () => {
   const soon = tracked({ itemId: "soon", nextCheckAt: NOW + DAY });
   const late = tracked({ itemId: "late", nextCheckAt: NOW + 20 * DAY });
+  // Best Offer sells below its asking price, so resolve() discards the figure it reads back.
+  // Spending a surplus check on one buys a price that is thrown away, and displaces a fixed
+  // listing from the same slice.
   const cap = tracked({ itemId: "cap", priceKind: "offer_cap", nextCheckAt: NOW + 5 * DAY });
   // An auction before its end reads IN_STOCK, which inferOutcome resolves as "nobody bid" -
   // true only after the hammer falls. Checking one early would book a false outcome.
@@ -170,7 +173,7 @@ test("bonusEligible: only not-yet-due fixed-price follows, worst gap first", () 
 
   // Furthest-out first: those are the listings with the longest stretch in which they could sell
   // and then stop being readable, which is exactly the price this feature exists to save.
-  expect(picks.map((t) => t.itemId)).toEqual(["late", "cap", "soon"]);
+  expect(picks.map((t) => t.itemId)).toEqual(["late", "soon"]);
 });
 
 test("bonusEligible: nothing to do is an empty list, not a throw", () => {

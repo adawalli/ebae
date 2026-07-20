@@ -45,6 +45,12 @@ export function SearchesView({
   const forecast = quota?.configuredForecast ?? projected;
   const forecastPct = Math.min(100, Math.round((forecast / ceiling) * 100));
   const spentPct = quota ? Math.min(100, (quota.used / ceiling) * 100) : 0;
+  // The spent bar splits in two: what the configuration asked for, then the surplus sold checks
+  // riding on quota that expires tonight. Same total width as before, so `requested` still starts
+  // at spentPct - a day with no surplus draws exactly the two-segment bar it always did.
+  const surplus = quota?.surplus ?? 0;
+  const configuredPct = quota ? Math.min(100, ((quota.used - surplus) / ceiling) * 100) : 0;
+  const surplusPct = Math.min(100 - configuredPct, (surplus / ceiling) * 100);
   const requestedPct = quota ? Math.min(100 - spentPct, (quota.configuredRemaining / ceiling) * 100) : 0;
   const overagePct = quota ? Math.min(20, (quota.overage / ceiling) * 100) : 0;
 
@@ -113,8 +119,14 @@ export function SearchesView({
               <div className="relative h-2 overflow-visible rounded-full bg-[var(--eb-faint)]/15">
                 <span
                   className="absolute inset-y-0 left-0 rounded-l-full bg-[var(--eb-accent)]"
-                  style={{ width: `${spentPct}%` }}
+                  style={{ width: `${configuredPct}%` }}
                 />
+                {surplus > 0 && (
+                  <span
+                    className="absolute inset-y-0 bg-[var(--eb-accent)]/40"
+                    style={{ left: `${configuredPct}%`, width: `${surplusPct}%` }}
+                  />
+                )}
                 <span
                   className="absolute inset-y-0 bg-[var(--eb-accent-text)]/75"
                   style={{ left: `${spentPct}%`, width: `${requestedPct}%` }}
@@ -126,9 +138,23 @@ export function SearchesView({
                   />
                 )}
               </div>
+              {/* Swatches appear only alongside a surplus segment: with two colours the labels
+                  are unambiguous on their own, and a normal day keeps the legend it always had. */}
               <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-[var(--eb-faint)]">
-                <span>{fmt(quota.used)} spent</span>
-                <span>{fmt(quota.configuredRemaining)} requested</span>
+                <span className={surplus > 0 ? "flex items-center gap-1.5" : undefined}>
+                  {surplus > 0 && <span className="size-2 rounded-[2px] bg-[var(--eb-accent)]" />}
+                  {fmt(quota.used - surplus)} spent
+                </span>
+                {surplus > 0 && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="size-2 rounded-[2px] bg-[var(--eb-accent)]/40" />
+                    {fmt(surplus)} surplus
+                  </span>
+                )}
+                <span className={surplus > 0 ? "flex items-center gap-1.5" : undefined}>
+                  {surplus > 0 && <span className="size-2 rounded-[2px] bg-[var(--eb-accent-text)]/75" />}
+                  {fmt(quota.configuredRemaining)} requested
+                </span>
                 {quota.overage > 0 ? (
                   <span className="text-[var(--eb-amber)]">{fmt(quota.overage)} to slow down</span>
                 ) : (

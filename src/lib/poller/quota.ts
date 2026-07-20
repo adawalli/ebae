@@ -119,6 +119,13 @@ export function usedToday(calls: UserCtx["calls"], today = new Date().toDateStri
   return calls.date === today ? calls.used : 0;
 }
 
+// The bonus-check share of usedToday, read through the same stale-date guard and for the same
+// reason: the pair is only meaningful together, and a reader that trusted one field past
+// midnight but not the other would report a surplus larger than the spend it came out of.
+export function surplusToday(calls: UserCtx["calls"], today = new Date().toDateString()): number {
+  return calls.date === today ? calls.surplus : 0;
+}
+
 // One user's factor right now, off their in-memory counter and their own local clock. No DB
 // read and no persistence - it's derived state, recomputed per reschedule, so the steady-state
 // no-op poll stays DB-free (DESIGN.md §4). Logs each engage/release flip so a self-hoster can
@@ -147,25 +154,38 @@ export function governorFor(u: UserCtx, projected: number, now = new Date()): nu
 // mid-run (it holds increments not yet flushed), so on a live refresh keep the
 // larger; a fresh boot has memory 0 and adopts the DB value; a day rollover
 // discards a stale prior-day DB count. Pure + exported so it's unit-testable.
-export function mergeCalls(cur: UserCtx["calls"], today: string, dbUsed: number): UserCtx["calls"] {
-  if (cur.date === today) return { date: today, used: Math.max(cur.used, dbUsed) };
-  return { date: today, used: dbUsed };
+// Per field rather than whole-record: a flush can land between the two increments of a bonus
+// check, so the larger `used` and the larger `surplus` need not have come from the same side.
+// Taking each independently is safe because both only ever climb within a day.
+export function mergeCalls(
+  cur: UserCtx["calls"],
+  today: string,
+  dbCalls: { used: number; surplus: number },
+): UserCtx["calls"] {
+  if (cur.date === today) {
+    return { date: today, used: Math.max(cur.used, dbCalls.used), surplus: Math.max(cur.surplus, dbCalls.surplus) };
+  }
+  return { date: today, ...dbCalls };
 }
 
-// Persists one user's daily eBay call count. Returns the greatest()-reconciled value from
-// the DB so callers can sync in-memory state without a separate SELECT.
+// Persists one user's daily eBay call counts. Returns the greatest()-reconciled values from
+// the DB so callers can sync in-memory state without a separate SELECT. One statement for both
+// columns, so attributing the surplus costs no extra round-trip anywhere it is written.
 export async function flushCalls(
   database: ReturnType<typeof db>,
   userId: number,
   calls: UserCtx["calls"],
-): Promise<number> {
+): Promise<{ used: number; surplus: number }> {
   const [row] = await database
     .insert(apiUsage)
-    .values({ userId, day: calls.date, used: calls.used })
+    .values({ userId, day: calls.date, used: calls.used, surplus: calls.surplus })
     .onConflictDoUpdate({
       target: [apiUsage.userId, apiUsage.day],
-      set: { used: sql`greatest(${apiUsage.used}, ${calls.used})` },
+      set: {
+        used: sql`greatest(${apiUsage.used}, ${calls.used})`,
+        surplus: sql`greatest(${apiUsage.surplus}, ${calls.surplus})`,
+      },
     })
-    .returning({ used: apiUsage.used });
-  return row?.used ?? calls.used;
+    .returning({ used: apiUsage.used, surplus: apiUsage.surplus });
+  return row ?? { used: calls.used, surplus: calls.surplus };
 }

@@ -236,7 +236,7 @@ async function reload() {
       marketplace: row.ebayMarketplace,
       channels: webhooksByUser.get(row.id) ?? [],
       push: pushByUser.get(row.id) ?? [],
-      calls: st.users.get(row.id)?.calls ?? { date: today, used: 0 },
+      calls: st.users.get(row.id)?.calls ?? { date: today, used: 0, surplus: 0 },
       // Carried across the reload alongside `calls` for the same reason: it's the memory of
       // the last logged edge, so dropping it would re-log "engaged" on every reload.
       governorEngaged: st.users.get(row.id)?.governorEngaged ?? false,
@@ -371,8 +371,12 @@ async function reload() {
   // during the await, and if that happens we must not stamp it backward.
   if (new Date().toDateString() === today) {
     for (const u of st.users.values()) {
-      const inMem = u.calls.date === today ? u.calls.used : 0;
-      const reconciled = await flushCalls(database, u.id, { date: today, used: inMem });
+      const fresh = u.calls.date === today;
+      const reconciled = await flushCalls(database, u.id, {
+        date: today,
+        used: fresh ? u.calls.used : 0,
+        surplus: fresh ? u.calls.surplus : 0,
+      });
       if (new Date().toDateString() === today) {
         u.calls = mergeCalls(u.calls, today, reconciled);
       }

@@ -34,6 +34,7 @@ export {
   governorFactor,
   mergeCalls,
   surplusFrac,
+  surplusToday,
   usedToday,
 } from "./quota";
 export { activeFracElapsed, inWindow, snoozeMinutes } from "./snooze";

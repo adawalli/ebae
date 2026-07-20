@@ -78,6 +78,13 @@
       "when": 1784472530622,
       "tag": "0010_cool_doctor_octopus",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1784576424847,
+      "tag": "0011_youthful_nighthawk",
+      "breakpoints": true
     }
   ]
 }

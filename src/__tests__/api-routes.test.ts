@@ -153,7 +153,7 @@ test("status reports quota, mock mode and the snooze window", async () => {
   const { search } = await (await create({ q: "contax t2" })).json();
   const u = st().users.get(search.userId)!;
 
-  u.calls = { date: new Date().toDateString(), used: 7 };
+  u.calls = { date: new Date().toDateString(), used: 7, surplus: 2 };
   // Anchored to the current minute rather than a fixed 00:00-23:59: the end is exclusive, so a
   // fixed full-day window reports inactive for the single minute of 23:59.
   const now = new Date();
@@ -164,7 +164,8 @@ test("status reports quota, mock mode and the snooze window", async () => {
   u.snooze = { enabled: true, start, end, tz: "UTC" };
 
   const body = await (await statusGET(new Request("http://localhost/api/status"))).json();
-  expect(body.quota.used).toBe(7);
+  expect(body.quota.used).toBe(7); // the combined total: what eBay actually billed
+  expect(body.quota.surplus).toBe(2); // the slice of it the configuration never asked for
   expect(body.quota.ceiling).toBe(Number(process.env.EBAY_DAILY_QUOTA ?? 5000));
   expect(body.ebay.mode).toBe("mock");
   expect(body.snooze).toEqual({ active: true, window: `${hhmm(start)}–${hhmm(end)} UTC`, dailyMinutes: 61 });
@@ -173,4 +174,5 @@ test("status reports quota, mock mode and the snooze window", async () => {
   u.calls.date = "Mon Jan 01 2024";
   const rolled = await (await statusGET(new Request("http://localhost/api/status"))).json();
   expect(rolled.quota.used).toBe(0);
+  expect(rolled.quota.surplus).toBe(0);
 });

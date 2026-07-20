@@ -41,6 +41,10 @@ export function StatusView({
   refresh: () => void;
 }) {
   const noCreds = status?.ebay.mode === "no-creds";
+  const surplus = status?.quota.surplus ?? 0;
+  const configured = (status?.quota.used ?? 0) - surplus; // what the saved searches themselves spent
+  const expected = status?.quota.expected ?? 0;
+  const overage = status?.quota.overage ?? 0;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="border-b p-4 md:px-[30px] md:py-6">
@@ -102,11 +106,32 @@ export function StatusView({
                 <span className="text-[14px] font-normal text-[var(--eb-faint)]">/ {fmt(ceiling)}</span>
               </div>
               {/* Against "expected" rather than only the ceiling: 90% spent is fine at 23:00 and
-                  alarming at 09:00, and the raw percentage can't tell those apart. */}
+                  alarming at 09:00, and the raw percentage can't tell those apart. Surplus checks
+                  are subtracted first - they spend quota that expires tonight either way, so
+                  billing them to the pace would flag a configuration that is behaving. */}
               <div className="mt-2 font-mono text-xs text-[var(--eb-faint)]">
-                {fmt(status?.quota.expected ?? 0)} expected by now ·{" "}
-                {Math.round(((status?.quota.used ?? 0) / ceiling) * 100)}% of budget
+                {fmt(configured)} configured · {fmt(expected)} expected by now ·{" "}
+                {configured <= expected ? (
+                  <span className="text-[var(--eb-green)]">on pace</span>
+                ) : (
+                  // Amber only when the day is actually forecast to overrun. A gap on its own
+                  // means little: `expected` projects the configuration as it stands now, while
+                  // `configured` is everything already billed, so the two drift apart for reasons
+                  // that are not overspending - polls bill up front, a sold check that has been
+                  // spent leaves the projection but never the counter, and pausing a search
+                  // rebases the projection under a day of history. Colouring every such gap would
+                  // alarm users whose budget lands fine, which is the same flapping the governor
+                  // holds GOV_MIN_SPEND and a release buffer to avoid.
+                  <span className={overage > 0 ? "text-[var(--eb-amber)]" : undefined}>
+                    {fmt(configured - expected)} ahead of pace
+                  </span>
+                )}
               </div>
+              {surplus > 0 && (
+                <div className="mt-1.5 font-mono text-xs text-[var(--eb-faint)]">
+                  +{fmt(surplus)} surplus sold checks · quota that would expire tonight
+                </div>
+              )}
               {status?.quota.governor.active && (
                 <div className="mt-1.5 text-xs text-[var(--eb-amber)]">
                   Governor active ·{" "}

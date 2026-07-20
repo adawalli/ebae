@@ -8,7 +8,15 @@ import { userCtx } from "./boot";
 import { MAX_BACKOFF_MS, QUOTA_SKIP_MS, kick, pollMode, schedule } from "./loop";
 import { MARKET_SAMPLES_PER_DAY } from "./market";
 import { callsPerDayFor, callsPerDayForEntry, checksDue24h, projectedCalls } from "./projection";
-import { GOV_MAX_FACTOR, QUOTA_CEILING, governedDelayMs, governorDecision, governorFor, usedToday } from "./quota";
+import {
+  GOV_MAX_FACTOR,
+  QUOTA_CEILING,
+  governedDelayMs,
+  governorDecision,
+  governorFor,
+  surplusToday,
+  usedToday,
+} from "./quota";
 import { SNOOZE_DEFAULT, activeFracNow, hhmm, snoozeMinutes, snoozeWindow, snoozing } from "./snooze";
 import { resetTracked, soldContext } from "./track";
 import { type Entry, type SnoozeState, bumpAlerts, plog, rowToSearch, state } from "./state";
@@ -382,10 +390,13 @@ export function status(userId: number): StatusInfo {
       const configuredRemaining = Math.ceil(projected * (1 - frac));
       const remaining = Math.max(QUOTA_CEILING - used, 0);
       const configuredForecast = used + configuredRemaining;
-      // "expected" is what an evenly-paced day would have spent by now. Compared against `used`
-      // it answers the question the raw counter can't: is this spend on track, or early?
+      // "expected" is what an evenly-paced day would have spent by now. Compared against
+      // `used - surplus` it answers the question the raw counter can't: is this spend on track,
+      // or early? Judging `used` whole would flag a user whose only overspend was quota that
+      // was going to expire tonight regardless.
       return {
         used,
+        surplus: u ? surplusToday(u.calls, today) : 0,
         ceiling: QUOTA_CEILING,
         projected,
         expected: Math.round(projected * frac),

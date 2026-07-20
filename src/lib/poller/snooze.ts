@@ -44,22 +44,17 @@ function snoozedBefore(sn: SnoozeState, nowMin: number): number {
   return Math.min(nowMin, sn.end) + Math.max(0, nowMin - sn.start);
 }
 
-// How much of today's POLLABLE time is already gone, in [0, 1]. Not wall-clock elapsed:
+// How much of the user's own POLLABLE day is already gone, in [0, 1]. Not wall-clock elapsed:
 // a user snoozing 22:00-06:00 has 960 pollable minutes, so at noon they are 37.5% through
-// their polling day, not 50% through the clock. The governor divides by this to get budget
-// pace, and measuring it against the clock instead would read a snoozing user as behind pace
-// every morning and never throttle them. Pure + exported for tests.
+// their polling day, not 50% through the clock - measuring against the clock instead would read
+// a snoozing user as behind pace every morning and never throttle them. Nothing paces off this
+// directly (the counter's day is the one that matters, below); it stays as the reference the
+// counter-day form reduces to when the two zones agree.
 export function activeFracElapsed(sn: SnoozeState, nowMin: number): number {
   const total = 1440 - snoozeMinutes(sn);
   if (total <= 0) return 1; // snoozed around the clock: nothing polls, so pace is moot
   const elapsed = nowMin - snoozedBefore(sn, nowMin);
   return Math.min(1, Math.max(0, elapsed / total));
-}
-
-// Same, read off the clock in the user's own zone. Separate from the pure function so callers
-// don't need localMinutes, and so the pace tests can pin a minute without faking time.
-export function activeFracNow(sn: SnoozeState, now = new Date()): number {
-  return activeFracElapsed(sn, localMinutes(sn.tz, now));
 }
 
 // How much of the POLLABLE time in the *counter's* day is gone. Same quantity as

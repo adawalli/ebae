@@ -396,7 +396,9 @@ export function status(userId: number): StatusInfo {
       // was going to expire tonight regardless.
       return {
         used,
-        surplus: u ? surplusToday(u.calls, today) : 0,
+        // Clamped so the subset relation the type promises holds at the boundary: both UI
+        // surfaces derive configured = used - surplus, and neither should have to guard it.
+        surplus: u ? Math.min(used, surplusToday(u.calls, today)) : 0,
         ceiling: QUOTA_CEILING,
         projected,
         expected: Math.round(projected * frac),

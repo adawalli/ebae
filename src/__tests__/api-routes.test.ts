@@ -170,6 +170,12 @@ test("status reports quota, mock mode and the snooze window", async () => {
   expect(body.ebay.mode).toBe("mock");
   expect(body.snooze).toEqual({ active: true, window: `${hhmm(start)}–${hhmm(end)} UTC`, dailyMinutes: 61 });
 
+  // surplus is a subset of used, so the payload never reports more of it than was billed - the
+  // UI derives configured = used - surplus and would otherwise render a negative figure.
+  u.calls = { date: new Date().toDateString(), used: 3, surplus: 9 };
+  const clamped = await (await statusGET(new Request("http://localhost/api/status"))).json();
+  expect(clamped.quota.surplus).toBe(3);
+
   // Yesterday's spend is not this day's: the counter is only trusted while its date is today.
   u.calls.date = "Mon Jan 01 2024";
   const rolled = await (await statusGET(new Request("http://localhost/api/status"))).json();

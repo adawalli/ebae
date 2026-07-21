@@ -5,6 +5,10 @@
 export const CONDITION_KEYS = ["NOT_PARTS", "NEW", "USED"] as const;
 export type ConditionKey = (typeof CONDITION_KEYS)[number];
 
+// A sold median needs enough recent realized prices to be useful. Shared by the poller and UI
+// so the collection progress label cannot drift from the gate that enables the median.
+export const SOLD_MIN_COUNT = 3;
+
 // Keyed by ConditionKey so a new preset is a compile error here rather than a silently
 // mislabelled option or badge.
 export const CONDITION_LABELS: Record<ConditionKey, string> = {
@@ -76,6 +80,8 @@ export type SearchStats = Search & {
   // Median of what this search's tracked listings actually sold for, or null when it isn't
   // tracking or hasn't learned enough yet. Lives in poller memory, not a column.
   soldMedian: number | null;
+  // Eligible realized prices collected in the same 30-day window as soldMedian.
+  soldSampleCount: number;
   // Sold-price checks already scheduled inside the next 24h - the part of callsPerDay that
   // varies with what the search is currently following rather than with its configuration. Sent
   // so the edit dialog's estimate can match the figure the row beside it is showing.

@@ -2,7 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import type { db } from "@/lib/db";
 import { type CheckResult, checkItem, mockCheckItem } from "@/lib/ebay";
 import { trackedItems } from "@/lib/schema";
-import type { Item, PriceKind } from "@/lib/types";
+import { SOLD_MIN_COUNT, type Item, type PriceKind } from "@/lib/types";
 import { median } from "./market";
 import { QUOTA_CEILING, bonusBudget, flushCalls, usedToday } from "./quota";
 import { counterDayFrac } from "./snooze";
@@ -44,7 +44,6 @@ const MAX_CHECK_ATTEMPTS = 6;
 // The sold median only speaks for prices recent enough to still describe the market, and only
 // once enough of them agree. Below the minimum the deal context falls back to asking prices.
 const SOLD_WINDOW_DAYS = 30;
-const SOLD_MIN_COUNT = 3;
 
 // The next scheduled check for a fixed-price listing after `afterMs`, or null when the schedule
 // is spent. Derived from the schedule rather than counted, so a step skipped by a re-sighting
@@ -515,12 +514,20 @@ export function hydrateTracked(rows: readonly (typeof trackedItems.$inferSelect)
 // The realized-price context for a search's alerts, or null when there isn't enough of one to
 // stand behind. Prices older than the window are dropped rather than aged down: what a thing
 // sold for last quarter is not what it is worth now.
+function recentSoldPrices(sold: readonly { price: number; atMs: number }[], now: number) {
+  const cutoff = now - SOLD_WINDOW_DAYS * DAY_MS;
+  return sold.filter((s) => s.atMs >= cutoff).map((s) => s.price);
+}
+
+export function soldSampleCount(sold: readonly { price: number; atMs: number }[], now: number) {
+  return recentSoldPrices(sold, now).length;
+}
+
 export function soldContext(
   sold: readonly { price: number; atMs: number }[],
   now: number,
 ): { typical: number | null; count: number } | null {
-  const cutoff = now - SOLD_WINDOW_DAYS * DAY_MS;
-  const prices = sold.filter((s) => s.atMs >= cutoff).map((s) => s.price);
+  const prices = recentSoldPrices(sold, now);
   if (prices.length < SOLD_MIN_COUNT) return null;
   return { typical: median(prices), count: prices.length };
 }

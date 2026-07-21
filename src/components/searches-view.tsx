@@ -4,7 +4,7 @@ import { ExternalLink, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { CONDITION_BADGE, type ConditionKey, type SearchStats, type StatusInfo } from "@/lib/types";
 import { splitExcludeTerms } from "@/lib/exclude-terms";
 import { ebayWebUrl } from "@/lib/utils";
-import { ago, fmt, money, shownSurplus } from "@/lib/format";
+import { ago, fmt, money, priceSummary, shownSurplus } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -58,16 +58,7 @@ export function SearchesView({
     if (!s.enabled) return "paused";
     if (!s.seeded) return "seeding baseline — first matches silenced";
     const hit = s.lastHitAt ? `last hit ${ago(s.lastHitAt, true)}` : "no hits yet";
-    // The baseline an alert compares against, best first: what tracked listings actually sold
-    // for beats what sellers are asking. Only one is shown - two medians side by side invite a
-    // comparison that isn't the point.
-    const cur = status?.ebay.currency;
-    const baseline =
-      s.soldMedian != null
-        ? ` · sold ~${money(s.soldMedian, cur)}`
-        : s.marketMedian != null
-          ? ` · market ~${money(s.marketMedian, cur)}`
-          : "";
+    const baseline = priceSummary(s, status?.ebay.currency);
     return `${hit} · seen ${fmt(s.seenCount)}${baseline}`;
   }
 

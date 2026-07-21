@@ -6,6 +6,7 @@ import {
   harvest,
   inferOutcome,
   newTracked,
+  soldSampleCount,
   soldContext,
 } from "./track";
 import type { TrackedItem } from "./state";
@@ -223,4 +224,11 @@ test("soldContext: needs a real sample inside the recency window", () => {
 
   // one stale price drops the sample back under the threshold instead of skewing it
   expect(soldContext([...fresh.slice(0, 2), { price: 300, atMs: at(400) }], NOW)).toBeNull();
+});
+
+test("soldSampleCount: includes only recent realized prices", () => {
+  const at = (days: number) => NOW - days * DAY;
+  expect(soldSampleCount([], NOW)).toBe(0);
+  expect(soldSampleCount([{ price: 100, atMs: at(1) }], NOW)).toBe(1);
+  expect(soldSampleCount([{ price: 100, atMs: at(31) }], NOW)).toBe(0);
 });

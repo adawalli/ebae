@@ -1,3 +1,5 @@
+import { SOLD_MIN_COUNT, type SearchStats } from "@/lib/types";
+
 export const fmt = (n: number) => n.toLocaleString("en-US");
 // Projected polls/day. Snooze silences a daily window, so poll over active
 // minutes (1440 minus the snoozed span), not the whole day.
@@ -11,6 +13,16 @@ export const shownSurplus = (surplus: number, ceiling: number) => (surplus / cei
 export function money(n: number | null, currency = "USD") {
   if (n == null) return "—";
   return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(n);
+}
+
+export function priceSummary(
+  s: Pick<SearchStats, "marketMedian" | "soldMedian" | "soldSampleCount" | "trackSold">,
+  currency?: string,
+) {
+  if (s.trackSold && s.soldMedian != null) return ` · sold ~${money(s.soldMedian, currency)}`;
+  const market = s.marketMedian != null ? ` · market ~${money(s.marketMedian, currency)}` : "";
+  const progress = s.trackSold ? ` · sold ${s.soldSampleCount}/${SOLD_MIN_COUNT}` : "";
+  return `${market}${progress}`;
 }
 
 export function ago(iso: string, compact = false) {

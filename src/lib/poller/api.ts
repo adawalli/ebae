@@ -18,7 +18,7 @@ import {
   usedToday,
 } from "./quota";
 import { SNOOZE_DEFAULT, counterDayFrac, hhmm, snoozeMinutes, snoozeWindow, snoozing } from "./snooze";
-import { resetTracked, soldContext } from "./track";
+import { resetTracked, soldContext, soldSampleCount } from "./track";
 import { type Entry, type SnoozeState, bumpAlerts, plog, rowToSearch, state } from "./state";
 
 export const DEFAULT_INTERVAL = Number(process.env.POLL_INTERVAL_DEFAULT ?? 5);
@@ -60,6 +60,7 @@ export function listSearches(userId: number): SearchStats[] {
     .sort((a, b) => b.s.createdAt.localeCompare(a.s.createdAt) || b.s.id - a.s.id)
     .map((e) => {
       e.hitTimes = e.hitTimes.filter((t) => t > cutoff);
+      const sold = e.s.trackSold ? e.soldPrices : [];
       return {
         ...e.s,
         seenCount: e.seen.size,
@@ -68,7 +69,8 @@ export function listSearches(userId: number): SearchStats[] {
         lastPolledAt: e.lastPolledAt ? new Date(e.lastPolledAt).toISOString() : null,
         effectiveIntervalMin: Math.round(e.s.intervalMin * factor * 10) / 10,
         callsPerDay: callsPerDayForEntry(e, activeMin),
-        soldMedian: e.s.trackSold ? (soldContext(e.soldPrices, now)?.typical ?? null) : null,
+        soldMedian: soldContext(sold, now)?.typical ?? null,
+        soldSampleCount: soldSampleCount(sold, now),
         checksDue24h: checksDue24h(e),
       };
     });
@@ -133,6 +135,7 @@ export async function createSearch(userId: number, input: SearchInput): Promise<
     effectiveIntervalMin: Math.round(e.s.intervalMin * factorFor(userId) * 10) / 10,
     callsPerDay: callsPerDayFor(e.s, activeMinFor(userId)),
     soldMedian: null, // brand new: nothing tracked, nothing realized
+    soldSampleCount: 0,
     checksDue24h: 0,
   };
 }
@@ -227,6 +230,7 @@ export async function updateSearch(
         effectiveIntervalMin: Math.round(s.intervalMin * factorFor(userId) * 10) / 10,
         callsPerDay: callsPerDayFor(s, activeMinFor(userId)),
         soldMedian: null, // no entry to read follows from; the next list call has the real figure
+        soldSampleCount: 0,
         checksDue24h: 0,
       };
     }

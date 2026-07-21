@@ -59,6 +59,14 @@ test("a created search enables sold tracking in the API and DB", async () => {
   expect(listed.searches.map((s: { id: number }) => s.id)).toEqual([search.id]);
 });
 
+test("GET surfaces incomplete sold-price progress", async () => {
+  const { search } = await (await create({ q: "leica m6" })).json();
+  st().entries.get(search.id)!.soldPrices.push({ price: 900, atMs: Date.now() });
+
+  const listed = await (await searchesGET(new Request("http://localhost/api/searches"))).json();
+  expect(listed.searches[0]).toMatchObject({ soldMedian: null, soldSampleCount: 1 });
+});
+
 test("PATCH changes the interval and toggles enabled", async () => {
   const { search } = await (await create({ q: "nikon f3" })).json();
 

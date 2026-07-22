@@ -7,6 +7,7 @@ import {
   marketSampleSearch,
   mockCheckItem,
   mockMarket,
+  mockSearch,
   type EbayCreds,
 } from "./ebay";
 import { median } from "./poller";
@@ -61,6 +62,17 @@ test("currencyFor: maps known marketplaces, falls back to USD", () => {
 test("browseFilters: buying options default to BIN, auctions when included", () => {
   expect(browseFilters(base, "USD")).toEqual(["buyingOptions:{FIXED_PRICE}"]);
   expect(browseFilters({ ...base, includeAuctions: true }, "USD")).toEqual(["buyingOptions:{FIXED_PRICE|AUCTION}"]);
+});
+
+// Sold tracking widens the query to auctions even on a BIN-only search, so their winning bids
+// can feed the sold median (the poller follows them without alerting - see loop.ts). Without
+// this the "real value" of a BIN-only search would never reflect what auctions actually close at.
+test("browseFilters: trackSold widens to auctions on a BIN-only search", () => {
+  expect(browseFilters({ ...base, trackSold: true }, "USD")).toEqual(["buyingOptions:{FIXED_PRICE|AUCTION}"]);
+  // neither flag set: stays BIN-only
+  expect(browseFilters({ ...base, trackSold: false, includeAuctions: false }, "USD")).toEqual([
+    "buyingOptions:{FIXED_PRICE}",
+  ]);
 });
 
 test("browseFilters: price bounds build [lo..hi], [..hi], [lo..] with a currency", () => {
@@ -137,6 +149,15 @@ test("marketSampleSearch keeps the floor, drops the cap", () => {
   expect(f).toContain("price:[150..]"); // floor kept, open-ended top
   expect(f.some((c) => c.includes("800"))).toBe(false); // cap gone
   expect(m.conditions).toBe("USED"); // other constraints preserved (applied via conditionExcluded)
+});
+
+// The market sample measures asking prices, so trackSold must be cleared before it builds the
+// query - otherwise the auction-widening in browseFilters would pull running bids into the
+// asking-price median.
+test("marketSampleSearch clears trackSold so the sample stays BIN-only", () => {
+  const m = marketSampleSearch({ ...base, trackSold: true });
+  expect(m.trackSold).toBe(false);
+  expect(browseFilters(m, "USD")).toEqual(["buyingOptions:{FIXED_PRICE}"]);
 });
 
 // The mock market sample must apply the same condition filter as the mock search: they call
@@ -226,6 +247,16 @@ test("checkItem: other failures throw", async () => {
 test("mockCheckItem: resolves sold, just under the last seen price", () => {
   expect(mockCheckItem(100)).toEqual({ ok: true, availability: "OUT_OF_STOCK", soldQuantity: 1, price: 90 });
   expect(mockCheckItem(null).price).toBeNull();
+});
+
+// A dev without eBay keys must be able to exercise the auction-sold path: a BIN-only tracking
+// search has to surface some auctions (with an end date, or newTracked declines them), while a
+// plain BIN-only search still surfaces none.
+test("mockSearch: a BIN-only tracking search surfaces datable auctions, a plain one none", () => {
+  const auctions = mockSearch({ ...base, id: 8801, trackSold: true }).filter((i) => i.buyingOption === "AUCTION");
+  expect(auctions.length).toBeGreaterThan(0);
+  expect(auctions.every((a) => a.itemEndDate != null)).toBe(true);
+  expect(mockSearch({ ...base, id: 8802 }).every((i) => i.buyingOption === "FIXED_PRICE")).toBe(true);
 });
 
 // Mock market sample must center well above a deal-hunt band so the feature is visibly

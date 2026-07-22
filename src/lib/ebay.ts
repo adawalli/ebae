@@ -106,7 +106,9 @@ export function browseFilters(s: Search, currency: string): string[] {
   const filters = [
     // always constrain buying options: without a filter eBay returns auctions too.
     // includeAuctions is the source of truth (binOnly is its UI inverse); default is BIN-only.
-    s.includeAuctions ? "buyingOptions:{FIXED_PRICE|AUCTION}" : "buyingOptions:{FIXED_PRICE}",
+    // trackSold also widens to auctions: their winning bids feed the sold median even on a
+    // BIN-only search, where the poller follows them without alerting (see loop.ts).
+    s.includeAuctions || s.trackSold ? "buyingOptions:{FIXED_PRICE|AUCTION}" : "buyingOptions:{FIXED_PRICE}",
   ];
   // eBay accepts [min..max], [min..], or [..max] — build whichever bounds are set.
   if (s.priceFloor != null || s.priceCap != null) {
@@ -126,7 +128,9 @@ export function browseFilters(s: Search, currency: string): string[] {
 // ceiling into the sample so the median reflects the true going rate. Pure + exported so the
 // keep-floor/drop-cap contract is locked by a test.
 export function marketSampleSearch(s: Search): Search {
-  return { ...s, priceCap: null };
+  // trackSold is cleared so the auction-widened filter (see browseFilters) can't leak running
+  // bids into this sample: the market baseline measures what sellers ask, not live bids.
+  return { ...s, priceCap: null, trackSold: false };
 }
 
 // Shared Browse item_summary/search call. searchNewlyListed and sampleMarket differ only in
@@ -280,7 +284,7 @@ function mockItem(s: Search, n: number): Item {
   const lo = s.priceFloor ?? 0;
   const hi = Math.max(s.priceCap ?? 500, lo + 50);
   const price = Math.round((lo + (hi - lo) * (0.15 + ((n * 7919) % 60) / 100)) * 100) / 100;
-  const auction = s.includeAuctions && n % 3 === 0;
+  const auction = (s.includeAuctions || s.trackSold) && n % 3 === 0;
   return {
     itemId: id,
     title: `${s.q} - ${VARIANTS[n % VARIANTS.length]}`,

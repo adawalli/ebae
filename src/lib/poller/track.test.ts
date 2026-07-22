@@ -105,6 +105,19 @@ test("harvest: past the last decay step the check stays due, so one call can res
   expect(t.nextCheckAt).toBeLessThanOrEqual(at); // still due: nothing left to defer to
 });
 
+// A re-sighted auction whose post-end check has already come due (an ended listing still turning
+// up in results) refreshes its closing bid, but its schedule must NOT be walked onto the
+// fixed-price decay - the one check it gets has to land, or the winning bid is lost. This is the
+// priceKind guard: without it a bid row's due check would defer 3 days out and never resolve.
+test("harvest: a re-sighted due auction refreshes its bid but keeps its schedule", () => {
+  const t = tracked({ priceKind: "bid", itemEndDate: NOW - 10 * 60_000, nextCheckAt: NOW - 1000 });
+  const before = t.nextCheckAt;
+
+  expect(harvest(t, item({ price: 1200 }), NOW)).toBe(true); // the bid moved, so it's a write
+  expect(t.lastPrice).toBe(1200); // refreshed
+  expect(t.nextCheckAt).toBe(before); // schedule untouched: the due post-end check still stands
+});
+
 // The uniform rule, verified against the live API: a sold listing reads OUT_OF_STOCK with a
 // sold quantity, and its price is the realized one (for an ended auction, the final bid).
 test("inferOutcome: out of stock with a sold quantity is a sale at that price", () => {

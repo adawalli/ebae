@@ -218,15 +218,21 @@ export async function insertTracked(
   if (!fresh.length) return;
   await serialize(e, async () => {
     if (stale(e, epoch)) return;
-    await database
+    // returning() reports only the rows this insert actually created. A conflict means the row
+    // already exists - already tracked, or resolved and left behind (a reappearing backlog
+    // auction) - and is left out. Re-adding a resolved row to memory would let a later check
+    // re-resolve it and double-count its realized price, so memory follows what the insert wrote.
+    const inserted = await database
       .insert(trackedItems)
       .values(fresh.map((t) => toRow(e.s.id, t)))
-      .onConflictDoNothing();
+      .onConflictDoNothing()
+      .returning({ itemId: trackedItems.itemId });
     // A reset requested while that statement ran bumped the epoch immediately but is queued
     // behind this lock, so its DELETE will clear the rows we just wrote. Skipping the map keeps
     // memory agreeing with the disk that is about to be emptied.
     if (stale(e, epoch)) return;
-    for (const t of fresh) e.tracked.set(t.itemId, t);
+    const won = new Set(inserted.map((r) => r.itemId));
+    for (const t of fresh) if (won.has(t.itemId)) e.tracked.set(t.itemId, t);
   });
 }
 

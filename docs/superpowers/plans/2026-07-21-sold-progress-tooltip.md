@@ -34,7 +34,7 @@
 - Consumes: `SearchStats.trackSold`, `SearchStats.soldMedian`, and `SearchStats.soldSampleCount`.
 - Produces: a focusable help button and Radix tooltip in the saved-search subtitle only when the helper returns copy.
 
-- [ ] **Step 1: Write the failing helper tests**
+- [x] **Step 1: Write the failing helper tests**
 
 Add to `src/lib/format.test.ts`:
 
@@ -54,13 +54,13 @@ test("soldProgressTooltip: hides help outside incomplete sold progress", () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused test to verify RED**
+- [x] **Step 2: Run the focused test to verify RED**
 
 Run: `bun test src/lib/format.test.ts`
 
 Expected: FAIL because `soldProgressTooltip` is not exported.
 
-- [ ] **Step 3: Implement the smallest shared tooltip helper**
+- [x] **Step 3: Implement the smallest shared tooltip helper**
 
 Add to `src/lib/format.ts` after `priceSummary()`:
 
@@ -71,13 +71,13 @@ export function soldProgressTooltip(s: Pick<SearchStats, "soldMedian" | "soldSam
 }
 ```
 
-- [ ] **Step 4: Run the focused test to verify GREEN**
+- [x] **Step 4: Run the focused test to verify GREEN**
 
 Run: `bun test src/lib/format.test.ts`
 
 Expected: PASS with all format tests green.
 
-- [ ] **Step 5: Render the accessible tooltip in the search subtitle**
+- [x] **Step 5: Render the accessible tooltip in the search subtitle**
 
 In `src/components/searches-view.tsx`:
 
@@ -123,13 +123,13 @@ Keep `const [openSoldProgressTooltip, setOpenSoldProgressTooltip] = useState<num
 
 The `span` continues to truncate long status text; the help control remains visible and has an independent keyboard target. Touch toggles the controlled row after preventing Radix's touch close path; hover and keyboard focus use Radix's existing `onOpenChange` behavior.
 
-- [ ] **Step 6: Run focused automated verification**
+- [x] **Step 6: Run focused automated verification**
 
 Run: `bun test src/lib/format.test.ts && bun run lint && bun run build`
 
 Expected: all commands exit `0`.
 
-- [ ] **Step 7: Verify the user-facing behavior in a browser**
+- [x] **Step 7: Verify the user-facing behavior in a browser**
 
 Run `bun run dev`, open the saved-searches view in mock mode, then confirm:
 
@@ -138,7 +138,7 @@ Run `bun run dev`, open the saved-searches view in mock mode, then confirm:
 3. A touch tap opens and closes the approved copy.
 4. A completed sold median, disabled row, seeding row, and zero-sample row do not show the icon.
 
-- [ ] **Step 8: Commit the scoped implementation**
+- [x] **Step 8: Commit the scoped implementation**
 
 ```bash
 git add docs/superpowers/plans/2026-07-21-sold-progress-tooltip.md src/lib/format.ts src/lib/format.test.ts src/components/searches-view.tsx

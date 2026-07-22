@@ -244,7 +244,7 @@ export function SearchesView({
                                     event.preventDefault();
                                     setOpenSoldProgressTooltip((openId) => (openId === s.id ? null : s.id));
                                   }}
-                                  className="inline-flex size-5 shrink-0 items-center justify-center rounded text-[var(--eb-faint)] transition-colors hover:text-[var(--eb-accent-text)] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                                  className="inline-flex size-5 shrink-0 items-center justify-center rounded text-[var(--eb-faint)] transition-colors hover:text-[var(--eb-accent-text)] focus-visible:ring-3 focus-visible:ring-ring/50"
                                 >
                                   <CircleHelp aria-hidden="true" className="size-3" />
                                 </button>

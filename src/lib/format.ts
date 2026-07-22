@@ -27,7 +27,7 @@ export function priceSummary(
 
 export function soldProgressTooltip(s: Pick<SearchStats, "soldMedian" | "soldSampleCount" | "trackSold">) {
   if (!s.trackSold || s.soldMedian != null || s.soldSampleCount === 0) return null;
-  return `${s.soldSampleCount} of ${SOLD_MIN_COUNT} recent eligible sales collected. Three are needed before ebae uses a sold-price median.`;
+  return `${s.soldSampleCount} of ${SOLD_MIN_COUNT} recent eligible sales collected. ${SOLD_MIN_COUNT} are needed before ebae uses a sold-price median.`;
 }
 
 export function ago(iso: string, compact = false) {

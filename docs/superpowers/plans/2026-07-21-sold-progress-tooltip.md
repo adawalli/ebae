@@ -84,34 +84,44 @@ In `src/components/searches-view.tsx`:
 ```ts
 import { CircleHelp, ExternalLink, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { ago, fmt, money, priceSummary, shownSurplus, soldProgressTooltip } from "@/lib/format";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 ```
 
-Derive `const progressHelp = soldProgressTooltip(s);` beside each search row's `seeding` and `exclusions` values. Replace the subtitle wrapper with:
+Keep `const [openSoldProgressTooltip, setOpenSoldProgressTooltip] = useState<number | null>(null);` in the component. Derive `const progressHelp = s.enabled && s.seeded ? soldProgressTooltip(s) : null;` beside each search row's `seeding` and `exclusions` values. Replace the subtitle wrapper with:
 
 ```tsx
 <div className="mt-0.5 flex min-w-0 items-center gap-1 font-mono text-[11.5px] text-[var(--eb-faint)]">
   <span className="truncate">{searchSub(s)}</span>
   {progressHelp && (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label="Explain sold price progress"
-          className="inline-flex size-5 shrink-0 items-center justify-center rounded text-[var(--eb-faint)] transition-colors hover:text-[var(--eb-accent-text)] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-        >
-          <CircleHelp aria-hidden="true" className="size-3" />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" sideOffset={4}>
-        {progressHelp}
-      </TooltipContent>
-    </Tooltip>
+    <TooltipProvider>
+      <Tooltip
+        open={openSoldProgressTooltip === s.id}
+        onOpenChange={(open) => setOpenSoldProgressTooltip(open ? s.id : null)}
+      >
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label="Explain sold price progress"
+            onPointerDown={(event) => {
+              if (event.pointerType !== "touch") return;
+              event.preventDefault();
+              setOpenSoldProgressTooltip((openId) => (openId === s.id ? null : s.id));
+            }}
+            className="inline-flex size-5 shrink-0 items-center justify-center rounded text-[var(--eb-faint)] transition-colors hover:text-[var(--eb-accent-text)] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+          >
+            <CircleHelp aria-hidden="true" className="size-3" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={4}>
+          {progressHelp}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )}
 </div>
 ```
 
-The `span` continues to truncate long status text; the help control remains visible and has an independent keyboard target.
+The `span` continues to truncate long status text; the help control remains visible and has an independent keyboard target. Touch toggles the controlled row after preventing Radix's touch close path; hover and keyboard focus use Radix's existing `onOpenChange` behavior.
 
 - [ ] **Step 6: Run focused automated verification**
 
@@ -125,7 +135,8 @@ Run `bun run dev`, open the saved-searches view in mock mode, then confirm:
 
 1. An incomplete `sold 1/3` row shows the help icon.
 2. Hovering and tabbing to it reveal the approved copy.
-3. A completed sold median and a zero-sample row do not show the icon.
+3. A touch tap opens and closes the approved copy.
+4. A completed sold median, disabled row, seeding row, and zero-sample row do not show the icon.
 
 - [ ] **Step 8: Commit the scoped implementation**
 

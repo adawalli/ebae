@@ -1,8 +1,6 @@
 "use client";
 
-import { useState } from "react";
-
-import { CircleHelp, ExternalLink, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { ExternalLink, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { CONDITION_BADGE, type ConditionKey, type SearchStats, type StatusInfo } from "@/lib/types";
 import { splitExcludeTerms } from "@/lib/exclude-terms";
 import { ebayWebUrl } from "@/lib/utils";
@@ -11,9 +9,18 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { InfoTip } from "@/components/info-tip";
 
 const interval = (minutes: number) => (Number.isInteger(minutes) ? String(minutes) : minutes.toFixed(1));
+
+const QUOTA_HELP = {
+  spent: "eBay API calls billed so far today by your scheduled polls.",
+  surplus:
+    "Extra sold-price checks run on quota that would have expired at midnight anyway. Counted in the total used, but not a sign your configuration is running hot.",
+  requested: "Calls your current configuration still intends to spend over the rest of today.",
+  spare:
+    "Headroom nobody has claimed: quota neither spent already nor requested by your searches for the rest of today.",
+};
 
 export function SearchesView({
   searches,
@@ -56,7 +63,6 @@ export function SearchesView({
   const surplusPct = Math.min(100 - configuredPct, (surplus / ceiling) * 100);
   const requestedPct = quota ? Math.min(100 - spentPct, (quota.configuredRemaining / ceiling) * 100) : 0;
   const overagePct = quota ? Math.min(20, (quota.overage / ceiling) * 100) : 0;
-  const [openSoldProgressTooltip, setOpenSoldProgressTooltip] = useState<number | null>(null);
 
   function searchSub(s: SearchStats) {
     if (!s.enabled) return "paused";
@@ -138,17 +144,17 @@ export function SearchesView({
               <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-[var(--eb-faint)]">
                 <span className={surplus > 0 ? "flex items-center gap-1.5" : undefined}>
                   {surplus > 0 && <span className="size-2 rounded-[2px] bg-[var(--eb-accent)]" />}
-                  {fmt(quota.used - surplus)} spent
+                  <InfoTip content={QUOTA_HELP.spent}>{fmt(quota.used - surplus)} spent</InfoTip>
                 </span>
                 {surplus > 0 && (
                   <span className="flex items-center gap-1.5">
                     <span className="size-2 rounded-[2px] bg-[var(--eb-accent)]/40" />
-                    {fmt(surplus)} surplus
+                    <InfoTip content={QUOTA_HELP.surplus}>{fmt(surplus)} surplus</InfoTip>
                   </span>
                 )}
                 <span className={surplus > 0 ? "flex items-center gap-1.5" : undefined}>
                   {surplus > 0 && <span className="size-2 rounded-[2px] bg-[var(--eb-accent-text)]/75" />}
-                  {fmt(quota.configuredRemaining)} requested
+                  <InfoTip content={QUOTA_HELP.requested}>{fmt(quota.configuredRemaining)} requested</InfoTip>
                 </span>
                 {quota.overage > 0 ? (
                   <span className="text-[var(--eb-amber)]">{fmt(quota.overage)} to slow down</span>
@@ -156,7 +162,7 @@ export function SearchesView({
                   // `quota.remaining` is ceiling - used, which already contains `requested` - so
                   // the legend read as a partition of the ceiling but summed past it. Report the
                   // headroom neither spent nor claimed, which is the bar's own grey tail.
-                  <span>{fmt(quota.remaining - quota.configuredRemaining)} spare</span>
+                  <InfoTip content={QUOTA_HELP.spare}>{fmt(quota.remaining - quota.configuredRemaining)} spare</InfoTip>
                 )}
               </div>
               {quota.governor.active && (
@@ -229,32 +235,7 @@ export function SearchesView({
                       </a>
                       <div className="mt-0.5 flex min-w-0 items-center gap-1 font-mono text-[11.5px] text-[var(--eb-faint)]">
                         <span className="truncate">{searchSub(s)}</span>
-                        {progressHelp && (
-                          <TooltipProvider>
-                            <Tooltip
-                              open={openSoldProgressTooltip === s.id}
-                              onOpenChange={(open) => setOpenSoldProgressTooltip(open ? s.id : null)}
-                            >
-                              <TooltipTrigger asChild>
-                                <button
-                                  type="button"
-                                  aria-label="Explain sold price progress"
-                                  onPointerDown={(event) => {
-                                    if (event.pointerType !== "touch") return;
-                                    event.preventDefault();
-                                    setOpenSoldProgressTooltip((openId) => (openId === s.id ? null : s.id));
-                                  }}
-                                  className="inline-flex size-5 shrink-0 items-center justify-center rounded text-[var(--eb-faint)] transition-colors hover:text-[var(--eb-accent-text)] focus-visible:ring-3 focus-visible:ring-ring/50"
-                                >
-                                  <CircleHelp aria-hidden="true" className="size-3" />
-                                </button>
-                              </TooltipTrigger>
-                              <TooltipContent side="bottom" sideOffset={4}>
-                                {progressHelp}
-                              </TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
-                        )}
+                        {progressHelp && <InfoTip content={progressHelp} label="Explain sold price progress" />}
                       </div>
                     </div>
                   </div>

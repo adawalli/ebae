@@ -698,6 +698,32 @@ test("a resolved auction is not re-followed if it reappears", async () => {
   expect(e.soldPrices).toHaveLength(1); // and not double-counted
 });
 
+// Regression: when the drain is the only DB write in a tick, it must still open `wrote` so the
+// piggyback flush rides its connection - otherwise a price the free-refresh loop harvested onto a
+// followed listing that same tick is stranded in memory until some later writing tick. Both
+// tracked items here are auctions ("bid"), so neither the due nor the bonus path checks or flushes
+// them; only the drain can persist the harvested price.
+test("the backlog drain flushes prices harvested the same tick", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const followed = auctionItem({ itemId: "v1|auction-harvest|0", price: 300 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(followed);
+  await pollOnce(e); // follow it as a fresh auction, DB lastPrice = 300
+  expect(e.tracked.get(followed.itemId)!.lastPrice).toBe(300);
+
+  // A backlog auction (seen + alerted, never followed) is the only new write path this tick.
+  const backlog = auctionItem({ itemId: "v1|auction-harvest-drain|0" });
+  await database.insert(seenItems).values({ searchId: e.s.id, itemId: backlog.itemId }).onConflictDoNothing();
+  await alertRow(e.s.id, backlog.itemId);
+  e.seen.add(backlog.itemId);
+  // Re-sight the followed auction at a new price so harvest dirties it in memory.
+  g.__ebaeMock.pools.set(e.s.id, [auctionItem({ itemId: followed.itemId, price: 275 }), backlog]);
+
+  await pollOnce(e);
+
+  const [row] = (await trackedRows()).filter((r) => r.itemId === followed.itemId);
+  expect(row.lastPrice).toBe(275); // harvested price reached the DB, not just memory
+});
+
 // The whole point of the schedule: a due check resolves the listing, spends exactly one call,
 // and the realized price becomes the search's deal context.
 test("a due check resolves the listing as sold and bills one call", async () => {

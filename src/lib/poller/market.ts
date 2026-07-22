@@ -3,6 +3,7 @@ import type { db } from "@/lib/db";
 import { conditionExcluded, mockMarket, sampleMarket } from "@/lib/ebay";
 import { splitExcludeTerms } from "@/lib/exclude-terms";
 import { alerts, searches } from "@/lib/schema";
+import type { Item } from "@/lib/types";
 import { QUOTA_CEILING, flushCalls } from "./quota";
 import { type Entry, type UserCtx, message, plog, recordError } from "./state";
 
@@ -28,6 +29,13 @@ export function excludeMatch(title: string, excludeTerms: string | null): boolea
   if (!excludeTerms) return false;
   const t = title.toLowerCase();
   return splitExcludeTerms(excludeTerms).some((term) => t.includes(term.toLowerCase()));
+}
+
+// A listing the search means to drop: an exclude-term hit or an excluded condition. The one place
+// both suppression axes live together, so the poll's alert/follow paths and the market sample all
+// filter on the same rule and a new axis can't be added to one and missed by the others.
+export function suppressed(item: Item, s: { excludeTerms: string | null; conditions: string | null }): boolean {
+  return excludeMatch(item.title, s.excludeTerms) || conditionExcluded(item, s.conditions);
 }
 
 // Median of a numeric list (mean of the two middles on an even count); null on
@@ -77,7 +85,7 @@ export async function maybeSampleMarket(e: Entry, u: UserCtx, database: ReturnTy
     // nothing to poll with, so this is live-or-mock.
     const items = u.ebay ? await sampleMarket(u.ebay, s) : mockMarket(s);
     const prices = items
-      .filter((i) => !excludeMatch(i.title, s.excludeTerms) && !conditionExcluded(i, s.conditions))
+      .filter((i) => !suppressed(i, s))
       .map((i) => i.price)
       .filter((p): p is number => p != null);
     const m = median(prices);

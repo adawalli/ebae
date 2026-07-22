@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { authMode } from "@/lib/authmode";
 import { db } from "@/lib/db";
 import { notify } from "@/lib/discord";
@@ -170,6 +170,44 @@ export async function pollOnce(e: Entry) {
       // the junk whose realized price must not describe what the user is hunting - the market
       // baseline filters it out for the same reason.
       const follow: TrackedItem[] = [];
+      // Backlog drain: a listing the user was already alerted on (as a BIN, or before sold
+      // tracking widened this poll to auctions) that is now running as an auction. It's in the
+      // seen set, so `fresh` filters it out of the follow paths below - but its winning bid is
+      // exactly what the sold median wants. Gated on an existing alert row so the silent seed
+      // backlog and suppressed listings (neither is ever alerted) stay out, preserving "seeding
+      // follows nothing". Once followed it's in e.tracked and the free-refresh loop above owns it;
+      // a reappearing resolved row is a no-op via insertTracked's returning() guard. This set is
+      // only non-empty while the pre-feature backlog drains - fresh auctions are followed inline
+      // below, and post-feature alerts are already tracked. The datable check mirrors newTracked
+      // (an auction with no finite end is never followed): such an item never enters e.tracked, so
+      // without it it would re-qualify as a candidate every poll and the read would never drain.
+      if (e.s.trackSold) {
+        const candidates = items.filter(
+          (i) =>
+            i.buyingOption === "AUCTION" &&
+            Number.isFinite(Date.parse(i.itemEndDate ?? "")) &&
+            e.seen.has(i.itemId) &&
+            !e.tracked.has(i.itemId) &&
+            !excludeMatch(i.title, e.s.excludeTerms) &&
+            !conditionExcluded(i, e.s.conditions),
+        );
+        if (candidates.length) {
+          const rows = await database
+            .select({ itemId: alerts.itemId })
+            .from(alerts)
+            .where(
+              and(
+                eq(alerts.searchId, e.s.id),
+                inArray(
+                  alerts.itemId,
+                  candidates.map((i) => i.itemId),
+                ),
+              ),
+            );
+          const alerted = new Set(rows.map((r) => r.itemId));
+          for (const item of candidates) if (alerted.has(item.itemId)) startFollowing(item, follow);
+        }
+      }
       // Pin the owner's channel list for this batch: reload() swaps the UserCtx and its
       // channel list (never mutates), so a capture keeps the insert's deliveredAt seed and the
       // notify target consistent even if a reload lands mid-tick.

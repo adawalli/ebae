@@ -591,6 +591,113 @@ test("with auctions included, an auction still alerts and is followed", async ()
   expect(e.hitTimes).toHaveLength(1); // counted as a hit, unlike the BIN-only path
 });
 
+// Backlog drain (the real prod gap): item 327262359421 was alerted as a $700 BIN before sold
+// tracking existed, so it's in the seen set and has an alert row but was never followed. It then
+// ran as an auction and closed at $705. `fresh` filters a seen item out of both follow paths, so
+// the alert-gated backlog scan is what re-follows it for that winning bid.
+const alertRow = (searchId: number, itemId: string) =>
+  database.insert(alerts).values({
+    userId,
+    searchId,
+    searchQ: "leica m6",
+    itemId,
+    title: "leica m6",
+    buyingOption: "FIXED_PRICE",
+    itemUrl: `https://www.ebay.com/itm/${itemId}`,
+  });
+
+test("an already-alerted item now running as an auction is followed on re-sight", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const auction = auctionItem({ itemId: "v1|auction-seen|0" });
+  // Alerted earlier as a BIN, before the feature shipped: seen + an alert row, but never followed.
+  await database.insert(seenItems).values({ searchId: e.s.id, itemId: auction.itemId }).onConflictDoNothing();
+  await alertRow(e.s.id, auction.itemId);
+  e.seen.add(auction.itemId);
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(auction);
+
+  await pollOnce(e);
+
+  expect(await database.select().from(alerts)).toHaveLength(1); // no NEW alert, just the seed one
+  const rows = (await trackedRows()).filter((r) => r.itemId === auction.itemId);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].priceKind).toBe("bid");
+  expect(e.tracked.get(auction.itemId)).toBeDefined();
+});
+
+// A silently-seeded auction is never alerted, so the alert gate keeps it out - re-following the
+// seed backlog would spend a check on every pre-existing listing, which "seeding follows nothing"
+// exists to prevent.
+test("a seen-but-never-alerted auction is not followed on re-sight", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const auction = auctionItem({ itemId: "v1|auction-seed|0" });
+  await database.insert(seenItems).values({ searchId: e.s.id, itemId: auction.itemId }).onConflictDoNothing();
+  e.seen.add(auction.itemId); // seen, but no alert row
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(auction);
+
+  await pollOnce(e);
+
+  expect((await trackedRows()).filter((r) => r.itemId === auction.itemId)).toHaveLength(0);
+});
+
+// The backlog scan runs the same exclusion checks as the fresh paths: even an alerted item whose
+// title now reads "for parts" as an auction can't feed the median.
+test("an alerted but now-excluded auction is not followed on re-sight", async () => {
+  const e = await seededEntry({ trackSold: true, excludeTerms: "broken, for parts" });
+  const auction = auctionItem({ itemId: "v1|auction-seen-x|0", title: "leica m6 - broken, for parts" });
+  await database.insert(seenItems).values({ searchId: e.s.id, itemId: auction.itemId }).onConflictDoNothing();
+  await alertRow(e.s.id, auction.itemId);
+  e.seen.add(auction.itemId);
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(auction);
+
+  await pollOnce(e);
+
+  expect((await trackedRows()).filter((r) => r.itemId === auction.itemId)).toHaveLength(0);
+});
+
+// Once followed, a re-sighted auction is in e.tracked, so the backlog scan skips it (gated on
+// !e.tracked.has) and the free-refresh path handles it - one row, no memory churn.
+test("a followed auction re-sighted is not followed a second time", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const auction = auctionItem({ itemId: "v1|auction-dup|0" });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(auction);
+  await pollOnce(e); // first sight: followed as a fresh auction
+  await pollOnce(e); // second sight: still in the pool
+
+  expect((await trackedRows()).filter((r) => r.itemId === auction.itemId)).toHaveLength(1);
+  expect(e.tracked.size).toBe(1);
+});
+
+// A resolved backlog auction that turns up again live must not be re-followed: its row is done,
+// and re-adding it to memory would let a later check re-resolve it and double-count the close
+// price. The DB insert conflict-no-ops; the returning() guard in insertTracked keeps memory in step.
+test("a resolved auction is not re-followed if it reappears", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const auction = auctionItem({ itemId: "v1|auction-resolved|0", price: 300 });
+  // Backlog item: seen + alerted, so the scan follows it on the first poll.
+  await database.insert(seenItems).values({ searchId: e.s.id, itemId: auction.itemId }).onConflictDoNothing();
+  await alertRow(e.s.id, auction.itemId);
+  e.seen.add(auction.itemId);
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(auction);
+  await pollOnce(e); // backlog scan follows it
+  expect(e.tracked.has(auction.itemId)).toBe(true);
+  // Resolve it: drop from the pool and backdate the check so the next poll settles it as sold.
+  g.__ebaeMock.pools.set(e.s.id, []);
+  e.tracked.get(auction.itemId)!.nextCheckAt = Date.now() - 1000;
+  await pollOnce(e);
+
+  expect(e.soldPrices).toHaveLength(1);
+  expect(e.tracked.has(auction.itemId)).toBe(false);
+
+  // It reappears live in the results (still seen + alerted from before).
+  g.__ebaeMock.pools.set(e.s.id, [auctionItem({ itemId: auction.itemId, price: 300 })]);
+  await pollOnce(e);
+
+  const [row] = (await trackedRows()).filter((r) => r.itemId === auction.itemId);
+  expect(row.state).toBe("sold"); // still resolved, not reset to active
+  expect(e.tracked.has(auction.itemId)).toBe(false); // not re-added to memory
+  expect(e.soldPrices).toHaveLength(1); // and not double-counted
+});
+
 // The whole point of the schedule: a due check resolves the listing, spends exactly one call,
 // and the realized price becomes the search's deal context.
 test("a due check resolves the listing as sold and bills one call", async () => {

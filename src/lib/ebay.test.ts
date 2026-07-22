@@ -151,13 +151,16 @@ test("marketSampleSearch keeps the floor, drops the cap", () => {
   expect(m.conditions).toBe("USED"); // other constraints preserved (applied via conditionExcluded)
 });
 
-// The market sample measures asking prices, so trackSold must be cleared before it builds the
-// query - otherwise the auction-widening in browseFilters would pull running bids into the
-// asking-price median.
-test("marketSampleSearch clears trackSold so the sample stays BIN-only", () => {
-  const m = marketSampleSearch({ ...base, trackSold: true });
-  expect(m.trackSold).toBe(false);
-  expect(browseFilters(m, "USD")).toEqual(["buyingOptions:{FIXED_PRICE}"]);
+// The market sample measures asking prices, so BOTH auction levers are cleared before it builds
+// the query - trackSold widens the poll and includeAuctions is the user's opt-in, but an auction
+// summary's price is a running bid, not an asking price, so neither belongs in the median.
+test("marketSampleSearch clears both auction levers so the sample stays FIXED_PRICE-only", () => {
+  const fromTrack = marketSampleSearch({ ...base, trackSold: true });
+  expect(fromTrack.trackSold).toBe(false);
+  expect(browseFilters(fromTrack, "USD")).toEqual(["buyingOptions:{FIXED_PRICE}"]);
+  const fromInclude = marketSampleSearch({ ...base, includeAuctions: true });
+  expect(fromInclude.includeAuctions).toBe(false);
+  expect(browseFilters(fromInclude, "USD")).toEqual(["buyingOptions:{FIXED_PRICE}"]);
 });
 
 // The mock market sample must apply the same condition filter as the mock search: they call
@@ -257,6 +260,14 @@ test("mockSearch: a BIN-only tracking search surfaces datable auctions, a plain 
   expect(auctions.length).toBeGreaterThan(0);
   expect(auctions.every((a) => a.itemEndDate != null)).toBe(true);
   expect(mockSearch({ ...base, id: 8802 }).every((i) => i.buyingOption === "FIXED_PRICE")).toBe(true);
+});
+
+// mockMarket must mirror the live sample, which is FIXED_PRICE-only: neither trackSold nor
+// includeAuctions may leak auction-typed listings into the mock asking-price sample, or mock and
+// live would disagree on which listing types the baseline is drawn from.
+test("mockMarket: no auctions leak in even with trackSold or includeAuctions set", () => {
+  expect(mockMarket({ ...base, trackSold: true }).every((i) => i.buyingOption === "FIXED_PRICE")).toBe(true);
+  expect(mockMarket({ ...base, includeAuctions: true }).every((i) => i.buyingOption === "FIXED_PRICE")).toBe(true);
 });
 
 // Mock market sample must center well above a deal-hunt band so the feature is visibly

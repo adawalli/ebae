@@ -5,7 +5,7 @@ import { notify } from "@/lib/discord";
 import { conditionExcluded, mockSearch, searchNewlyListed } from "@/lib/ebay";
 import { notifyPush } from "@/lib/push";
 import { alerts, searches, seenItems } from "@/lib/schema";
-import type { PriceContext } from "@/lib/types";
+import type { Item, PriceContext } from "@/lib/types";
 import { NOTHING_PUSHED, NOTHING_SENT, reapPush } from "./delivery";
 import { excludeMatch, maybeSampleMarket, priceContext } from "./market";
 import { projectedCalls } from "./projection";
@@ -58,6 +58,22 @@ async function tick(e: Entry) {
 export function pollMode(u: UserCtx): "live" | "mock" | "no-creds" {
   if (u.ebay) return "live";
   return authMode() === "single" ? "mock" : "no-creds";
+}
+
+// Mark an item seen without alerting - one insert site shared by the two seen-but-not-alerted
+// paths (suppressed listings and tracking-only auctions), so a seen_items schema change lands
+// once. Caller sets `wrote` (a poll-local flag) since only it knows the batch's connection state.
+async function markSeen(database: ReturnType<typeof db>, e: Entry, itemId: string) {
+  await database.insert(seenItems).values({ searchId: e.s.id, itemId }).onConflictDoNothing();
+  e.seen.add(itemId);
+}
+
+// Queue a listing to be followed for its realized price, or decline it. The single newTracked
+// callsite owns the timestamp, so the tracking-only and alert paths can't drift on how a follow
+// starts. A null return (an auction with no end date, which there's no way to time) is dropped.
+function startFollowing(item: Item, follow: TrackedItem[]) {
+  const t = newTracked(item, Date.now());
+  if (t) follow.push(t);
 }
 
 export async function pollOnce(e: Entry) {
@@ -172,24 +188,21 @@ export async function pollOnce(e: Entry) {
         // (so later widening the search won't re-alert this old listing) but send no alert.
         // Seen set stays the full dedupe set.
         if (excludeMatch(item.title, e.s.excludeTerms) || conditionExcluded(item, e.s.conditions)) {
-          await database.insert(seenItems).values({ searchId: e.s.id, itemId: item.itemId }).onConflictDoNothing();
+          await markSeen(database, e, item.itemId);
           wrote = true;
-          e.seen.add(item.itemId);
           plog.debug({ searchId: e.s.id, itemId: item.itemId, q: e.s.q }, "excluded - suppressed");
           continue;
         }
-        // Auction on a BIN-only search: surfaced only for its winning bid (trackSold widened
-        // the query). Mark it seen and follow it, but never alert, notify, or count it as a hit
-        // - a BIN-only search must not alert on an auction. Placed after the suppression block
-        // so an excluded auction ("for parts") still can't feed the median.
-        if (item.buyingOption === "AUCTION" && !e.s.includeAuctions) {
-          await database.insert(seenItems).values({ searchId: e.s.id, itemId: item.itemId }).onConflictDoNothing();
+        // Tracking-only auction: sold tracking widens a BIN-only poll to auctions (browseFilters)
+        // purely to record their winning bid. Follow it for that bid, but never alert, notify, or
+        // count it as a hit. The trackSold gate is load-bearing, not just the query invariant:
+        // without it a BIN item eBay's best-effort filter let through and normalize() classified
+        // AUCTION (no FIXED_PRICE buyingOption) would be silenced instead of alerted. Placed after
+        // the suppression block so an excluded auction ("for parts") still can't feed the median.
+        if (item.buyingOption === "AUCTION" && !e.s.includeAuctions && e.s.trackSold) {
+          await markSeen(database, e, item.itemId);
           wrote = true;
-          e.seen.add(item.itemId);
-          if (e.s.trackSold) {
-            const t = newTracked(item, Date.now());
-            if (t) follow.push(t); // null = an auction with no end date, which there's no way to time
-          }
+          startFollowing(item, follow);
           continue;
         }
         // Transaction: if alerts insert fails, seen_items also rolls back so the
@@ -225,10 +238,7 @@ export async function pollOnce(e: Entry) {
         wrote = true;
         e.seen.add(item.itemId);
         if (alertId == null) continue; // duplicate: the row already existed, don't re-notify
-        if (e.s.trackSold) {
-          const t = newTracked(item, Date.now());
-          if (t) follow.push(t); // null = an auction with no end date, which there's no way to time
-        }
+        if (e.s.trackSold) startFollowing(item, follow);
         bumpAlerts(e.s.userId); // the owner's alert list changed; their tabs must refetch
         const now = Date.now();
         e.hitTimes.push(now);

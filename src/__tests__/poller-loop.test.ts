@@ -541,6 +541,23 @@ test("an excluded auction is suppressed, not followed", async () => {
   expect(await database.select().from(seenItems).where(eq(seenItems.itemId, auction.itemId))).toHaveLength(1);
 });
 
+// The tracking-only intercept is gated on trackSold, so a plain BIN-only search (no sold tracking)
+// still ALERTS on an item eBay mislabels as an auction - normalize() calls any item without a
+// FIXED_PRICE buyingOption an AUCTION, and silencing those would drop real alerts.
+test("without sold tracking, an auction-typed item still alerts", async () => {
+  const e = await seededEntry(); // trackSold defaults false
+  const auction = auctionItem({ itemId: "v1|auction-6|0" });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(auction);
+
+  await pollOnce(e);
+
+  const rows = await database.select().from(alerts);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].itemId).toBe(auction.itemId);
+  expect(rows[0].buyingOption).toBe("AUCTION");
+  expect((await trackedRows()).filter((r) => r.itemId === auction.itemId)).toHaveLength(0); // not followed
+});
+
 // An auction with no end date can't be timed, so newTracked declines it (returns null). The loop
 // must still mark it seen and never alert or crash - the null just means nothing is followed.
 test("a dateless auction is marked seen but followed by nothing", async () => {

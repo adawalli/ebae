@@ -128,9 +128,11 @@ export function browseFilters(s: Search, currency: string): string[] {
 // ceiling into the sample so the median reflects the true going rate. Pure + exported so the
 // keep-floor/drop-cap contract is locked by a test.
 export function marketSampleSearch(s: Search): Search {
-  // trackSold is cleared so the auction-widened filter (see browseFilters) can't leak running
-  // bids into this sample: the market baseline measures what sellers ask, not live bids.
-  return { ...s, priceCap: null, trackSold: false };
+  // Both auction levers are cleared so the sample stays FIXED_PRICE-only. The market baseline
+  // measures what sellers ask, and an auction summary's price is a running bid, not an asking
+  // price - trackSold widens the poll (see browseFilters) and includeAuctions is the user's own
+  // opt-in, but neither belongs in an asking-price median.
+  return { ...s, priceCap: null, trackSold: false, includeAuctions: false };
 }
 
 // Shared Browse item_summary/search call. searchNewlyListed and sampleMarket differ only in
@@ -335,8 +337,12 @@ export function mockSearch(s: Search): Item[] {
 // market-baseline feature is exercisable without eBay creds. Deterministic per index so a
 // band-limited (e.g. 100-300) mock search visibly shows a higher "market" figure.
 export function mockMarket(s: Search): Item[] {
+  // Build from the same search the live sample uses (marketSampleSearch), so mock and live agree
+  // on which listing types the baseline is drawn from - otherwise trackSold/includeAuctions would
+  // seed auctions here that the live FIXED_PRICE-only sample never sees.
+  const sample = marketSampleSearch(s);
   return Array.from({ length: 40 }, (_, n) => ({
-    ...mockItem(s, n),
+    ...mockItem(sample, n),
     price: 400 + ((n * 16) % 21) * 10, // 400..600, median ~500 — independent of the price band
-  })).filter((i) => !conditionExcluded(i, s.conditions));
+  })).filter((i) => !conditionExcluded(i, sample.conditions));
 }

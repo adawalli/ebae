@@ -1,13 +1,13 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, notExists } from "drizzle-orm";
 import { authMode } from "@/lib/authmode";
 import { db } from "@/lib/db";
 import { notify } from "@/lib/discord";
-import { conditionExcluded, mockSearch, searchNewlyListed } from "@/lib/ebay";
+import { mockSearch, searchNewlyListed } from "@/lib/ebay";
 import { notifyPush } from "@/lib/push";
-import { alerts, searches, seenItems } from "@/lib/schema";
+import { alerts, searches, seenItems, trackedItems } from "@/lib/schema";
 import type { Item, PriceContext } from "@/lib/types";
 import { NOTHING_PUSHED, NOTHING_SENT, reapPush } from "./delivery";
-import { excludeMatch, maybeSampleMarket, priceContext } from "./market";
+import { maybeSampleMarket, priceContext, suppressed } from "./market";
 import { projectedCalls } from "./projection";
 import { QUOTA_CEILING, flushCalls, governedDelayMs, governorFor } from "./quota";
 import { snoozeMinutes, snoozing } from "./snooze";
@@ -170,17 +170,14 @@ export async function pollOnce(e: Entry) {
       // the junk whose realized price must not describe what the user is hunting - the market
       // baseline filters it out for the same reason.
       const follow: TrackedItem[] = [];
-      // Backlog drain: a listing the user was already alerted on (as a BIN, or before sold
-      // tracking widened this poll to auctions) that is now running as an auction. It's in the
-      // seen set, so `fresh` filters it out of the follow paths below - but its winning bid is
-      // exactly what the sold median wants. Gated on an existing alert row so the silent seed
-      // backlog and suppressed listings (neither is ever alerted) stay out, preserving "seeding
-      // follows nothing". Once followed it's in e.tracked and the free-refresh loop above owns it;
-      // a reappearing resolved row is a no-op via insertTracked's returning() guard. This set is
-      // only non-empty while the pre-feature backlog drains - fresh auctions are followed inline
-      // below, and post-feature alerts are already tracked. The datable check mirrors newTracked
-      // (an auction with no finite end is never followed): such an item never enters e.tracked, so
-      // without it it would re-qualify as a candidate every poll and the read would never drain.
+      // Backlog drain: a listing already alerted on (as a BIN, or before sold tracking widened this
+      // poll to auctions) now running as an auction. It's in the seen set, so `fresh` skips it, but
+      // its winning bid is what the sold median wants. Gated on an alert row with no tracked row
+      // yet: the silent seed backlog and suppressed listings are never alerted (so "seeding follows
+      // nothing" holds), and a follow that's already active or resolved has a row (so this drains
+      // once, not every poll). The datable filter mirrors newTracked - an auction with no finite
+      // end is never followed. Opening the drain's connection sets `wrote` so the piggyback flush
+      // below persists any prices the free-refresh loop dirtied this tick.
       if (e.s.trackSold) {
         const candidates = items.filter(
           (i) =>
@@ -188,10 +185,10 @@ export async function pollOnce(e: Entry) {
             Number.isFinite(Date.parse(i.itemEndDate ?? "")) &&
             e.seen.has(i.itemId) &&
             !e.tracked.has(i.itemId) &&
-            !excludeMatch(i.title, e.s.excludeTerms) &&
-            !conditionExcluded(i, e.s.conditions),
+            !suppressed(i, e.s),
         );
         if (candidates.length) {
+          wrote = true;
           const rows = await database
             .select({ itemId: alerts.itemId })
             .from(alerts)
@@ -202,10 +199,16 @@ export async function pollOnce(e: Entry) {
                   alerts.itemId,
                   candidates.map((i) => i.itemId),
                 ),
+                notExists(
+                  database
+                    .select({ n: trackedItems.itemId })
+                    .from(trackedItems)
+                    .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, alerts.itemId))),
+                ),
               ),
             );
-          const alerted = new Set(rows.map((r) => r.itemId));
-          for (const item of candidates) if (alerted.has(item.itemId)) startFollowing(item, follow);
+          const followable = new Set(rows.map((r) => r.itemId));
+          for (const item of candidates) if (followable.has(item.itemId)) startFollowing(item, follow);
         }
       }
       // Pin the owner's channel list for this batch: reload() swaps the UserCtx and its
@@ -225,7 +228,7 @@ export async function pollOnce(e: Entry) {
         // Suppressed (exclude-terms hit, or the NOT_PARTS preset's for-parts tier): mark seen
         // (so later widening the search won't re-alert this old listing) but send no alert.
         // Seen set stays the full dedupe set.
-        if (excludeMatch(item.title, e.s.excludeTerms) || conditionExcluded(item, e.s.conditions)) {
+        if (suppressed(item, e.s)) {
           await markSeen(database, e, item.itemId);
           wrote = true;
           plog.debug({ searchId: e.s.id, itemId: item.itemId, q: e.s.q }, "excluded - suppressed");

@@ -716,7 +716,7 @@ test("an early check that finds the listing still listed costs it nothing", asyn
 
     // Once the gap has passed the listing is eligible again, and still on the same schedule -
     // that is what makes a second look free to take.
-    setSystemTime(atLocal(12) + BONUS_MIN_GAP_MS);
+    setSystemTime(new Date(atLocal(12).getTime() + BONUS_MIN_GAP_MS));
     await pollOnce(e);
     expect(itemCalls).toBe(2);
     expect(t.checksUsed).toBe(0);

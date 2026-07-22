@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { SOLD_MIN_COUNT } from "@/lib/types";
 import { priceSummary, soldProgressTooltip } from "./format";
 
 test("priceSummary: shows market price and incomplete sold samples", () => {
@@ -27,7 +28,7 @@ test("priceSummary: omits empty sold progress", () => {
 
 test("soldProgressTooltip: explains an incomplete sold-price sample", () => {
   expect(soldProgressTooltip({ soldMedian: null, soldSampleCount: 1, trackSold: true })).toBe(
-    "1 of 3 recent eligible sales collected. Three are needed before ebae uses a sold-price median.",
+    `1 of ${SOLD_MIN_COUNT} recent eligible sales collected. ${SOLD_MIN_COUNT} are needed before ebae uses a sold-price median.`,
   );
 });
 

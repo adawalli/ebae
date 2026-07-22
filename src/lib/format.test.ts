@@ -18,3 +18,9 @@ test("priceSummary: hides sold details when tracking is disabled", () => {
     " · market ~$484.43",
   );
 });
+
+test("priceSummary: omits empty sold progress", () => {
+  expect(priceSummary({ marketMedian: 484.43, soldMedian: null, soldSampleCount: 0, trackSold: true })).toBe(
+    " · market ~$484.43",
+  );
+});

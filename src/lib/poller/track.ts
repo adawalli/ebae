@@ -520,14 +520,18 @@ function recentSoldPrices(sold: readonly { price: number; atMs: number }[], now:
 }
 
 export function soldSampleCount(sold: readonly { price: number; atMs: number }[], now: number) {
-  return recentSoldPrices(sold, now).length;
+  return soldStats(sold, now).count;
+}
+
+export function soldStats(sold: readonly { price: number; atMs: number }[], now: number) {
+  const prices = recentSoldPrices(sold, now);
+  return { typical: prices.length >= SOLD_MIN_COUNT ? median(prices) : null, count: prices.length };
 }
 
 export function soldContext(
   sold: readonly { price: number; atMs: number }[],
   now: number,
 ): { typical: number | null; count: number } | null {
-  const prices = recentSoldPrices(sold, now);
-  if (prices.length < SOLD_MIN_COUNT) return null;
-  return { typical: median(prices), count: prices.length };
+  const context = soldStats(sold, now);
+  return context.typical == null ? null : context;
 }

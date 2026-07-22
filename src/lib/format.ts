@@ -21,7 +21,7 @@ export function priceSummary(
 ) {
   if (s.trackSold && s.soldMedian != null) return ` · sold ~${money(s.soldMedian, currency)}`;
   const market = s.marketMedian != null ? ` · market ~${money(s.marketMedian, currency)}` : "";
-  const progress = s.trackSold ? ` · sold ${s.soldSampleCount}/${SOLD_MIN_COUNT}` : "";
+  const progress = s.trackSold && s.soldSampleCount > 0 ? ` · sold ${s.soldSampleCount}/${SOLD_MIN_COUNT}` : "";
   return `${market}${progress}`;
 }
 

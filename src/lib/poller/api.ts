@@ -18,7 +18,7 @@ import {
   usedToday,
 } from "./quota";
 import { SNOOZE_DEFAULT, counterDayFrac, hhmm, snoozeMinutes, snoozeWindow, snoozing } from "./snooze";
-import { resetTracked, soldContext, soldSampleCount } from "./track";
+import { resetTracked, soldStats } from "./track";
 import { type Entry, type SnoozeState, bumpAlerts, plog, rowToSearch, state } from "./state";
 
 export const DEFAULT_INTERVAL = Number(process.env.POLL_INTERVAL_DEFAULT ?? 5);
@@ -60,7 +60,7 @@ export function listSearches(userId: number): SearchStats[] {
     .sort((a, b) => b.s.createdAt.localeCompare(a.s.createdAt) || b.s.id - a.s.id)
     .map((e) => {
       e.hitTimes = e.hitTimes.filter((t) => t > cutoff);
-      const sold = e.s.trackSold ? e.soldPrices : [];
+      const sold = e.s.trackSold ? soldStats(e.soldPrices, now) : { typical: null, count: 0 };
       return {
         ...e.s,
         seenCount: e.seen.size,
@@ -69,8 +69,8 @@ export function listSearches(userId: number): SearchStats[] {
         lastPolledAt: e.lastPolledAt ? new Date(e.lastPolledAt).toISOString() : null,
         effectiveIntervalMin: Math.round(e.s.intervalMin * factor * 10) / 10,
         callsPerDay: callsPerDayForEntry(e, activeMin),
-        soldMedian: soldContext(sold, now)?.typical ?? null,
-        soldSampleCount: soldSampleCount(sold, now),
+        soldMedian: sold.typical,
+        soldSampleCount: sold.count,
         checksDue24h: checksDue24h(e),
       };
     });

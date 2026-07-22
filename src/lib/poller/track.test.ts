@@ -6,6 +6,7 @@ import {
   harvest,
   inferOutcome,
   newTracked,
+  soldStats,
   soldSampleCount,
   soldContext,
 } from "./track";
@@ -231,4 +232,19 @@ test("soldSampleCount: includes only recent realized prices", () => {
   expect(soldSampleCount([], NOW)).toBe(0);
   expect(soldSampleCount([{ price: 100, atMs: at(1) }], NOW)).toBe(1);
   expect(soldSampleCount([{ price: 100, atMs: at(31) }], NOW)).toBe(0);
+});
+
+test("soldStats: derives the median and count from eligible samples", () => {
+  const at = (days: number) => NOW - days * DAY;
+  expect(
+    soldStats(
+      [
+        { price: 100, atMs: at(1) },
+        { price: 200, atMs: at(2) },
+        { price: 300, atMs: at(3) },
+        { price: 400, atMs: at(31) },
+      ],
+      NOW,
+    ),
+  ).toEqual({ typical: 200, count: 3 });
 });

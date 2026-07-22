@@ -1218,9 +1218,14 @@ function resetDuring(kind: "update" | "insert", fire: () => Promise<unknown>): (
         return {
           values: (v: unknown) => {
             const w = b.values(v);
+            // Return the real builder (not an async wrapper): it is awaitable AND exposes
+            // .returning(), which insertTracked now chains after .onConflictDoNothing(). Wrapping
+            // it in an async fn hands back a bare Promise, so the .returning() call threw before
+            // the statement ran and this test passed for the wrong reason. `once()` still fires at
+            // call time via the comma, so the concurrent edit lands mid-statement as intended.
             return {
-              onConflictDoNothing: async (...a: unknown[]) => (once(), w.onConflictDoNothing(...a)),
-              onConflictDoUpdate: async (...a: unknown[]) => (once(), w.onConflictDoUpdate(...a)),
+              onConflictDoNothing: (...a: unknown[]) => (once(), w.onConflictDoNothing(...a)),
+              onConflictDoUpdate: (...a: unknown[]) => (once(), w.onConflictDoUpdate(...a)),
             };
           },
         };

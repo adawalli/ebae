@@ -479,6 +479,101 @@ test("a search without the toggle follows nothing", async () => {
   expect(await trackedRows()).toHaveLength(0);
 });
 
+// ---------- auctions as a sold-price signal on BIN-only searches ----------
+
+const auctionItem = (over: Partial<Item> = {}): Item =>
+  injected({
+    itemId: "v1|auction-1|0",
+    buyingOption: "AUCTION",
+    itemEndDate: new Date(Date.now() + 30 * 60_000).toISOString(),
+    ...over,
+  });
+
+// A BIN-only search that tracks sold prices widens its query to auctions (see browseFilters),
+// but an auction is never a Buy-It-Now result the user asked to be alerted on: it's followed
+// only for the winning bid that will feed the sold median.
+test("an auction on a BIN-only tracking search is followed but never alerted", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const auction = auctionItem();
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(auction);
+
+  await pollOnce(e);
+
+  expect(await database.select().from(alerts)).toHaveLength(0); // never alerted
+  expect(await database.select().from(seenItems).where(eq(seenItems.itemId, auction.itemId))).toHaveLength(1);
+  const rows = (await trackedRows()).filter((r) => r.itemId === auction.itemId);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].priceKind).toBe("bid"); // followed as an auction, checked at end + grace
+  expect(e.hitTimes).toHaveLength(0); // not counted as a hit
+});
+
+// The winning bid lands in the same soldPrices pool the BIN solds use - one blended median, no
+// source tag - which is the whole point: an auction's close price is a realized value too.
+test("a sold auction's winning bid joins the blended sold pool", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const auction = auctionItem({ itemId: "v1|auction-2|0", price: 300 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(auction);
+  await pollOnce(e);
+  // drop it from the pool so the resolve check isn't deferred by a re-sighting
+  g.__ebaeMock.pools.set(e.s.id, []);
+  e.tracked.get(auction.itemId)!.nextCheckAt = Date.now() - 1000; // as if the auction had ended
+
+  await pollOnce(e);
+
+  const [row] = (await trackedRows()).filter((r) => r.itemId === auction.itemId);
+  expect(row.state).toBe("sold");
+  expect(row.priceKind).toBe("bid");
+  expect(row.soldPrice).toBe(Math.round(auction.price! * 90) / 100); // mock sells at 90%
+  expect(e.soldPrices).toEqual([{ price: Math.round(auction.price! * 90) / 100, atMs: expect.any(Number) }]);
+});
+
+// The suppression block runs before the auction branch, so an excluded auction ("for parts")
+// is dropped the same way an excluded BIN listing is - its close price must not feed the median.
+test("an excluded auction is suppressed, not followed", async () => {
+  const e = await seededEntry({ trackSold: true, excludeTerms: "broken, for parts" });
+  const auction = auctionItem({ itemId: "v1|auction-3|0", title: "leica m6 - broken, for parts" });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(auction);
+
+  await pollOnce(e);
+
+  expect(await database.select().from(alerts)).toHaveLength(0);
+  expect((await trackedRows()).filter((r) => r.itemId === auction.itemId)).toHaveLength(0);
+  expect(await database.select().from(seenItems).where(eq(seenItems.itemId, auction.itemId))).toHaveLength(1);
+});
+
+// An auction with no end date can't be timed, so newTracked declines it (returns null). The loop
+// must still mark it seen and never alert or crash - the null just means nothing is followed.
+test("a dateless auction is marked seen but followed by nothing", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const auction = auctionItem({ itemId: "v1|auction-5|0", itemEndDate: null });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(auction);
+
+  await pollOnce(e);
+
+  expect(await database.select().from(alerts)).toHaveLength(0);
+  expect((await trackedRows()).filter((r) => r.itemId === auction.itemId)).toHaveLength(0);
+  expect(await database.select().from(seenItems).where(eq(seenItems.itemId, auction.itemId))).toHaveLength(1);
+});
+
+// Regression: when the user has opted auctions in, an auction still alerts and follows exactly
+// as before - the tracking-only branch is gated on !includeAuctions.
+test("with auctions included, an auction still alerts and is followed", async () => {
+  const e = await seededEntry({ trackSold: true, includeAuctions: true });
+  const auction = auctionItem({ itemId: "v1|auction-4|0" });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(auction);
+
+  await pollOnce(e);
+
+  const rows = await database.select().from(alerts);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].itemId).toBe(auction.itemId);
+  expect(rows[0].buyingOption).toBe("AUCTION");
+  const tracked = (await trackedRows()).filter((r) => r.itemId === auction.itemId);
+  expect(tracked).toHaveLength(1);
+  expect(tracked[0].priceKind).toBe("bid");
+  expect(e.hitTimes).toHaveLength(1); // counted as a hit, unlike the BIN-only path
+});
+
 // The whole point of the schedule: a due check resolves the listing, spends exactly one call,
 // and the realized price becomes the search's deal context.
 test("a due check resolves the listing as sold and bills one call", async () => {

@@ -178,6 +178,20 @@ export async function pollOnce(e: Entry) {
           plog.debug({ searchId: e.s.id, itemId: item.itemId, q: e.s.q }, "excluded - suppressed");
           continue;
         }
+        // Auction on a BIN-only search: surfaced only for its winning bid (trackSold widened
+        // the query). Mark it seen and follow it, but never alert, notify, or count it as a hit
+        // - a BIN-only search must not alert on an auction. Placed after the suppression block
+        // so an excluded auction ("for parts") still can't feed the median.
+        if (item.buyingOption === "AUCTION" && !e.s.includeAuctions) {
+          await database.insert(seenItems).values({ searchId: e.s.id, itemId: item.itemId }).onConflictDoNothing();
+          wrote = true;
+          e.seen.add(item.itemId);
+          if (e.s.trackSold) {
+            const t = newTracked(item, Date.now());
+            if (t) follow.push(t); // null = an auction with no end date, which there's no way to time
+          }
+          continue;
+        }
         // Transaction: if alerts insert fails, seen_items also rolls back so the
         // item is retried next poll instead of being permanently dropped. The alerts
         // insert is conflict-guarded (see alerts_search_item_idx): a reload race that

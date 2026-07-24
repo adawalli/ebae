@@ -56,6 +56,24 @@ function embed(item: Item, search: Search, ctx?: PriceContext) {
   };
 }
 
+// A rate-limited webhook must not stall the poll loop, so a 429's wait is honored but capped.
+const DISCORD_MAX_RETRY_MS = 10_000;
+
+// Discord reports a 429 wait as retry_after (fractional seconds) in the JSON body, with a
+// Retry-After header (integer seconds) as the backup. Returns the wait in ms, capped, or 0 when
+// neither is usable - notify() then keeps its own default backoff. Pure + exported for tests.
+export function discordRetryMs(res: Response, body: string): number {
+  let secs = NaN;
+  try {
+    secs = (JSON.parse(body) as { retry_after?: number }).retry_after ?? NaN;
+  } catch {
+    // non-JSON body (a gateway/proxy 429 page): fall back to the header
+  }
+  if (!Number.isFinite(secs)) secs = Number(res.headers.get("retry-after"));
+  if (!Number.isFinite(secs) || secs < 0) return 0;
+  return Math.min(secs * 1000, DISCORD_MAX_RETRY_MS);
+}
+
 // Sends to every webhook; retries each a few times. Never throws - a dead webhook must not
 // stall the poll loop (DESIGN.md failure behavior). Returns `error` (the last failure, for the
 // UI log) and `anyDelivered` (at least one webhook accepted it). The caller treats anyDelivered
@@ -76,8 +94,10 @@ export async function notify(
     let err: string | null = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
       dlog.debug({ webhook: i, attempt }, "attempt");
+      let waitMs = attempt * 2000; // default backoff; a 429 overrides it with the server's own hint
       try {
         const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+        const text = await res.text();
         if (res.ok) {
           err = null;
           anyDelivered = true;
@@ -85,13 +105,14 @@ export async function notify(
           break;
         }
         err = `Discord webhook ${res.status}`;
+        if (res.status === 429) waitMs = discordRetryMs(res, text) || waitMs;
       } catch (e) {
         // e.name only: fetch error messages can echo the webhook URL (its secret token)
         err = `Discord webhook send failed (${e instanceof Error ? e.name : "error"})`;
       }
       if (err && attempt < 3) {
         dlog.warn({ webhook: i, attempt, err }, "webhook retry");
-        await new Promise((r) => setTimeout(r, attempt * 2000));
+        await new Promise((r) => setTimeout(r, waitMs));
       }
     }
     // terminal failure is not logged here: notify() returns it and the poller

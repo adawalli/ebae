@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { freshTestDb } from "./helpers/db";
+import { stubEbayLive } from "./helpers/ebay-stub";
 import { mkItem } from "./helpers/fixtures";
 import { SINGLE_USER_EMAIL } from "@/lib/authmode";
 import { db } from "@/lib/db";
@@ -817,26 +818,16 @@ test("a failing check moves the schedule instead of re-spending a call every tic
   const u = g.__ebaeState.users.get(userId)!;
   // Creds alone pick the live branch, which is what puts a throwing fetch in the check path.
   u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
-  const realFetch = globalThis.fetch;
-  let itemCalls = 0;
   // The poll itself must succeed - only the item check fails, which is the whole point: a poll
   // failure has its own backoff, while a check failure had no path out at all.
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
-    if (url.includes("/buy/browse/v1/item/")) {
-      itemCalls++;
-      return Response.json({ errors: [{ errorId: 2001 }] }, { status: 500 }); // not a "gone" code: throws
-    }
-    return Response.json({ itemSummaries: [] });
-  }) as typeof fetch;
+  const ebay = stubEbayLive(() => Response.json({ errors: [{ errorId: 2001 }] }, { status: 500 })); // not a "gone" code: throws
 
   try {
     e.tracked.get(item.itemId)!.nextCheckAt = Date.now() - 1000;
     const before = u.calls.used;
     await pollOnce(e);
 
-    expect(itemCalls).toBe(1);
+    expect(ebay.calls).toBe(1);
     const t = e.tracked.get(item.itemId)!;
     expect(t.nextCheckAt).toBeGreaterThan(Date.now()); // rescheduled, not left permanently due
     expect(t.checksUsed).toBe(1); // the call it spent was accounted for
@@ -845,9 +836,9 @@ test("a failing check moves the schedule instead of re-spending a call every tic
     await pollOnce(e);
     // Nothing is due any more, so the second tick spends nothing on checks. Before the fix this
     // was another billed call, every tick, forever.
-    expect(itemCalls).toBe(1);
+    expect(ebay.calls).toBe(1);
   } finally {
-    globalThis.fetch = realFetch;
+    ebay.restore();
     u.ebay = null;
   }
 });
@@ -925,43 +916,35 @@ test("an early check that finds the listing still listed costs it nothing", asyn
   const boundary = t.nextCheckAt;
   // Creds alone pick the live branch, which is what lets the stub decide what the check finds.
   u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
-  const realFetch = globalThis.fetch;
-  let itemCalls = 0;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
-    if (url.includes("/buy/browse/v1/item/")) {
-      itemCalls++;
-      return Response.json({
-        price: { value: "1234.56", currency: "USD" },
-        estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
-      });
-    }
-    return Response.json({ itemSummaries: [] });
-  }) as typeof fetch;
+  const ebay = stubEbayLive(() =>
+    Response.json({
+      price: { value: "1234.56", currency: "USD" },
+      estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
+    }),
+  );
 
   try {
     setSystemTime(atLocal(12));
     await pollOnce(e);
 
-    expect(itemCalls).toBe(1);
+    expect(ebay.calls).toBe(1);
     expect(t.checksUsed).toBe(0); // the four the schedule owes it are all still there
     expect(t.nextCheckAt).toBe(boundary); // and it is still due when it was always due
 
     await pollOnce(e);
     // Spaced by BONUS_MIN_GAP_MS: without that, every tick of a five-minute search would re-check
     // the same listing until the surplus ran out.
-    expect(itemCalls).toBe(1);
+    expect(ebay.calls).toBe(1);
 
     // Once the gap has passed the listing is eligible again, and still on the same schedule -
     // that is what makes a second look free to take.
     setSystemTime(new Date(atLocal(12).getTime() + BONUS_MIN_GAP_MS));
     await pollOnce(e);
-    expect(itemCalls).toBe(2);
+    expect(ebay.calls).toBe(2);
     expect(t.checksUsed).toBe(0);
     expect(t.nextCheckAt).toBe(boundary);
   } finally {
-    globalThis.fetch = realFetch;
+    ebay.restore();
     u.ebay = null;
   }
 });
@@ -978,38 +961,30 @@ test("the day roll does not hand a listing checked before midnight a free early 
   g.__ebaeMock.pools.set(e.s.id, []);
   const u = g.__ebaeState.users.get(userId)!;
   u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
-  const realFetch = globalThis.fetch;
-  let itemCalls = 0;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
-    if (url.includes("/buy/browse/v1/item/")) {
-      itemCalls++;
-      return Response.json({
-        price: { value: "1234.56", currency: "USD" },
-        estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
-      });
-    }
-    return Response.json({ itemSummaries: [] });
-  }) as typeof fetch;
+  const ebay = stubEbayLive(() =>
+    Response.json({
+      price: { value: "1234.56", currency: "USD" },
+      estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
+    }),
+  );
 
   try {
     setSystemTime(atLocal(23));
     await pollOnce(e);
-    expect(itemCalls).toBe(1); // stamped just before the day turns
+    expect(ebay.calls).toBe(1); // stamped just before the day turns
 
     // Two minutes past midnight: a new date, and usedToday resets on the same roll, so the pace
     // term opens a small budget immediately - the bonus pass really does run here.
     setSystemTime(new Date(2026, 6, 20, 0, 2, 0));
     await pollOnce(e);
-    expect(itemCalls).toBe(1); // the gap survived the roll
+    expect(ebay.calls).toBe(1); // the gap survived the roll
 
     // And it still releases on the gap, measured from the check itself rather than from midnight.
     setSystemTime(atLocal(23).getTime() + BONUS_MIN_GAP_MS);
     await pollOnce(e);
-    expect(itemCalls).toBe(2);
+    expect(ebay.calls).toBe(2);
   } finally {
-    globalThis.fetch = realFetch;
+    ebay.restore();
     u.ebay = null;
   }
 });
@@ -1028,15 +1003,7 @@ test("a failing early check leaves the listing's schedule alone", async () => {
   const t = e.tracked.get(item.itemId)!;
   const boundary = t.nextCheckAt;
   u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
-    if (url.includes("/buy/browse/v1/item/")) {
-      return Response.json({ errors: [{ errorId: 2001 }] }, { status: 500 }); // not a "gone" code: throws
-    }
-    return Response.json({ itemSummaries: [] });
-  }) as typeof fetch;
+  const ebay = stubEbayLive(() => Response.json({ errors: [{ errorId: 2001 }] }, { status: 500 })); // not a "gone" code: throws
 
   try {
     setSystemTime(atLocal(12));
@@ -1048,7 +1015,7 @@ test("a failing early check leaves the listing's schedule alone", async () => {
     expect(t.nextCheckAt).toBe(boundary);
     expect((await trackedRows())[0].state).toBe("active");
   } finally {
-    globalThis.fetch = realFetch;
+    ebay.restore();
     u.ebay = null;
   }
 });
@@ -1065,20 +1032,12 @@ test("a listing the schedule just checked is not checked again by the surplus pa
   g.__ebaeMock.pools.set(e.s.id, []);
   const u = g.__ebaeState.users.get(userId)!;
   u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
-  const realFetch = globalThis.fetch;
-  let itemCalls = 0;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
-    if (url.includes("/buy/browse/v1/item/")) {
-      itemCalls++;
-      return Response.json({
-        price: { value: "1234.56", currency: "USD" },
-        estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
-      });
-    }
-    return Response.json({ itemSummaries: [] });
-  }) as typeof fetch;
+  const ebay = stubEbayLive(() =>
+    Response.json({
+      price: { value: "1234.56", currency: "USD" },
+      estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
+    }),
+  );
 
   try {
     setSystemTime(atLocal(12)); // surplus available, so the bonus pass really does run
@@ -1087,11 +1046,11 @@ test("a listing the schedule just checked is not checked again by the surplus pa
     const before = u.calls.used;
     await pollOnce(e);
 
-    expect(itemCalls).toBe(1); // the due check, and nothing else
+    expect(ebay.calls).toBe(1); // the due check, and nothing else
     expect(u.calls.used - before).toBe(2); // one poll, one check
     expect(t.nextCheckAt).toBeGreaterThan(Date.now()); // deferred to its next step, as usual
   } finally {
-    globalThis.fetch = realFetch;
+    ebay.restore();
     u.ebay = null;
   }
 });
@@ -1151,21 +1110,15 @@ test("an edit landing mid-check can't book a sale against the cleared criteria",
   g.__ebaeMock.pools.set(e.s.id, []);
   const u = g.__ebaeState.users.get(userId)!;
   u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
-    if (url.includes("/buy/browse/v1/item/")) {
-      // The edit lands while the check is in flight, so the sale it reports describes the old
-      // criteria - the exact thing the edit cleared the median to get rid of.
-      await updateSearch(userId, e.s.id, { q: "something else entirely" });
-      return Response.json({
-        price: { value: "450.00", currency: "USD" },
-        estimatedAvailabilities: [{ estimatedAvailabilityStatus: "OUT_OF_STOCK", estimatedSoldQuantity: 1 }],
-      });
-    }
-    return Response.json({ itemSummaries: [] });
-  }) as typeof fetch;
+  const ebay = stubEbayLive(async () => {
+    // The edit lands while the check is in flight, so the sale it reports describes the old
+    // criteria - the exact thing the edit cleared the median to get rid of.
+    await updateSearch(userId, e.s.id, { q: "something else entirely" });
+    return Response.json({
+      price: { value: "450.00", currency: "USD" },
+      estimatedAvailabilities: [{ estimatedAvailabilityStatus: "OUT_OF_STOCK", estimatedSoldQuantity: 1 }],
+    });
+  });
 
   try {
     e.tracked.get(item.itemId)!.nextCheckAt = Date.now() - 1000;
@@ -1174,7 +1127,7 @@ test("an edit landing mid-check can't book a sale against the cleared criteria",
     expect(e.tracked.size).toBe(0);
     expect(await trackedRows()).toHaveLength(0);
   } finally {
-    globalThis.fetch = realFetch;
+    ebay.restore();
     u.ebay = null;
   }
 });

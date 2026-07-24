@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
-import { log, redact } from "@/lib/log";
 import { deleteSearch, listSearches, updateSearch } from "@/lib/poller";
+import { parseOr400, readJsonBody, routeError } from "@/lib/route";
 import { parseSearchBody } from "@/lib/validate";
-
-const alog = log.child({ component: "api" });
 
 export const dynamic = "force-dynamic";
 
@@ -12,10 +10,10 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const user = await requireUser(req);
   if (user instanceof NextResponse) return user;
   const id = Number((await params).id);
-  const body = await req.json().catch(() => null);
-  if (!body) return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-  const parsed = parseSearchBody(body, true);
-  if (typeof parsed === "string") return NextResponse.json({ error: parsed }, { status: 400 });
+  const body = await readJsonBody(req);
+  if (body instanceof NextResponse) return body;
+  const parsed = parseOr400(body, (b) => parseSearchBody(b, true));
+  if (parsed instanceof NextResponse) return parsed;
   // A partial PATCH sees only the bound(s) in this body; validate can't cross-check the one it
   // isn't touching. Merge with the stored search so a lone priceFloor can't invert an existing cap.
   // Reading the user's own list keeps someone else's id from resolving here - updateSearch would
@@ -32,8 +30,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     if (!search) return NextResponse.json({ error: "not found" }, { status: 404 });
     return NextResponse.json({ search });
   } catch (e) {
-    alog.error({ err: e, method: "PATCH", path: `/api/searches/${id}` }, "route error");
-    return NextResponse.json({ error: redact(e instanceof Error ? e.message : String(e)) }, { status: 500 });
+    return routeError(e, { method: "PATCH", path: `/api/searches/${id}` });
   }
 }
 
@@ -46,7 +43,6 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     if (!ok) return NextResponse.json({ error: "not found" }, { status: 404 });
     return NextResponse.json({ ok: true });
   } catch (e) {
-    alog.error({ err: e, method: "DELETE", path: `/api/searches/${id}` }, "route error");
-    return NextResponse.json({ error: redact(e instanceof Error ? e.message : String(e)) }, { status: 500 });
+    return routeError(e, { method: "DELETE", path: `/api/searches/${id}` });
   }
 }

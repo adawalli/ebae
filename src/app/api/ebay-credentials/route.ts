@@ -4,12 +4,11 @@ import { requireUser } from "@/lib/auth";
 import { encryptSecret } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { type EbayCreds, requestToken } from "@/lib/ebay";
-import { log, redact } from "@/lib/log";
+import { redact } from "@/lib/log";
 import { setUserCreds } from "@/lib/poller";
+import { parseOr400, readJsonBody, routeError } from "@/lib/route";
 import { users } from "@/lib/schema";
 import { parseEbayCredsBody } from "@/lib/validate";
-
-const alog = log.child({ component: "api" });
 
 export const dynamic = "force-dynamic";
 
@@ -31,10 +30,10 @@ export async function PUT(req: Request) {
       },
       { status: 503 },
     );
-  const body = await req.json().catch(() => null);
-  if (!body) return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-  const parsed = parseEbayCredsBody(body);
-  if (typeof parsed === "string") return NextResponse.json({ error: parsed }, { status: 400 });
+  const body = await readJsonBody(req);
+  if (body instanceof NextResponse) return body;
+  const parsed = parseOr400(body, parseEbayCredsBody);
+  if (parsed instanceof NextResponse) return parsed;
 
   const creds: EbayCreds = { userId: user.id, ...parsed };
   try {
@@ -63,8 +62,7 @@ export async function PUT(req: Request) {
     await setUserCreds(user.id, creds);
     return NextResponse.json({ ok: true });
   } catch (e) {
-    alog.error({ err: e, method: "PUT", path: "/api/ebay-credentials" }, "route error");
-    return NextResponse.json({ error: redact(e instanceof Error ? e.message : String(e)) }, { status: 500 });
+    return routeError(e, { method: "PUT", path: "/api/ebay-credentials" });
   }
 }
 
@@ -81,7 +79,6 @@ export async function DELETE(req: Request) {
     await setUserCreds(user.id, null);
     return NextResponse.json({ ok: true });
   } catch (e) {
-    alog.error({ err: e, method: "DELETE", path: "/api/ebay-credentials" }, "route error");
-    return NextResponse.json({ error: redact(e instanceof Error ? e.message : String(e)) }, { status: 500 });
+    return routeError(e, { method: "DELETE", path: "/api/ebay-credentials" });
   }
 }

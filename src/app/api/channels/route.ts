@@ -2,13 +2,11 @@ import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { log, redact } from "@/lib/log";
 import { addUserChannel } from "@/lib/poller";
+import { parseOr400, readJsonBody, routeError } from "@/lib/route";
 import { channels } from "@/lib/schema";
 import type { Channel } from "@/lib/types";
 import { parseChannelBody } from "@/lib/validate";
-
-const alog = log.child({ component: "api" });
 
 export const dynamic = "force-dynamic";
 
@@ -31,18 +29,17 @@ export async function GET(req: Request) {
     const list: Channel[] = rows.map((r) => ({ id: r.id, kind: r.kind, webhookUrl: mask(r.webhookUrl) }));
     return NextResponse.json({ channels: list });
   } catch (e) {
-    alog.error({ err: e, method: "GET", path: "/api/channels" }, "route error");
-    return NextResponse.json({ error: "Service unavailable" }, { status: 503 });
+    return routeError(e, { method: "GET", path: "/api/channels" }, { unavailable: true });
   }
 }
 
 export async function POST(req: Request) {
   const user = await requireUser(req);
   if (user instanceof NextResponse) return user;
-  const body = await req.json().catch(() => null);
-  if (!body) return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-  const parsed = parseChannelBody(body);
-  if (typeof parsed === "string") return NextResponse.json({ error: parsed }, { status: 400 });
+  const body = await readJsonBody(req);
+  if (body instanceof NextResponse) return body;
+  const parsed = parseOr400(body, parseChannelBody);
+  if (parsed instanceof NextResponse) return parsed;
   try {
     const [row] = await db()
       .insert(channels)
@@ -52,7 +49,6 @@ export async function POST(req: Request) {
     const channel: Channel = { id: row.id, kind: row.kind, webhookUrl: mask(parsed.webhookUrl) };
     return NextResponse.json({ channel }, { status: 201 });
   } catch (e) {
-    alog.error({ err: e, method: "POST", path: "/api/channels" }, "route error");
-    return NextResponse.json({ error: redact(e instanceof Error ? e.message : String(e)) }, { status: 500 });
+    return routeError(e, { method: "POST", path: "/api/channels" });
   }
 }

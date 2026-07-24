@@ -1,4 +1,4 @@
-import { SOLD_MIN_COUNT, type SearchStats } from "@/lib/types";
+import { type Item, SOLD_MIN_COUNT, type SearchStats } from "@/lib/types";
 
 export const fmt = (n: number) => n.toLocaleString("en-US");
 // Projected polls/day. Snooze silences a daily window, so poll over active
@@ -13,6 +13,12 @@ export const shownSurplus = (surplus: number, ceiling: number) => (surplus / cei
 export function money(n: number | null, currency = "USD") {
   if (n == null) return "—";
   return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(n);
+}
+
+// The buyingOption -> display label shared by every alert surface (Discord embed, push body,
+// alerts list). One enforcer so the wording can't drift across them.
+export function buyingOptionLabel(opt: Item["buyingOption"]): string {
+  return opt === "FIXED_PRICE" ? "Buy It Now" : "Auction";
 }
 
 export function priceSummary(

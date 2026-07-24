@@ -2,11 +2,9 @@ import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { log, redact } from "@/lib/log";
 import { removeUserChannel } from "@/lib/poller";
+import { routeError } from "@/lib/route";
 import { channels } from "@/lib/schema";
-
-const alog = log.child({ component: "api" });
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +24,6 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     await removeUserChannel(user.id, row.webhookUrl);
     return NextResponse.json({ ok: true });
   } catch (e) {
-    alog.error({ err: e, method: "DELETE", path: `/api/channels/${id}` }, "route error");
-    return NextResponse.json({ error: redact(e instanceof Error ? e.message : String(e)) }, { status: 500 });
+    return routeError(e, { method: "DELETE", path: `/api/channels/${id}` });
   }
 }

@@ -36,6 +36,13 @@ export function snoozeMinutes(sn: SnoozeState): number {
   return sn.enabled ? (sn.end - sn.start + 1440) % 1440 : 0;
 }
 
+// Pollable minutes in the user's day: 1440 minus their snooze window. null falls back to
+// SNOOZE_DEFAULT so a user with no snooze still yields a full day - loop.ts previously inlined
+// `1440 - snoozeMinutes(u.snooze)` and dropped that fallback, so the two could disagree.
+export function activeMin(sn: SnoozeState | null): number {
+  return 1440 - snoozeMinutes(sn ?? SNOOZE_DEFAULT);
+}
+
 // Minutes of [0, nowMin) that fall inside the snooze window. Two cases because a window with
 // start > end is really two spans: [start, 1440) and [0, end).
 function snoozedBefore(sn: SnoozeState, nowMin: number): number {

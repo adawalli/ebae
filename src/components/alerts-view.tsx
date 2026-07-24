@@ -3,7 +3,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import { Inbox } from "lucide-react";
 import type { Alert, SearchStats } from "@/lib/types";
-import { ago, dayLabel, money } from "@/lib/format";
+import { ago, buyingOptionLabel, dayLabel, money } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -138,7 +138,7 @@ export function AlertsView({
                                 : "border-transparent bg-[color-mix(in_oklab,var(--eb-amber)_18%,transparent)] font-mono text-[var(--eb-amber)]"
                             }
                           >
-                            {a.buyingOption === "FIXED_PRICE" ? "Buy It Now" : "Auction"}
+                            {buyingOptionLabel(a.buyingOption)}
                           </Badge>
                           {a.condition && (
                             <Badge variant="secondary" className="font-mono">

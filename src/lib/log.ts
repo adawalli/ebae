@@ -1,5 +1,11 @@
 import { createRequire } from "node:module";
 import pino from "pino";
+import { PUSH_HOSTS, PUSH_HOST_SUFFIX } from "./push-hosts";
+
+// Built from the same allowlist validate.ts enforces, so a new push provider is redacted the
+// moment it's accepted. Exact hosts alternate with the WNS suffix's wildcard subdomain.
+const esc = (s: string) => s.replace(/[.]/g, "\\.");
+const PUSH_HOST_ALT = [...PUSH_HOSTS.map(esc), `[a-z0-9-]+${esc(PUSH_HOST_SUFFIX)}`].join("|");
 
 const LEVEL = process.env.LOG_LEVEL ?? "info";
 const PRETTY = (process.env.LOG_FORMAT ?? (process.stdout.isTTY ? "pretty" : "json")) === "pretty";
@@ -12,8 +18,8 @@ const SECRETS: RegExp[] = [
   /https:\/\/discord(?:app)?\.com\/api\/webhooks\/\S+/gi, // webhook URL (its token)
   /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, // auth headers / bearer tokens
   // Push endpoints: bearer-equivalent, same as a webhook URL - whoever holds one can
-  // push to that device. The hosts mirror validate.ts's allowlist.
-  /https:\/\/(?:fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com|web\.push\.apple\.com|[a-z0-9-]+\.notify\.windows\.com)\/\S+/gi,
+  // push to that device. Hosts come from push-hosts.ts, shared with validate.ts's allowlist.
+  new RegExp(`https://(?:${PUSH_HOST_ALT})/\\S+`, "gi"),
 ];
 
 export function redact(s: string): string {

@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { log } from "@/lib/log";
 import { addUserPush, evictPushElsewhere, pushIsStale, removeUserPush } from "@/lib/poller";
 import { vapid } from "@/lib/push";
+import { readJsonBody, routeError } from "@/lib/route";
 import { pushSubs } from "@/lib/schema";
 import { parsePushBody } from "@/lib/validate";
 
@@ -26,14 +27,14 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const user = await requireUser(req);
   if (user instanceof NextResponse) return user;
-  const body = await req.json().catch(() => null);
-  if (!body) return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
+  const body = await readJsonBody(req);
+  if (body instanceof NextResponse) return body;
   const parsed = parsePushBody(body);
   if (typeof parsed === "string") {
     // Loud on purpose: the push services reserve the right to change their hostnames, so
     // a rejection here is either an attack or the allowlist going stale - and the second
     // one would otherwise look like push silently not working.
-    alog.warn({ host: hostOf(body?.endpoint), reason: parsed }, "push subscribe rejected");
+    alog.warn({ host: hostOf((body as { endpoint?: unknown })?.endpoint), reason: parsed }, "push subscribe rejected");
     return NextResponse.json({ error: parsed }, { status: 400 });
   }
   // The browser still holds this endpoint, but the push service already told us it is gone
@@ -58,8 +59,7 @@ export async function POST(req: Request) {
     evictPushElsewhere(user.id, parsed.endpoint);
     return NextResponse.json({ ok: true }, { status: 201 });
   } catch (e) {
-    alog.error({ err: e, method: "POST", path: "/api/push" }, "route error");
-    return NextResponse.json({ error: "Service unavailable" }, { status: 503 });
+    return routeError(e, { method: "POST", path: "/api/push" }, { unavailable: true });
   }
 }
 
@@ -78,8 +78,7 @@ export async function DELETE(req: Request) {
     await removeUserPush(user.id, endpoint);
     return NextResponse.json({ ok: true });
   } catch (e) {
-    alog.error({ err: e, method: "DELETE", path: "/api/push" }, "route error");
-    return NextResponse.json({ error: "Service unavailable" }, { status: 503 });
+    return routeError(e, { method: "DELETE", path: "/api/push" }, { unavailable: true });
   }
 }
 

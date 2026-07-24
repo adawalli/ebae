@@ -1,6 +1,7 @@
 import { MARKETPLACES } from "./ebay";
 import { DEFAULT_INTERVAL } from "./poller";
 import { splitExcludeTerms } from "./exclude-terms";
+import { PUSH_HOSTS, PUSH_HOST_SUFFIX } from "./push-hosts";
 import { CONDITION_KEYS, type ConditionKey, type EbayCredsInput, type PushSub } from "./types";
 
 // Returns an error string, or the cleaned fields. partial=true (PATCH) only
@@ -118,12 +119,9 @@ export function parseChannelBody(b: any): string | { webhookUrl: string } {
   return { webhookUrl };
 }
 
-// The known push services. Exact hosts, except WNS: Microsoft documents the wns2-*
-// subdomain as subject to change, so that one is a suffix match. endsWith(".host") and
-// never includes() - includes() would happily accept evil-fcm.googleapis.com.attacker.com.
-const PUSH_HOSTS = ["fcm.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com"];
-const PUSH_HOST_SUFFIX = ".notify.windows.com"; // WNS (Edge on Windows)
-
+// endsWith(".host") and never includes() - includes() would happily accept
+// evil-fcm.googleapis.com.attacker.com. Host list lives in push-hosts.ts, shared with log.ts's
+// redaction regex so the allowlist and the scrubber can never drift apart.
 export function pushHostAllowed(endpoint: string): boolean {
   let u: URL;
   try {

@@ -1,6 +1,7 @@
 import webpush from "web-push";
 import { eq } from "drizzle-orm";
 import { db } from "./db";
+import { buyingOptionLabel, money } from "./format";
 import { log } from "./log";
 import { vapidKeys } from "./schema";
 import type { Item, PushSub, Search } from "./types";
@@ -63,16 +64,11 @@ export async function vapid(): Promise<Vapid | null> {
 }
 
 function body(item: Item, search: Search) {
-  const price =
-    item.price == null
-      ? ""
-      : new Intl.NumberFormat("en-US", { style: "currency", currency: item.currency }).format(item.price);
+  const price = item.price == null ? "" : money(item.price, item.currency);
   const ship = item.shippingCost === 0 ? " · free shipping" : "";
   return JSON.stringify({
     title: item.title ?? "Untitled listing",
-    body: [price + ship, item.buyingOption === "FIXED_PRICE" ? "Buy It Now" : "Auction", item.condition]
-      .filter(Boolean)
-      .join(" · "),
+    body: [price + ship, buyingOptionLabel(item.buyingOption), item.condition].filter(Boolean).join(" · "),
     url: item.itemUrl,
     image: item.imageUrl,
     tag: `${search.id}:${item.itemId}`, // dedupes a redelivery against the same listing

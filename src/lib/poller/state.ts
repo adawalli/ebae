@@ -137,6 +137,36 @@ export function state(): State {
   });
 }
 
+// A fresh in-memory Entry for a search: tracking containers empty, scheduler fields at rest.
+// Built by createSearch and reload's new-row branch; centralized because a forgotten field here
+// is a correctness bug - trackLock/trackEpoch are load-bearing for reset serialization, not
+// cosmetic defaults.
+export function newEntry(s: Search): Entry {
+  return {
+    s,
+    seen: new Set(),
+    hitTimes: [],
+    lastHitAt: null,
+    lastPolledAt: null,
+    timer: null,
+    backoffMs: 0,
+    running: false,
+    tracked: new Map(),
+    soldPrices: [],
+    trackDirty: new Set(),
+    bonus: { date: "", done: new Map() },
+    trackEpoch: 0,
+    trackLock: Promise.resolve(),
+  };
+}
+
+// One user's enabled searches - the basis of every projectedCalls/factor/timer computation. The
+// predicate was inlined in six places and one had already flipped to `enabled && userId`, the
+// kind of drift that silently drops the enabled half. Single source now.
+export function enabledSearchesFor(userId: number): Entry[] {
+  return [...state().entries.values()].filter((e) => e.s.userId === userId && e.s.enabled);
+}
+
 // Bounded because stalePush outlives every row it names and endpoints churn: iOS re-mints
 // them every week or two, so an unbounded set is a slow leak in a process that runs for
 // months.

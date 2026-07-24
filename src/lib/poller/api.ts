@@ -17,9 +17,9 @@ import {
   surplusToday,
   usedToday,
 } from "./quota";
-import { SNOOZE_DEFAULT, counterDayFrac, hhmm, snoozeMinutes, snoozeWindow, snoozing } from "./snooze";
+import { SNOOZE_DEFAULT, activeMin, counterDayFrac, hhmm, snoozeMinutes, snoozeWindow, snoozing } from "./snooze";
 import { resetTracked, soldStats } from "./track";
-import { type Entry, type SnoozeState, bumpAlerts, plog, rowToSearch, state } from "./state";
+import { type SnoozeState, bumpAlerts, enabledSearchesFor, newEntry, plog, rowToSearch, state } from "./state";
 
 export const DEFAULT_INTERVAL = Number(process.env.POLL_INTERVAL_DEFAULT ?? 5);
 
@@ -30,7 +30,7 @@ export const DEFAULT_INTERVAL = Number(process.env.POLL_INTERVAL_DEFAULT ?? 5);
 
 // Pollable minutes in the user's day: the whole day minus their snooze window.
 function activeMinFor(userId: number): number {
-  return 1440 - snoozeMinutes(state().users.get(userId)?.snooze ?? SNOOZE_DEFAULT);
+  return activeMin(state().users.get(userId)?.snooze ?? null);
 }
 
 // The governor is a per-user budget control, so all of one user's searches stretch by the same
@@ -39,7 +39,7 @@ function activeMinFor(userId: number): number {
 function factorFor(userId: number): number {
   const u = state().users.get(userId);
   if (!u) return 1;
-  const active = [...state().entries.values()].filter((e) => e.s.userId === userId && e.s.enabled);
+  const active = enabledSearchesFor(userId);
   return governorDecision(
     usedToday(u.calls),
     QUOTA_CEILING,
@@ -54,7 +54,7 @@ export function listSearches(userId: number): SearchStats[] {
   const cutoff = now - 24 * 3600_000;
   const st = state();
   const factor = factorFor(userId);
-  const activeMin = activeMinFor(userId);
+  const activeMinutes = activeMinFor(userId);
   return [...st.entries.values()]
     .filter((e) => e.s.userId === userId)
     .sort((a, b) => b.s.createdAt.localeCompare(a.s.createdAt) || b.s.id - a.s.id)
@@ -68,7 +68,7 @@ export function listSearches(userId: number): SearchStats[] {
         lastHitAt: e.lastHitAt ? new Date(e.lastHitAt).toISOString() : null,
         lastPolledAt: e.lastPolledAt ? new Date(e.lastPolledAt).toISOString() : null,
         effectiveIntervalMin: Math.round(e.s.intervalMin * factor * 10) / 10,
-        callsPerDay: callsPerDayForEntry(e, activeMin),
+        callsPerDay: callsPerDayForEntry(e, activeMinutes),
         soldMedian: sold.typical,
         soldSampleCount: sold.count,
         checksDue24h: checksDue24h(e),
@@ -107,22 +107,7 @@ export async function createSearch(userId: number, input: SearchInput): Promise<
       intervalMin: input.intervalMin,
     })
     .returning();
-  const e: Entry = {
-    s: rowToSearch(row, userId),
-    seen: new Set(),
-    hitTimes: [],
-    lastHitAt: null,
-    lastPolledAt: null,
-    timer: null,
-    backoffMs: 0,
-    running: false,
-    tracked: new Map(),
-    soldPrices: [],
-    trackDirty: new Set(),
-    bonus: { date: "", done: new Map() },
-    trackEpoch: 0,
-    trackLock: Promise.resolve(),
-  };
+  const e = newEntry(rowToSearch(row, userId));
   state().entries.set(e.s.id, e);
   schedule(e, 0); // seed immediately
   plog.info({ searchId: e.s.id, q: e.s.q, userId }, "search created");
@@ -283,7 +268,7 @@ export async function setSnooze(userId: number, sn: SnoozeState): Promise<Snooze
     const old = u.snooze;
     const now = new Date();
     u.snooze = sn;
-    const active = [...state().entries.values()].filter((e) => e.s.userId === userId && e.s.enabled);
+    const active = enabledSearchesFor(userId);
     const factor = governorFor(u, projectedCalls(active, activeMinFor(userId)), now);
     for (const e of active) {
       schedule(e, snoozing(old, now) && !snoozing(sn, now) ? 0 : governedDelayMs(e.s.intervalMin, factor));
@@ -375,7 +360,7 @@ export function status(userId: number): StatusInfo {
     poller: {
       running: st.ready,
       bootedAt: st.bootedAt ? new Date(st.bootedAt).toISOString() : null,
-      timers: [...st.entries.values()].filter((e) => e.s.enabled && e.s.userId === userId).length,
+      timers: enabledSearchesFor(userId).length,
     },
     ebay: {
       mode: u ? pollMode(u) : "no-creds",
@@ -387,7 +372,7 @@ export function status(userId: number): StatusInfo {
     },
     quota: (() => {
       const used = u ? usedToday(u.calls, today) : 0;
-      const enabled = [...st.entries.values()].filter((e) => e.s.userId === userId && e.s.enabled);
+      const enabled = enabledSearchesFor(userId);
       const projected = projectedCalls(enabled, activeMinFor(userId));
       const frac = counterDayFrac(sn);
       const factor = factorFor(userId);

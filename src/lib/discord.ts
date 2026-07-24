@@ -1,12 +1,8 @@
+import { buyingOptionLabel, money } from "./format";
 import { log } from "./log";
 import type { Item, PriceContext, Search } from "./types";
 
 const dlog = log.child({ component: "discord" });
-
-function money(n: number | null, currency: string) {
-  if (n == null) return "—";
-  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(n);
-}
 
 // "Is this a deal?" at a glance. basis "sold" = median of what this search's tracked listings
 // actually realized (labeled "Sold", the strongest answer there is); basis "market" = a
@@ -45,7 +41,7 @@ function embed(item: Item, search: Search, ctx?: PriceContext) {
         thumbnail: item.imageUrl ? { url: item.imageUrl } : undefined,
         fields: [
           { name: "Price", value: money(item.price, item.currency) + ship, inline: true },
-          { name: "Type", value: item.buyingOption === "FIXED_PRICE" ? "Buy It Now" : "Auction", inline: true },
+          { name: "Type", value: buyingOptionLabel(item.buyingOption), inline: true },
           { name: "Condition", value: item.condition ?? "—", inline: true },
           ...(deal ? [deal] : []),
         ],

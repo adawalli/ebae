@@ -10,8 +10,18 @@ import { NOTHING_PUSHED, NOTHING_SENT, reapPush } from "./delivery";
 import { maybeSampleMarket, priceContext, suppressed } from "./market";
 import { projectedCalls } from "./projection";
 import { QUOTA_CEILING, flushCalls, governedDelayMs, governorFor } from "./quota";
-import { snoozeMinutes, snoozing } from "./snooze";
-import { type Entry, type TrackedItem, type UserCtx, bumpAlerts, message, plog, recordError, state } from "./state";
+import { activeMin, snoozing } from "./snooze";
+import {
+  type Entry,
+  type TrackedItem,
+  type UserCtx,
+  bumpAlerts,
+  enabledSearchesFor,
+  message,
+  plog,
+  recordError,
+  state,
+} from "./state";
 import { flushTracked, harvest, insertTracked, newTracked, runBonusChecks, runDueChecks, soldContext } from "./track";
 
 export const MAX_BACKOFF_MS = 30 * 60_000;
@@ -347,8 +357,8 @@ export async function pollOnce(e: Entry) {
     // Check in on followed listings that have come due. Same shape as the sample above:
     // self-limiting, quota-guarded, isolated, and a no-op for a search that isn't tracking.
     await runDueChecks(e, u, database, epoch);
-    const active = [...st.entries.values()].filter((x) => x.s.userId === u.id && x.s.enabled);
-    const projected = projectedCalls(active, 1440 - snoozeMinutes(u.snooze));
+    const active = enabledSearchesFor(u.id);
+    const projected = projectedCalls(active, activeMin(u.snooze));
     // Last, so the budget it reads has this tick's poll, sample and due checks already in it.
     // Deliberately absent from `projected`: these calls are the surplus that projection leaves
     // over, and budgeting for them would engage the governor against the very thing it makes
@@ -372,7 +382,5 @@ export async function pollOnce(e: Entry) {
 // Re-kick one user's searches after a change that decides whether/how they poll. Jittered so a
 // user with many searches doesn't hit eBay in one burst.
 export function kick(userId: number) {
-  for (const e of state().entries.values()) {
-    if (e.s.userId === userId && e.s.enabled) schedule(e, 1000 + Math.random() * 3000);
-  }
+  for (const e of enabledSearchesFor(userId)) schedule(e, 1000 + Math.random() * 3000);
 }

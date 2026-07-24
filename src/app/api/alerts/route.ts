@@ -2,12 +2,10 @@ import { and, desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { log } from "@/lib/log";
 import { alertsTag, bumpAlerts } from "@/lib/poller";
+import { routeError } from "@/lib/route";
 import { alerts as alertsTable } from "@/lib/schema";
 import type { Alert } from "@/lib/types";
-
-const alog = log.child({ component: "api" });
 
 export const dynamic = "force-dynamic";
 
@@ -61,8 +59,7 @@ export async function GET(req: Request) {
     }));
     return NextResponse.json({ alerts }, tag ? { headers: validators(tag) } : undefined);
   } catch (e) {
-    alog.error({ err: e, method: "GET", path: "/api/alerts" }, "route error");
-    return NextResponse.json({ error: "Service unavailable" }, { status: 503 });
+    return routeError(e, { method: "GET", path: "/api/alerts" }, { unavailable: true });
   }
 }
 
@@ -87,7 +84,6 @@ export async function DELETE(req: Request) {
     bumpAlerts(user.id); // rows are gone; a tab still holding the old tag must not keep showing them
     return NextResponse.json({ ok: true });
   } catch (e) {
-    alog.error({ err: e, method: "DELETE", path: "/api/alerts" }, "route error");
-    return NextResponse.json({ error: "Service unavailable" }, { status: 503 });
+    return routeError(e, { method: "DELETE", path: "/api/alerts" }, { unavailable: true });
   }
 }

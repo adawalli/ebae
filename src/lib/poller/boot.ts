@@ -10,7 +10,7 @@ import { redeliverPending } from "./delivery";
 import { schedule } from "./loop";
 import { flushCalls, mergeCalls } from "./quota";
 import { flushTracked, hydrateTracked } from "./track";
-import { type Entry, type UserCtx, message, plog, recordError, rowToSearch, state } from "./state";
+import { type UserCtx, message, newEntry, plog, recordError, rowToSearch, state } from "./state";
 
 const REFRESH_HOURS = Number(process.env.CACHE_REFRESH_HOURS ?? 12);
 const SEEN_RETENTION_DAYS = Number(process.env.SEEN_RETENTION_DAYS ?? 90);
@@ -277,22 +277,7 @@ async function reload() {
       if (existing.s.seeded) s.seeded = true;
       existing.s = s;
     } else {
-      const entry: Entry = {
-        s,
-        seen: new Set(),
-        hitTimes: [],
-        lastHitAt: null,
-        lastPolledAt: null,
-        timer: null,
-        backoffMs: 0,
-        running: false,
-        tracked: new Map(),
-        soldPrices: [],
-        trackDirty: new Set(),
-        bonus: { date: "", done: new Map() },
-        trackEpoch: 0,
-        trackLock: Promise.resolve(),
-      };
+      const entry = newEntry(s);
       st.entries.set(s.id, entry);
       // rows inserted into the DB directly start polling on the next refresh
       // (no-op during boot: ready is still false, boot() schedules everything)

@@ -11,26 +11,14 @@ import {
   soldContext,
 } from "./track";
 import type { TrackedItem } from "./state";
+import { mkItem } from "@/__tests__/helpers/fixtures";
 import type { Item } from "@/lib/types";
 
 const DAY = 86400_000;
 const NOW = Date.UTC(2026, 6, 19, 12, 0, 0);
 
-const item = (over: Partial<Item> = {}): Item => ({
-  itemId: "v1|123|0",
-  title: "Leica M6",
-  price: 1000,
-  currency: "USD",
-  shippingCost: 0,
-  buyingOption: "FIXED_PRICE",
-  condition: "Used",
-  conditionId: "3000",
-  imageUrl: null,
-  itemUrl: "https://www.ebay.com/itm/123",
-  itemEndDate: null,
-  bestOffer: false,
-  ...over,
-});
+const item = (over: Partial<Item> = {}): Item =>
+  mkItem({ itemId: "v1|123|0", title: "Leica M6", price: 1000, itemUrl: "https://www.ebay.com/itm/123", ...over });
 
 const tracked = (over: Partial<TrackedItem> = {}): TrackedItem => ({
   itemId: "v1|123|0",

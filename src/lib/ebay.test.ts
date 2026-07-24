@@ -15,22 +15,10 @@ import {
   type EbayCreds,
 } from "./ebay";
 import { median } from "./poller";
+import { mkItem } from "@/__tests__/helpers/fixtures";
 import type { Item, Search } from "./types";
 
-const item: Item = {
-  itemId: "v1|1|0",
-  title: "Sonos Era 300",
-  price: 179.95,
-  currency: "USD",
-  shippingCost: 0,
-  buyingOption: "FIXED_PRICE",
-  condition: "Parts Only",
-  conditionId: "7000",
-  imageUrl: null,
-  itemUrl: "https://www.ebay.com/itm/1",
-  itemEndDate: null,
-  bestOffer: false,
-};
+const item: Item = mkItem({ condition: "Parts Only", conditionId: "7000" });
 
 const base: Search = {
   id: 1,

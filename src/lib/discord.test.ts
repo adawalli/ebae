@@ -1,21 +1,9 @@
 import { expect, test } from "bun:test";
+import { mkItem } from "@/__tests__/helpers/fixtures";
 import { discordRetryMs, notify } from "./discord";
 import type { Item, Search } from "./types";
 
-const item: Item = {
-  itemId: "v1|1|0",
-  title: "Sonos Era 300",
-  price: 179.95,
-  currency: "USD",
-  shippingCost: 0,
-  buyingOption: "FIXED_PRICE",
-  condition: "New",
-  conditionId: "1000",
-  imageUrl: null,
-  itemUrl: "https://www.ebay.com/itm/1",
-  itemEndDate: null,
-  bestOffer: false,
-};
+const item: Item = mkItem({ condition: "New", conditionId: "1000" });
 
 const search = { id: 1, q: "Sonos Era 300" } as Search;
 

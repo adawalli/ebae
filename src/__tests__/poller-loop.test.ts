@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { freshTestDb } from "./helpers/db";
+import { mkItem } from "./helpers/fixtures";
 import { SINGLE_USER_EMAIL } from "@/lib/authmode";
 import { db } from "@/lib/db";
 import { alerts, apiUsage, searches, seenItems, trackedItems, users } from "@/lib/schema";
@@ -46,21 +47,14 @@ const input = (over: Partial<SearchInput> = {}): SearchInput => ({
   ...over,
 });
 
-const injected = (over: Partial<Item> = {}): Item => ({
-  itemId: "v1|injected-1|0",
-  title: "leica m6 - injected listing",
-  price: 1234.56,
-  currency: "USD",
-  shippingCost: 0,
-  buyingOption: "FIXED_PRICE",
-  condition: "Used",
-  conditionId: "3000",
-  imageUrl: null,
-  itemUrl: "https://www.ebay.com/itm/injected-1",
-  itemEndDate: null,
-  bestOffer: false,
-  ...over,
-});
+const injected = (over: Partial<Item> = {}): Item =>
+  mkItem({
+    itemId: "v1|injected-1|0",
+    title: "leica m6 - injected listing",
+    price: 1234.56,
+    itemUrl: "https://www.ebay.com/itm/injected-1",
+    ...over,
+  });
 
 let database: Awaited<ReturnType<typeof freshTestDb>>;
 let userId: number;

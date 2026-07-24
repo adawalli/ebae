@@ -3,9 +3,10 @@ import { DELETE as alertsDELETE, GET as alertsGET } from "@/app/api/alerts/route
 import { DELETE as searchDELETE, PATCH as searchPATCH } from "@/app/api/searches/[id]/route";
 import { GET as searchesGET, POST as searchesPOST } from "@/app/api/searches/route";
 import { GET as statusGET } from "@/app/api/status/route";
-import { alertsTag, type Entry, type UserCtx } from "@/lib/poller";
+import { type Entry, type UserCtx } from "@/lib/poller";
 import { alerts as alertsTable, searches } from "@/lib/schema";
 import { freshTestDb } from "./helpers/db";
+import { pollerState } from "./helpers/poller-state";
 
 // A narrowed view of the poller's private State: only the fields these tests reach for.
 type St = {
@@ -14,10 +15,7 @@ type St = {
   entries: Map<number, Entry>;
   users: Map<number, UserCtx>;
 };
-const st = (): St => {
-  alertsTag(0); // the state is lazy; force it to exist before reaching for it
-  return (globalThis as unknown as { __ebaeState: St }).__ebaeState;
-};
+const st = (): St => pollerState<St>();
 
 let database: Awaited<ReturnType<typeof freshTestDb>>;
 beforeEach(async () => {

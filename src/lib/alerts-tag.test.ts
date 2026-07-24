@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { pollerState } from "@/__tests__/helpers/poller-state";
 import { alertsTag, bumpAlerts } from "./poller";
 
 // The tag is what keeps a serverless Postgres asleep while the app sits open: the UI polls
@@ -7,10 +8,7 @@ import { alertsTag, bumpAlerts } from "./poller";
 // suspend. If it failed to change when the list did, a tab would show stale alerts forever.
 
 type St = { ready: boolean; bootedAt: number | null; alertsRev: Map<number, number> };
-const st = (): St => {
-  alertsTag(0); // the state is lazy; force it to exist before reaching for it
-  return (globalThis as unknown as { __ebaeState: St }).__ebaeState;
-};
+const st = (): St => pollerState<St>();
 
 // A booted process is the normal case; the fences get their own tests below.
 const booted = (): St => {

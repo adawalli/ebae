@@ -24,6 +24,7 @@ import {
 } from "./poller";
 import { dealField } from "./discord";
 import { hhmmToMin, parseSearchBody, parseSnoozeBody } from "./validate";
+import { mkItem as baseItem } from "@/__tests__/helpers/fixtures";
 import type { Item } from "./types";
 
 // The re-seed guard in updateSearch: editing what a search matches must reset the
@@ -94,18 +95,8 @@ test("median: odd, even, empty, NaN-filtered", () => {
 
 // dealField: the embed's "is this a deal?" line. Gated on a real sample so a single
 // prior alert can't masquerade as "typical".
-const mkItem = (price: number | null): Item => ({
-  itemId: "x",
-  title: "t",
-  price,
-  currency: "USD",
-  shippingCost: null,
-  buyingOption: "FIXED_PRICE",
-  condition: null,
-  conditionId: null,
-  imageUrl: null,
-  itemUrl: "u",
-});
+const mkItem = (price: number | null): Item =>
+  baseItem({ itemId: "x", title: "t", price, shippingCost: null, condition: null, conditionId: null, itemUrl: "u" });
 test("dealField: null until 3+ priced samples with a price and baseline", () => {
   expect(dealField(mkItem(400), { typical: 500, count: 2, basis: "recent" })).toBeNull(); // too few
   expect(dealField(mkItem(null), { typical: 500, count: 9, basis: "recent" })).toBeNull(); // no listing price

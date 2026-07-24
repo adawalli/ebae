@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { pollerState } from "@/__tests__/helpers/poller-state";
 import { evictPushElsewhere, markStalePush, pushIsStale } from "./poller";
 import { parsePushBody, pushHostAllowed } from "./validate";
 
@@ -125,8 +126,7 @@ test("the stale set is bounded and evicts the coldest endpoint first", () => {
 // alerts keep pushing to a phone that is now someone else's.
 test("subscribing a device evicts it from every other user's cache", () => {
   type Cached = { users: Map<number, { push: { endpoint: string }[] }> };
-  pushIsStale("init"); // the state is lazy; force it to exist before reaching for it
-  const users = (globalThis as unknown as { __ebaeState: Cached }).__ebaeState.users;
+  const users = pollerState<Cached>().users;
 
   const shared = "https://web.push.apple.com/shared-device";
   const own = "https://web.push.apple.com/alice-only";

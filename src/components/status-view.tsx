@@ -493,8 +493,10 @@ function NotificationsCard() {
   }
 
   async function remove(c: Channel) {
-    const res = await fetch(`/api/channels/${c.id}`, { method: "DELETE" });
-    if (res.ok) setChannels((list) => list.filter((x) => x.id !== c.id));
+    setError(null);
+    const r = await submitJson(`/api/channels/${c.id}`, { method: "DELETE" });
+    if (r.ok) setChannels((list) => list.filter((x) => x.id !== c.id));
+    else setError(r.error);
   }
 
   return (

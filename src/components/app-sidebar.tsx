@@ -2,6 +2,7 @@
 
 import type { StatusInfo } from "@/lib/types";
 import { duration } from "@/lib/format";
+import { StatusDot } from "./status-dot";
 import { ThemeToggle } from "./theme-toggle";
 import {
   Sidebar,
@@ -82,13 +83,7 @@ export function AppSidebar({
           </div>
         )}
         <div className="flex items-center gap-2 px-1 font-mono text-[10.5px] text-muted-foreground">
-          <span
-            className="size-1.5 shrink-0 rounded-full"
-            style={{
-              background: running ? "var(--eb-green)" : "var(--eb-amber)",
-              animation: running ? "ebPulse 2.4s ease-in-out infinite" : undefined,
-            }}
-          />
+          <StatusDot active={running} />
           {running && status?.poller.bootedAt
             ? `poller up ${duration(status.poller.bootedAt)} · v${status.version}`
             : `poller down${status ? ` · v${status.version}` : ""}`}

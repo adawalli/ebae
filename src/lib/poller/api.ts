@@ -3,7 +3,7 @@ import pkg from "../../../package.json";
 import { db } from "@/lib/db";
 import { currencyFor, invalidateToken, tokenExpiresAt, type EbayCreds } from "@/lib/ebay";
 import { searches, users } from "@/lib/schema";
-import type { PushSub, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
+import type { PushSub, Search, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
 import { userCtx } from "./boot";
 import { MAX_BACKOFF_MS, QUOTA_SKIP_MS, kick, pollMode, schedule } from "./loop";
 import { MARKET_SAMPLES_PER_DAY } from "./market";
@@ -49,6 +49,31 @@ function factorFor(userId: number): number {
   ).factor;
 }
 
+// The governed interval a search actually polls at - its base interval stretched by the current
+// factor, rounded to a tenth for display. Three stat surfaces compute it; one formula so they
+// can't drift.
+function effectiveIntervalMin(intervalMin: number, factor: number): number {
+  return Math.round(intervalMin * factor * 10) / 10;
+}
+
+// Stats for a search with no live entry to read from: brand new (createSearch) or dropped by a
+// concurrent reload (updateSearch's cache-miss). Everything runtime-derived reads as empty; the
+// next listSearches call returns the real figures.
+function stubStats(s: Search, userId: number): SearchStats {
+  return {
+    ...s,
+    seenCount: 0,
+    hits24: 0,
+    lastHitAt: null,
+    lastPolledAt: null,
+    effectiveIntervalMin: effectiveIntervalMin(s.intervalMin, factorFor(userId)),
+    callsPerDay: callsPerDayFor(s, activeMinFor(userId)),
+    soldMedian: null,
+    soldSampleCount: 0,
+    checksDue24h: 0,
+  };
+}
+
 export function listSearches(userId: number): SearchStats[] {
   const now = Date.now();
   const cutoff = now - 24 * 3600_000;
@@ -67,7 +92,7 @@ export function listSearches(userId: number): SearchStats[] {
         hits24: e.hitTimes.length,
         lastHitAt: e.lastHitAt ? new Date(e.lastHitAt).toISOString() : null,
         lastPolledAt: e.lastPolledAt ? new Date(e.lastPolledAt).toISOString() : null,
-        effectiveIntervalMin: Math.round(e.s.intervalMin * factor * 10) / 10,
+        effectiveIntervalMin: effectiveIntervalMin(e.s.intervalMin, factor),
         callsPerDay: callsPerDayForEntry(e, activeMinutes),
         soldMedian: sold.typical,
         soldSampleCount: sold.count,
@@ -111,18 +136,7 @@ export async function createSearch(userId: number, input: SearchInput): Promise<
   state().entries.set(e.s.id, e);
   schedule(e, 0); // seed immediately
   plog.info({ searchId: e.s.id, q: e.s.q, userId }, "search created");
-  return {
-    ...e.s,
-    seenCount: 0,
-    hits24: 0,
-    lastHitAt: null,
-    lastPolledAt: null,
-    effectiveIntervalMin: Math.round(e.s.intervalMin * factorFor(userId) * 10) / 10,
-    callsPerDay: callsPerDayFor(e.s, activeMinFor(userId)),
-    soldMedian: null, // brand new: nothing tracked, nothing realized
-    soldSampleCount: 0,
-    checksDue24h: 0,
-  };
+  return stubStats(e.s, userId); // brand new: nothing tracked, nothing realized
 }
 
 // Fields that decide what a search matches. Changing any of them makes the seeded
@@ -204,20 +218,9 @@ export async function updateSearch(
       // this search no longer matches, still costing checks.
       if (invalidated) await resetTracked(db(), e);
     } else {
-      // dropped from the cache by a concurrent reload: DB was updated, return stub stats
-      const s = rowToSearch(updated, userId);
-      return {
-        ...s,
-        seenCount: 0,
-        hits24: 0,
-        lastHitAt: null,
-        lastPolledAt: null,
-        effectiveIntervalMin: Math.round(s.intervalMin * factorFor(userId) * 10) / 10,
-        callsPerDay: callsPerDayFor(s, activeMinFor(userId)),
-        soldMedian: null, // no entry to read follows from; the next list call has the real figure
-        soldSampleCount: 0,
-        checksDue24h: 0,
-      };
+      // dropped from the cache by a concurrent reload: DB was updated, return stub stats. The
+      // next list call reads the real figures once reload rebuilds the entry.
+      return stubStats(rowToSearch(updated, userId), userId);
     }
   }
   const e = state().entries.get(id);

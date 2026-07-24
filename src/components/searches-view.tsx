@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { InfoTip } from "@/components/info-tip";
+import { StatusDot } from "@/components/status-dot";
 
 const interval = (minutes: number) => (Number.isInteger(minutes) ? String(minutes) : minutes.toFixed(1));
 
@@ -78,13 +79,7 @@ export function SearchesView({
         <div>
           <h2 className="text-[21px] font-bold tracking-[-0.01em]">Saved searches</h2>
           <div className="mt-1 flex items-center gap-2 text-[13px] text-muted-foreground">
-            <span
-              className="size-1.5 rounded-full"
-              style={{
-                background: running && !noCreds ? "var(--eb-green)" : "var(--eb-amber)",
-                animation: running && !noCreds ? "ebPulse 2.4s ease-in-out infinite" : undefined,
-              }}
-            />
+            <StatusDot active={running && !noCreds} />
             {searches.length} searches · {active.length} active ·{" "}
             {!running
               ? "poller down"

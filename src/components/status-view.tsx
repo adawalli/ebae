@@ -4,8 +4,10 @@ import { type Dispatch, type SetStateAction, useCallback, useEffect, useState } 
 import { Check, Trash2 } from "lucide-react";
 import { MARKETPLACE_CURRENCY, type Channel, type SnoozeConfig, type StatusInfo } from "@/lib/types";
 import { ago, duration, fmt, shownSurplus, until } from "@/lib/format";
+import { submitJson } from "@/lib/http";
 import { currentSubscription, disablePush, enablePush, pushSupported } from "@/lib/push-client";
 import { LS_DISABLED, LS_LAST_SEEN, WHATSNEW_EVENT, parseSemver, read, store } from "@/lib/whatsnew";
+import { StatusDot } from "@/components/status-dot";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -57,13 +59,7 @@ export function StatusView({
             <CardContent className="flex flex-col">
               <div className="mb-2.5 text-[12.5px] text-muted-foreground">Poller</div>
               <div className="flex items-center gap-[9px]">
-                <span
-                  className="size-[9px] rounded-full"
-                  style={{
-                    background: running ? (snoozed ? "var(--eb-amber)" : "var(--eb-green)") : "var(--eb-amber)",
-                    animation: running && !snoozed ? "ebPulse 2.4s ease-in-out infinite" : undefined,
-                  }}
-                />
+                <StatusDot active={running && !snoozed} size="md" />
                 <span className="text-[19px] font-bold">
                   {running ? (snoozed ? "Snoozing" : "Running") : "Stopped"}
                 </span>
@@ -299,45 +295,31 @@ function EbayCredsCard({ status, refresh }: { status: StatusInfo; refresh: () =>
   async function save() {
     setSaving(true);
     setError(null);
-    try {
-      const res = await fetch("/api/ebay-credentials", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clientId, clientSecret, env, marketplace }),
-      });
-      const data = await res.json();
-      // The server validates the keys against eBay before storing them, so a 400 here is
-      // eBay's own rejection - show it verbatim rather than "invalid".
-      if (!res.ok) {
-        setError(data.error ?? `request failed (${res.status})`);
-        return;
-      }
+    // The server validates the keys against eBay before storing them, so a 400 here is
+    // eBay's own rejection - submitJson surfaces it verbatim rather than "invalid".
+    const r = await submitJson("/api/ebay-credentials", {
+      method: "PUT",
+      body: { clientId, clientSecret, env, marketplace },
+    });
+    if (!r.ok) setError(r.error);
+    else {
       setClientSecret("");
       refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
     }
+    setSaving(false);
   }
 
   async function remove() {
     if (!confirm("Remove your eBay keys? Your searches stop polling until you add new ones.")) return;
     setSaving(true);
     setError(null);
-    try {
-      const res = await fetch("/api/ebay-credentials", { method: "DELETE" });
-      if (!res.ok) {
-        setError((await res.json()).error ?? `request failed (${res.status})`);
-        return;
-      }
+    const r = await submitJson("/api/ebay-credentials", { method: "DELETE" });
+    if (!r.ok) setError(r.error);
+    else {
       setClientSecret("");
       refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
     }
+    setSaving(false);
   }
 
   return (
@@ -501,24 +483,13 @@ function NotificationsCard() {
   async function add() {
     setBusy(true);
     setError(null);
-    try {
-      const res = await fetch("/api/channels", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ webhookUrl }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error ?? `request failed (${res.status})`);
-        return;
-      }
-      setChannels((c) => [...c, data.channel]);
+    const r = await submitJson<{ channel: Channel }>("/api/channels", { method: "POST", body: { webhookUrl } });
+    if (!r.ok) setError(r.error);
+    else {
+      setChannels((c) => [...c, r.data.channel]);
       setWebhookUrl("");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
   }
 
   async function remove(c: Channel) {

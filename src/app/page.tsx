@@ -2,12 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Alert, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
+import { submitJson } from "@/lib/http";
 import { refreshPush } from "@/lib/push-client";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SearchesView } from "@/components/searches-view";
 import { AlertsView } from "@/components/alerts-view";
 import { StatusView } from "@/components/status-view";
 import { SearchFormDialog, emptyForm } from "@/components/search-form-dialog";
+import { StatusDot } from "@/components/status-dot";
 import { WhatsNewDialog } from "@/components/whatsnew-dialog";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 
@@ -133,24 +135,13 @@ export default function Home() {
   async function saveSnooze(next: SnoozeConfig) {
     setSnoozeSaving(true);
     setSnoozeError(null);
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(next),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setSnoozeError(data.error ?? `request failed (${res.status})`);
-        return;
-      }
-      setSnoozeState({ ...data.snooze, tz: data.snooze.tz ?? next.tz });
+    const r = await submitJson<{ snooze: SnoozeConfig }>("/api/settings", { method: "PUT", body: next });
+    if (!r.ok) setSnoozeError(r.error);
+    else {
+      setSnoozeState({ ...r.data.snooze, tz: r.data.snooze.tz ?? next.tz });
       refresh(); // reflect the new snooze state in the status tiles
-    } catch (e) {
-      setSnoozeError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSnoozeSaving(false);
     }
+    setSnoozeSaving(false);
   }
 
   async function togglePause(s: SearchStats) {
@@ -211,36 +202,29 @@ export default function Home() {
   async function submitSearch() {
     setSaving(true);
     setFormError(null);
-    try {
-      const res = await fetch(editId == null ? "/api/searches" : `/api/searches/${editId}`, {
-        method: editId == null ? "POST" : "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          q: form.q,
-          priceFloor: form.priceFloor || null,
-          priceCap: form.priceCap || null,
-          categoryId: form.categoryId || null,
-          conditions: form.condition || null,
-          excludeTerms: form.exclude || null,
-          binOnly: form.bin,
-          includeAuctions: form.auctions,
-          trackSold: form.trackSold,
-          intervalMin: form.interval,
-        }),
-      });
-      if (!res.ok) {
-        setFormError((await res.json()).error ?? `request failed (${res.status})`);
-        return;
-      }
+    const r = await submitJson(editId == null ? "/api/searches" : `/api/searches/${editId}`, {
+      method: editId == null ? "POST" : "PATCH",
+      body: {
+        q: form.q,
+        priceFloor: form.priceFloor || null,
+        priceCap: form.priceCap || null,
+        categoryId: form.categoryId || null,
+        conditions: form.condition || null,
+        excludeTerms: form.exclude || null,
+        binOnly: form.bin,
+        includeAuctions: form.auctions,
+        trackSold: form.trackSold,
+        intervalMin: form.interval,
+      },
+    });
+    if (!r.ok) setFormError(r.error);
+    else {
       setShowForm(false);
       setEditId(null);
       setForm(emptyForm);
       refresh();
-    } catch (e) {
-      setFormError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
     }
+    setSaving(false);
   }
 
   // alerts is already filtered server-side (see refresh); the sidebar badge shows the loaded count
@@ -273,14 +257,7 @@ export default function Home() {
         <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4 md:hidden">
           <SidebarTrigger className="-ml-1" />
           <span className="text-[15px] font-bold tracking-tight">ebae</span>
-          <span
-            className="size-1.5 rounded-full"
-            style={{
-              background: running ? "var(--eb-green)" : "var(--eb-amber)",
-              animation: running ? "ebPulse 2.4s ease-in-out infinite" : undefined,
-            }}
-            title={running ? "poller running" : "poller down"}
-          />
+          <StatusDot active={running} title={running ? "poller running" : "poller down"} />
         </header>
         {expired && (
           <div className="border-b bg-[color-mix(in_oklab,var(--eb-amber)_14%,transparent)] px-4 py-2 text-[12.5px] text-[var(--eb-amber)] md:px-[30px]">

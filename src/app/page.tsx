@@ -19,6 +19,10 @@ export default function Home() {
   const [alertFilter, setAlertFilter] = useState<"all" | number>("all");
   const [status, setStatus] = useState<StatusInfo | null>(null);
   const [expired, setExpired] = useState(false);
+  // True once a background refresh fails to reach the server, so the data on screen is last-known
+  // rather than current. Cleared the moment a round-trip completes. Distinct from `expired`, which
+  // is a reachable-but-401 auth signal.
+  const [stale, setStale] = useState(false);
   const [snooze, setSnoozeState] = useState<SnoozeConfig | null>(null);
   const [snoozeSaving, setSnoozeSaving] = useState(false);
   const [snoozeError, setSnoozeError] = useState<string | null>(null);
@@ -43,12 +47,14 @@ export default function Home() {
     const alertsUrl = alertFilter === "all" ? "/api/alerts" : `/api/alerts?searchId=${alertFilter}`;
     const held = alertEtag.current;
     const known = held?.url === alertsUrl ? held.tag : undefined;
+    let reached = false; // did this round-trip reach the server at all?
     try {
       const [sRes, aRes, stRes] = await Promise.all([
         fetch("/api/searches"),
         fetch(alertsUrl, { headers: known ? { "If-None-Match": known } : undefined }),
         fetch("/api/status"),
       ]);
+      reached = true;
       // In cloudflare mode the Access cookie normally expires at the edge and the redirect
       // never reaches us, so this is the fallback for the modes where it doesn't.
       setExpired([sRes, aRes, stRes].some((r) => r.status === 401));
@@ -73,8 +79,13 @@ export default function Home() {
       }
       if (stRes.ok) setStatus(await stRes.json());
     } catch {
-      // transient fetch failure (dev reload etc.) - keep showing last data
+      // couldn't reach the server (offline, dev reload, pod restart): keep showing the last data,
+      // and `reached` stays false so the banner below flags it as stale.
     }
+    // One derived write, after the round-trip: stale iff the server was unreachable this round.
+    // The next successful refresh clears it. Kept as a single computed value (not a happy-path
+    // setStale(false)) so it reads as syncing external state, not an unconditional reset.
+    setStale(!reached);
   }, [alertFilter]);
 
   useEffect(() => {
@@ -274,6 +285,11 @@ export default function Home() {
         {expired && (
           <div className="border-b bg-[color-mix(in_oklab,var(--eb-amber)_14%,transparent)] px-4 py-2 text-[12.5px] text-[var(--eb-amber)] md:px-[30px]">
             session expired — reload
+          </div>
+        )}
+        {stale && !expired && (
+          <div className="border-b bg-[color-mix(in_oklab,var(--eb-amber)_14%,transparent)] px-4 py-2 text-[12.5px] text-[var(--eb-amber)] md:px-[30px]">
+            connection lost — showing the last update, retrying…
           </div>
         )}
         {noCreds && view !== "status" && (

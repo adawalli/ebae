@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import {
+  RATE_LIMIT_DEFAULT_MS,
+  RateLimitError,
   browseFilters,
   checkItem,
   conditionExcluded,
@@ -8,6 +10,8 @@ import {
   mockCheckItem,
   mockMarket,
   mockSearch,
+  retryAfterMs,
+  searchNewlyListed,
   type EbayCreds,
 } from "./ebay";
 import { median } from "./poller";
@@ -241,6 +245,56 @@ test("checkItem: other failures throw", async () => {
   const restore = stubEbay(() => Response.json({ errors: [{ errorId: 2001 }] }, { status: 500 }));
   try {
     await expect(checkItem(creds(903), "v1|123|0")).rejects.toThrow(/item check failed/);
+  } finally {
+    restore();
+  }
+});
+
+// Retry-After is either delay-seconds or an HTTP-date (RFC 9110); anything else -> null so the
+// caller falls back to a default. The rate-limit signal is what lets the poll loop reschedule off
+// eBay's own hint instead of a blind, compounding backoff.
+test("retryAfterMs: parses delay-seconds and an HTTP-date, null when absent or junk", () => {
+  const res = (h: Record<string, string>) => new Response("", { headers: h });
+  expect(retryAfterMs(res({ "retry-after": "120" }))).toBe(120_000);
+  expect(retryAfterMs(res({}))).toBeNull();
+  expect(retryAfterMs(res({ "retry-after": "not-a-date" }))).toBeNull();
+  const at = Date.parse("Wed, 21 Oct 2026 07:28:00 GMT");
+  expect(retryAfterMs(res({ "retry-after": "Wed, 21 Oct 2026 07:28:00 GMT" }), at - 30_000)).toBe(30_000);
+});
+
+// A 429 on the search path must surface as a typed RateLimitError carrying the wait, so the loop
+// honors it rather than mistaking it for a generic outage and compounding its backoff.
+test("searchNewlyListed: a 429 with Retry-After throws RateLimitError with the parsed wait", async () => {
+  const restore = stubEbay(() =>
+    Response.json({ errors: [{ errorId: 70001 }] }, { status: 429, headers: { "retry-after": "90" } }),
+  );
+  try {
+    const err = await searchNewlyListed(creds(910), base).catch((e) => e);
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect(err.retryAfterMs).toBe(90_000);
+  } finally {
+    restore();
+  }
+});
+
+test("searchNewlyListed: a 429 without Retry-After falls back to the default wait", async () => {
+  const restore = stubEbay(() => Response.json({ errors: [{ errorId: 70001 }] }, { status: 429 }));
+  try {
+    const err = await searchNewlyListed(creds(911), base).catch((e) => e);
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect(err.retryAfterMs).toBe(RATE_LIMIT_DEFAULT_MS);
+  } finally {
+    restore();
+  }
+});
+
+// A non-429 search failure is still a plain Error (the loop backs off), not a rate-limit signal.
+test("searchNewlyListed: a 500 stays a generic error, not a RateLimitError", async () => {
+  const restore = stubEbay(() => Response.json({ errors: [{ errorId: 500 }] }, { status: 500 }));
+  try {
+    const err = await searchNewlyListed(creds(912), base).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(RateLimitError);
   } finally {
     restore();
   }

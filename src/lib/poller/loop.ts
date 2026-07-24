@@ -2,7 +2,7 @@ import { and, eq, inArray, notExists } from "drizzle-orm";
 import { authMode } from "@/lib/authmode";
 import { db } from "@/lib/db";
 import { notify } from "@/lib/discord";
-import { mockSearch, searchNewlyListed } from "@/lib/ebay";
+import { RateLimitError, mockSearch, searchNewlyListed } from "@/lib/ebay";
 import { notifyPush } from "@/lib/push";
 import { alerts, searches, seenItems, trackedItems } from "@/lib/schema";
 import type { Item, PriceContext } from "@/lib/types";
@@ -18,6 +18,27 @@ export const MAX_BACKOFF_MS = 30 * 60_000;
 // How long a quota-exhausted search idles before re-checking. healthWindowMs treats this as
 // the floor of the freshness window, so raising it here widens that window too.
 export const QUOTA_SKIP_MS = 15 * 60_000;
+
+// The reschedule delay after a failed poll. A RateLimitError carries eBay's own wait hint: honor
+// it, but never poll faster than the user's interval and never park so long the /api/health
+// heartbeat goes stale. The freshness window is at least intervalMs*GOV_MAX_FACTOR (see
+// healthWindowMs), so the ceiling is max(MAX_BACKOFF_MS, intervalMs) - a flat MAX_BACKOFF_MS would
+// drop a >30min interval below its own configured cadence, and it isn't needed there anyway (the
+// window is already hours wide for large intervals). Any other error uses exponential backoff,
+// doubling from one interval up to MAX_BACKOFF_MS. Pure + exported so the branch is unit-testable.
+export function retryDelayMs(
+  err: unknown,
+  intervalMin: number,
+  prevBackoffMs: number,
+): { delayMs: number; backoffMs: number } {
+  const intervalMs = intervalMin * 60_000;
+  if (err instanceof RateLimitError) {
+    const ceiling = Math.max(MAX_BACKOFF_MS, intervalMs);
+    return { delayMs: Math.min(Math.max(err.retryAfterMs, intervalMs), ceiling), backoffMs: 0 };
+  }
+  const backoffMs = Math.min(prevBackoffMs ? prevBackoffMs * 2 : intervalMs, MAX_BACKOFF_MS);
+  return { delayMs: backoffMs, backoffMs };
+}
 
 export function schedule(e: Entry, delayMs: number) {
   if (state().entries.get(e.s.id) !== e) return; // entry deleted/replaced while a tick was in flight
@@ -342,8 +363,9 @@ export async function pollOnce(e: Entry) {
   } catch (err) {
     plog.error({ err, searchId: e.s.id, q: e.s.q }, "poll failed"); // stack goes to stdout; recordError keeps only the message for the UI
     recordError(u.id, e.s.q, message(err));
-    e.backoffMs = Math.min(e.backoffMs ? e.backoffMs * 2 : e.s.intervalMin * 60_000, MAX_BACKOFF_MS);
-    schedule(e, e.backoffMs);
+    const { delayMs, backoffMs } = retryDelayMs(err, e.s.intervalMin, e.backoffMs);
+    e.backoffMs = backoffMs;
+    schedule(e, delayMs);
   }
 }
 

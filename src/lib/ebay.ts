@@ -53,6 +53,31 @@ function hostFor(env: EbayCreds["env"]): string {
   return env === "sandbox" ? "https://api.sandbox.ebay.com" : "https://api.ebay.com";
 }
 
+// eBay told us to slow down (HTTP 429). Carries how long to wait so the poll loop can reschedule
+// off the server's own hint instead of a blind, compounding backoff (see loop.ts retryDelayMs).
+export class RateLimitError extends Error {
+  constructor(readonly retryAfterMs: number) {
+    super("eBay rate limited");
+    this.name = "RateLimitError";
+  }
+}
+
+// Wait to use when a 429 carries no Retry-After. eBay's Browse quota is a daily budget that
+// resets at midnight Pacific, so a fixed re-check gap (not an ever-growing backoff) is the right
+// shape; the loop caps the honored wait at MAX_BACKOFF_MS so the heartbeat stays fresh regardless.
+export const RATE_LIMIT_DEFAULT_MS = 15 * 60_000;
+
+// Retry-After is either delay-seconds or an HTTP-date (RFC 9110). Returns null when the header is
+// absent or unparseable, so the caller falls back to RATE_LIMIT_DEFAULT_MS. Pure + exported.
+export function retryAfterMs(res: Response, now = Date.now()): number | null {
+  const h = res.headers.get("retry-after");
+  if (!h) return null;
+  const secs = Number(h);
+  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+  const at = Date.parse(h);
+  return Number.isFinite(at) ? Math.max(0, at - now) : null;
+}
+
 type Token = { value: string; expiresAt: number };
 const g = globalThis as typeof globalThis & { __ebaeTokens?: Map<number, Token>; __ebaeMock?: MockState };
 
@@ -147,7 +172,13 @@ async function browseSearch(creds: EbayCreds, s: Search, limit: number): Promise
   const res = await fetch(`${hostFor(creds.env)}/buy/browse/v1/item_summary/search?${params}`, {
     headers: { Authorization: `Bearer ${await token(creds)}`, "X-EBAY-C-MARKETPLACE-ID": creds.marketplace },
   });
-  if (!res.ok) throw new Error(`eBay search failed (${s.q}): ${res.status} ${await res.text()}`);
+  if (!res.ok) {
+    // 429 is a rate-limit signal, not an outage: surface it typed so the loop honors eBay's wait
+    // instead of compounding its backoff. Shared by search and the market sample (both go through
+    // here); the market sample's own try/catch just logs it, which is the right no-op there.
+    if (res.status === 429) throw new RateLimitError(retryAfterMs(res) ?? RATE_LIMIT_DEFAULT_MS);
+    throw new Error(`eBay search failed (${s.q}): ${res.status} ${await res.text()}`);
+  }
   const data = (await res.json()) as { itemSummaries?: EbaySummary[] };
   return (data.itemSummaries ?? []).map(normalize);
 }

@@ -5,7 +5,11 @@ import { PUSH_HOSTS, PUSH_HOST_SUFFIX } from "./push-hosts";
 // Built from the same allowlist validate.ts enforces, so a new push provider is redacted the
 // moment it's accepted. Exact hosts alternate with the WNS suffix's wildcard subdomain.
 const esc = (s: string) => s.replace(/[.]/g, "\\.");
-const PUSH_HOST_ALT = [...PUSH_HOSTS.map(esc), `[a-z0-9-]+${esc(PUSH_HOST_SUFFIX)}`].join("|");
+// The suffix arm spans dots so it matches every host validate.ts accepts, which tests the
+// suffix with endsWith. A single-label class would let sub.wns2-par02p.notify.windows.com
+// subscribe but survive redaction. `/` stays out of the class, so a path segment can't forge
+// the host: https://evil.com/x.notify.windows.com/y still doesn't match.
+const PUSH_HOST_ALT = [...PUSH_HOSTS.map(esc), `[a-z0-9.-]+${esc(PUSH_HOST_SUFFIX)}`].join("|");
 
 const LEVEL = process.env.LOG_LEVEL ?? "info";
 const PRETTY = (process.env.LOG_FORMAT ?? (process.stdout.isTTY ? "pretty" : "json")) === "pretty";

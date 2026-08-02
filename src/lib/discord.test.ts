@@ -8,13 +8,14 @@ const item: Item = mkItem({ condition: "New", conditionId: "1000" });
 const search = { id: 1, q: "Sonos Era 300" } as Search;
 
 // Swap fetch for a scripted handler and count the calls. Restores on the returned cleanup.
-function stubFetch(handler: (url: string, call: number) => Response | Promise<Response>): {
+function stubFetch(handler: (url: string, call: number, init?: RequestInit) => Response | Promise<Response>): {
   restore: () => void;
   calls: () => number;
 } {
   const real = globalThis.fetch;
   let n = 0;
-  globalThis.fetch = (async (input: RequestInfo | URL) => handler(String(input), n++)) as typeof fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+    handler(String(input), n++, init)) as typeof fetch;
   return {
     restore: () => {
       globalThis.fetch = real;
@@ -93,6 +94,22 @@ test("notify: a 429 then success reads the retry hint without crashing and deliv
     timers();
     s.restore();
   }
+});
+
+// notify() is awaited inside the poll loop, so a webhook socket that never answers would leave
+// the search's `running` flag set and it would never reschedule (loop.ts tick).
+test("notify: every webhook POST carries an abort signal", async () => {
+  let init: RequestInit | undefined;
+  const s = stubFetch((_url, _call, o) => {
+    init = o;
+    return new Response("", { status: 204 });
+  });
+  try {
+    await notify(item, search, ["https://discord.com/api/webhooks/a"]);
+  } finally {
+    s.restore();
+  }
+  expect(init?.signal).toBeInstanceOf(AbortSignal);
 });
 
 // A thrown fetch error can echo the webhook URL (its secret token); notify must never surface it.

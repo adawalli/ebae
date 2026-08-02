@@ -49,6 +49,11 @@ export function conditionExcluded(item: Item, conditions: string | null): boolea
   return false; // null = any condition, nothing dropped
 }
 
+// Without a deadline, one socket that never answers wedges the search permanently: tick() sets
+// e.running and only reschedules from its catch/finally (loop.ts), so a fetch that never settles
+// means no new timer, lastScheduledAt stops advancing, and /api/health 503s until a restart.
+const EBAY_TIMEOUT_MS = 30_000;
+
 function hostFor(env: EbayCreds["env"]): string {
   return env === "sandbox" ? "https://api.sandbox.ebay.com" : "https://api.ebay.com";
 }
@@ -109,6 +114,7 @@ export async function requestToken(creds: EbayCreds): Promise<Token> {
     },
     // the scope is an eBay-wide identifier, not a host - it stays api.ebay.com in sandbox too
     body: "grant_type=client_credentials&scope=" + encodeURIComponent("https://api.ebay.com/oauth/api_scope"),
+    signal: AbortSignal.timeout(EBAY_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`eBay token request failed: ${res.status} ${await res.text()}`);
   const data = (await res.json()) as { access_token: string; expires_in: number };
@@ -171,8 +177,14 @@ async function browseSearch(creds: EbayCreds, s: Search, limit: number): Promise
   elog.debug({ q: s.q, filters: filters.join(","), marketplace: creds.marketplace, limit }, "eBay request");
   const res = await fetch(`${hostFor(creds.env)}/buy/browse/v1/item_summary/search?${params}`, {
     headers: { Authorization: `Bearer ${await token(creds)}`, "X-EBAY-C-MARKETPLACE-ID": creds.marketplace },
+    signal: AbortSignal.timeout(EBAY_TIMEOUT_MS),
   });
   if (!res.ok) {
+    // 401 = the cached token no longer matches the user's keys (rotated or revoked). Drop it so
+    // the next poll re-mints; otherwise every poll 401s for the token's remaining ~2h. No inline
+    // retry: the loop's backoff re-polls soon enough, and a retry here would hammer eBay's token
+    // endpoint whenever the stored credentials are genuinely dead.
+    if (res.status === 401) invalidateToken(creds.userId);
     // 429 is a rate-limit signal, not an outage: surface it typed so the loop honors eBay's wait
     // instead of compounding its backoff. Shared by search and the market sample (both go through
     // here); the market sample's own try/catch just logs it, which is the right no-op there.
@@ -258,9 +270,14 @@ type EbayItemDetail = {
 export async function checkItem(creds: EbayCreds, itemId: string): Promise<CheckResult> {
   const res = await fetch(
     `${hostFor(creds.env)}/buy/browse/v1/item/${encodeURIComponent(itemId)}?fieldgroups=COMPACT`,
-    { headers: { Authorization: `Bearer ${await token(creds)}`, "X-EBAY-C-MARKETPLACE-ID": creds.marketplace } },
+    {
+      headers: { Authorization: `Bearer ${await token(creds)}`, "X-EBAY-C-MARKETPLACE-ID": creds.marketplace },
+      signal: AbortSignal.timeout(EBAY_TIMEOUT_MS),
+    },
   );
   if (!res.ok) {
+    // same as browseSearch: a 401 outlives the keys it was minted from unless we drop it here.
+    if (res.status === 401) invalidateToken(creds.userId);
     const body = await res.text();
     let errorId: number | null = null;
     try {

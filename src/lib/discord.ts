@@ -55,6 +55,11 @@ function embed(item: Item, search: Search, ctx?: PriceContext) {
 // A rate-limited webhook must not stall the poll loop, so a 429's wait is honored but capped.
 const DISCORD_MAX_RETRY_MS = 10_000;
 
+// Same wedge the eBay deadline guards, reached from the alert side: notify() is awaited inside
+// pollOnce, so a webhook socket that never answers leaves e.running set and the search never
+// reschedules (loop.ts tick). Smaller than the eBay budget because each webhook gets 3 attempts.
+const DISCORD_TIMEOUT_MS = 15_000;
+
 // Discord reports a 429 wait as retry_after (fractional seconds) in the JSON body, with a
 // Retry-After header (integer seconds) as the backup. Returns the wait in ms, capped, or 0 when
 // neither is usable - notify() then keeps its own default backoff. Pure + exported for tests.
@@ -92,7 +97,12 @@ export async function notify(
       dlog.debug({ webhook: i, attempt }, "attempt");
       let waitMs = attempt * 2000; // default backoff; a 429 overrides it with the server's own hint
       try {
-        const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+          signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS),
+        });
         const text = await res.text();
         if (res.ok) {
           err = null;
@@ -107,7 +117,9 @@ export async function notify(
         err = `Discord webhook send failed (${e instanceof Error ? e.name : "error"})`;
       }
       if (err && attempt < 3) {
-        dlog.warn({ webhook: i, attempt, err }, "webhook retry");
+        // `reason`, not `err`: err is already a redacted string, and pino's err serializer reads
+        // .name/.message off it, which on a string yields a blank line with no reason at all.
+        dlog.warn({ webhook: i, attempt, reason: err }, "webhook retry");
         await new Promise((r) => setTimeout(r, waitMs));
       }
     }

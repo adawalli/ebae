@@ -10,8 +10,10 @@ import {
   mockCheckItem,
   mockMarket,
   mockSearch,
+  requestToken,
   retryAfterMs,
   searchNewlyListed,
+  tokenExpiresAt,
   type EbayCreds,
 } from "./ebay";
 import { median } from "./poller";
@@ -173,12 +175,12 @@ test("mockMarket: the condition preset filters the sample by ID", () => {
 // the request shape and the three response classes are pinned here. A wrong fieldgroup or an
 // unescaped item id (the stored ids are "v1|123|0" - the pipes MUST be percent-encoded) only
 // shows up as a 400 against the live API.
-function stubEbay(handler: (url: string) => Response): () => void {
+function stubEbay(handler: (url: string, init?: RequestInit) => Response): () => void {
   const real = globalThis.fetch;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("/identity/v1/oauth2/token")) return Response.json({ access_token: "tok", expires_in: 7200 });
-    return handler(url);
+    return handler(url, init);
   }) as typeof fetch;
   return () => {
     globalThis.fetch = real;
@@ -283,6 +285,96 @@ test("searchNewlyListed: a 500 stays a generic error, not a RateLimitError", asy
     const err = await searchNewlyListed(creds(912), base).catch((e) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(RateLimitError);
+  } finally {
+    restore();
+  }
+});
+
+// Every outbound call needs a deadline: a socket that never answers leaves the poll entry's
+// `running` flag set and the search never reschedules (loop.ts tick), so /api/health 503s until
+// the process restarts. Asserted per call site because each fetch carries its own signal.
+test("every eBay fetch carries an abort signal", async () => {
+  let searchInit: RequestInit | undefined;
+  let checkInit: RequestInit | undefined;
+  const restore = stubEbay((url, init) => {
+    if (url.includes("item_summary/search")) searchInit = init;
+    else checkInit = init;
+    return Response.json({});
+  });
+  try {
+    await searchNewlyListed(creds(920), base);
+    await checkItem(creds(920), "v1|123|0");
+  } finally {
+    restore();
+  }
+  expect(searchInit?.signal).toBeInstanceOf(AbortSignal);
+  expect(checkInit?.signal).toBeInstanceOf(AbortSignal);
+});
+
+// The token POST is stubbed out of stubEbay, so it gets its own check - a hang here wedges the
+// search just as thoroughly as one on the search call.
+test("requestToken: the token POST carries an abort signal", async () => {
+  const real = globalThis.fetch;
+  let init: RequestInit | undefined;
+  globalThis.fetch = (async (_input: RequestInfo | URL, o?: RequestInit) => {
+    init = o;
+    return Response.json({ access_token: "tok", expires_in: 7200 });
+  }) as typeof fetch;
+  try {
+    await requestToken(creds(921));
+  } finally {
+    globalThis.fetch = real;
+  }
+  expect(init?.signal).toBeInstanceOf(AbortSignal);
+});
+
+// A user who rotates or revokes their eBay keys would otherwise 401 on every poll for the
+// cached token's remaining ~2h, since token() only re-mints on its own expiry.
+test("searchNewlyListed: a 401 clears the cached token so the next poll re-mints", async () => {
+  let status = 200;
+  const restore = stubEbay(() =>
+    status === 200 ? Response.json({ itemSummaries: [] }) : Response.json({ errors: [{ errorId: 1001 }] }, { status }),
+  );
+  try {
+    await searchNewlyListed(creds(930), base);
+    expect(tokenExpiresAt(930)).not.toBeNull(); // minted and cached by the first poll
+    status = 401;
+    await expect(searchNewlyListed(creds(930), base)).rejects.toThrow();
+    expect(tokenExpiresAt(930)).toBeNull();
+  } finally {
+    restore();
+  }
+});
+
+test("checkItem: a 401 clears the cached token", async () => {
+  let status = 200;
+  const restore = stubEbay(() =>
+    status === 200 ? Response.json({}) : Response.json({ errors: [{ errorId: 1001 }] }, { status }),
+  );
+  try {
+    await checkItem(creds(931), "v1|123|0");
+    expect(tokenExpiresAt(931)).not.toBeNull();
+    status = 401;
+    await expect(checkItem(creds(931), "v1|123|0")).rejects.toThrow(/item check failed/);
+    expect(tokenExpiresAt(931)).toBeNull();
+  } finally {
+    restore();
+  }
+});
+
+// Only a 401 invalidates. A 429 says "slow down", not "your keys are wrong" - dropping the token
+// there would re-mint on every rate-limited poll and spend quota on the token endpoint.
+test("searchNewlyListed: a 429 keeps the cached token", async () => {
+  let status = 200;
+  const restore = stubEbay(() =>
+    status === 200 ? Response.json({ itemSummaries: [] }) : Response.json({ errors: [{ errorId: 70001 }] }, { status }),
+  );
+  try {
+    await searchNewlyListed(creds(932), base);
+    const before = tokenExpiresAt(932);
+    status = 429;
+    await expect(searchNewlyListed(creds(932), base)).rejects.toBeInstanceOf(RateLimitError);
+    expect(tokenExpiresAt(932)).toBe(before);
   } finally {
     restore();
   }

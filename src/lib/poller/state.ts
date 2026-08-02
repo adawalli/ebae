@@ -104,7 +104,12 @@ type State = {
   // scheduler stays one flat set of timers.
   entries: Map<number, Entry>;
   users: Map<number, UserCtx>;
-  errors: PollError[];
+  // Per-owner ring buffers, not one global list: a single user with a dead webhook would
+  // otherwise evict everyone else's diagnostics, and the Status page would show nothing while
+  // polls were visibly failing. The null key holds ownerless failures (boot, cache refresh),
+  // which every user sees. Needs no eviction policy: the key set is bounded by the users table
+  // plus that one null bucket.
+  errors: Map<number | null, PollError[]>;
   lastScheduledAt: number | null; // heartbeat: last time a live poll timer was set, powers /api/health
   // Endpoints a push service has told us are gone. reapPush deletes the row, but the
   // browser keeps handing the same dead endpoint back - iOS expires them with no event and
@@ -130,7 +135,7 @@ export function state(): State {
     bootedAt: null,
     entries: new Map(),
     users: new Map(),
-    errors: [],
+    errors: new Map(),
     lastScheduledAt: null,
     stalePush: new Set(),
     alertsRev: new Map(),
@@ -234,6 +239,10 @@ export function message(e: unknown) {
   return redact(e instanceof Error ? e.message : String(e));
 }
 
+// Comfortably above the 20 the Status page shows, so a burst on one search still leaves the
+// slower failures behind it visible.
+const MAX_ERRORS_PER_USER = 50;
+
 // Single chokepoint for poll-loop failures: keeps the Status-page ring buffer
 // and stdout in sync. level defaults to warn (transient/self-healing); pass
 // "error" for terminal failures (e.g. a webhook dead after all retries). userId scopes
@@ -246,8 +255,10 @@ export function recordError(
   level: "warn" | "error" = "warn",
 ) {
   const st = state();
-  st.errors.push({ time: new Date().toISOString(), searchQ, message: msg, userId });
-  if (st.errors.length > 100) st.errors.shift();
+  let list = st.errors.get(userId);
+  if (!list) st.errors.set(userId, (list = []));
+  list.push({ time: new Date().toISOString(), searchQ, message: msg, userId });
+  if (list.length > MAX_ERRORS_PER_USER) list.shift();
   plog[level]({ userId, searchQ }, msg);
 }
 

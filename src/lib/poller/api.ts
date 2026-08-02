@@ -357,6 +357,13 @@ export function status(userId: number): StatusInfo {
   // secret never leaves the server). env/marketplace come off the user rather than their keys:
   // they outlive a Remove, and in mock mode there are no keys to read them from.
   const marketplace = u?.marketplace ?? "EBAY_US";
+  // Two buckets now (see State.errors): this user's, plus the ownerless ones everyone sees.
+  // Each is reversed before the merge rather than after, so a burst that shares a millisecond
+  // (several failures inside one tick) still reads newest-first the way one reversed list did.
+  // ISO-8601 sorts lexicographically, and the sort is stable, so equal stamps keep that order.
+  const errors = [...[...(st.errors.get(userId) ?? [])].reverse(), ...[...(st.errors.get(null) ?? [])].reverse()].sort(
+    (a, b) => (a.time < b.time ? 1 : a.time > b.time ? -1 : 0),
+  );
   return {
     ready: st.ready,
     bootError: st.bootError,
@@ -405,10 +412,7 @@ export function status(userId: number): StatusInfo {
       };
     })(),
     snooze: { active: snoozing(sn), window: snoozeWindow(sn), dailyMinutes: snoozeMinutes(sn) },
-    errors: [...st.errors]
-      .filter((e) => e.userId === userId || e.userId == null)
-      .reverse()
-      .slice(0, 20),
+    errors: errors.slice(0, 20),
     user: { email: u?.email ?? "" },
     version: process.env.APP_VERSION || pkg.version,
   };
@@ -429,7 +433,11 @@ export function healthWindowMs(intervalsMin: number[]): number {
 // schedule(), so intentional idle still reads healthy.
 export function health(): { ok: boolean; reason: string | null } {
   const st = state();
-  if (!st.ready) return { ok: false, reason: st.bootError ?? "booting" };
+  // Generic on purpose: /api/health is the one unauthenticated route, and bootError carries raw
+  // Postgres and migration text. redact() does run over it (boot.ts sets it via message()), but
+  // it only scrubs known secret shapes - a migration error naming the host, user, and database
+  // outside a postgres:// URI survives it. The full string stays on /api/status, behind requireUser.
+  if (!st.ready) return { ok: false, reason: st.bootError ? "boot failed" : "booting" };
   const enabled = [...st.entries.values()].filter((e) => e.s.enabled);
   if (!enabled.length) return { ok: true, reason: null };
   const window = healthWindowMs(enabled.map((e) => e.s.intervalMin));

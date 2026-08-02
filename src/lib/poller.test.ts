@@ -18,10 +18,12 @@ import {
   median,
   mergeCalls,
   snoozeMinutes,
+  status,
   counterDayFracAt,
   surplusToday,
   usedToday,
 } from "./poller";
+import { recordError } from "./poller/state";
 import { dealField } from "./discord";
 import { hhmmToMin, parseSearchBody, parseSnoozeBody } from "./validate";
 import { mkItem as baseItem } from "@/__tests__/helpers/fixtures";
@@ -508,4 +510,22 @@ test("parseSnoozeBody: rejects bad times, equal window, bad tz", () => {
   expect(typeof parseSnoozeBody({ start: "nope", end: "07:00" })).toBe("string");
   expect(typeof parseSnoozeBody({ start: "07:00", end: "07:00" })).toBe("string"); // empty window
   expect(typeof parseSnoozeBody({ start: "01:00", end: "07:00", tz: "Mars/Phobos" })).toBe("string");
+});
+
+// The error buffer is per-owner: one noisy user must not evict everyone else's diagnostics,
+// which a single global list did the moment two accounts shared a process.
+test("recordError buffers per user, and ownerless entries reach everyone", () => {
+  recordError(1, "leica m6", "user 1 only");
+  for (let i = 0; i < 60; i++) recordError(2, "nikon f3", `user 2 #${i}`);
+  recordError(null, null, "boot failed, retrying");
+
+  const one = status(1).errors.map((e) => e.message);
+  expect(one).toContain("user 1 only"); // survived user 2's flood
+  expect(one).toContain("boot failed, retrying");
+  expect(one.some((m) => m.startsWith("user 2"))).toBe(false);
+
+  // Newest first, and user 2's own 50-deep buffer fills the 20 the page shows.
+  const two = status(2).errors.map((e) => e.message);
+  expect(two[0]).toBe("user 2 #59");
+  expect(two).not.toContain("user 2 #39");
 });

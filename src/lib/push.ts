@@ -98,6 +98,10 @@ export async function notifyPush(
         vapidDetails: { subject: SUBJECT, publicKey: keys.publicKey, privateKey: keys.privateKey },
         TTL: TTL_SECONDS,
         urgency: "high", // beating other buyers to the listing is the entire point
+        // node's https has no default socket timeout, and this call is awaited inside the poll
+        // tick: a push service that accepts the connection then never answers would leave
+        // e.running set with no timer rescheduled, wedging the search until a restart.
+        timeout: 15_000,
       });
       anyDelivered = true;
       plog.debug({ sub: i }, "delivered");

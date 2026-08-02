@@ -22,10 +22,10 @@ import {
   type SearchInput,
   type UserCtx,
 } from "@/lib/poller";
-import type { Item, PollError } from "@/lib/types";
+import type { Item } from "@/lib/types";
 
 // state() is module-private, so tests reach the same singleton the poller does.
-type Cached = { ready: boolean; entries: Map<number, Entry>; users: Map<number, UserCtx>; errors: PollError[] };
+type Cached = { ready: boolean; entries: Map<number, Entry>; users: Map<number, UserCtx> };
 const g = globalThis as typeof globalThis & {
   __ebaeState: Cached;
   __ebaeMock: { pools: Map<number, Item[]> };
@@ -161,7 +161,7 @@ test("an exhausted daily budget spends nothing and records the reason", async ()
   await pollOnce(e);
 
   expect(u.calls.used).toBe(ceiling);
-  expect(g.__ebaeState.errors.some((x) => x.message.includes("daily API budget exhausted"))).toBe(true);
+  expect(status(userId).errors.some((x) => x.message.includes("daily API budget exhausted"))).toBe(true);
 });
 
 test("a failing poll backs off by doubling, capped at 30 minutes", async () => {

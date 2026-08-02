@@ -34,6 +34,10 @@ export default function Home() {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  // Pause/delete/clear fire from rows and toolbars that have no error slot of their own, so a
+  // failure surfaces up here beside the other banners. Without it the row just snaps back on the
+  // next 10s refresh and the click reads as if it never registered.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // The ETag of the alerts response currently on screen, with the URL it came from.
   // /api/alerts is the only polled route that reads the DB, so a 304 here is what lets the
@@ -144,19 +148,23 @@ export default function Home() {
     setSnoozeSaving(false);
   }
 
+  // refresh() runs either way: on failure it's what pulls the row back to what the server
+  // actually holds, instead of leaving the optimistic-looking UI up beside the error.
   async function togglePause(s: SearchStats) {
-    await fetch(`/api/searches/${s.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: !s.enabled }),
-    });
+    setActionError(null);
+    const r = await submitJson(`/api/searches/${s.id}`, { method: "PATCH", body: { enabled: !s.enabled } });
+    if (!r.ok) setActionError(r.error);
     refresh();
   }
 
   async function removeSearch(s: SearchStats) {
     if (!confirm(`Delete saved search "${s.q}"?`)) return;
-    await fetch(`/api/searches/${s.id}`, { method: "DELETE" });
-    if (alertFilter === s.id) setAlertFilter("all"); // its option is gone; don't strand the filter
+    setActionError(null);
+    const r = await submitJson(`/api/searches/${s.id}`, { method: "DELETE" });
+    if (!r.ok) setActionError(r.error);
+    // its option is gone; don't strand the filter. Only on success - a failed delete leaves the
+    // search (and its option) in place.
+    else if (alertFilter === s.id) setAlertFilter("all");
     refresh();
   }
 
@@ -168,7 +176,9 @@ export default function Home() {
     // clears the display log only — won't re-alert on those listings (seen_items is kept)
     if (!confirm(`Clear ${scope}? This only clears the history shown here.`)) return;
     const url = alertFilter === "all" ? "/api/alerts" : `/api/alerts?searchId=${alertFilter}`;
-    await fetch(url, { method: "DELETE" });
+    setActionError(null);
+    const r = await submitJson(url, { method: "DELETE" });
+    if (!r.ok) setActionError(r.error);
     refresh();
   }
 
@@ -267,6 +277,11 @@ export default function Home() {
         {stale && !expired && (
           <div className="border-b bg-[color-mix(in_oklab,var(--eb-amber)_14%,transparent)] px-4 py-2 text-[12.5px] text-[var(--eb-amber)] md:px-[30px]">
             connection lost — showing the last update, retrying…
+          </div>
+        )}
+        {actionError && (
+          <div className="border-b bg-[color-mix(in_oklab,var(--eb-amber)_14%,transparent)] px-4 py-2 font-mono text-[12.5px] text-[var(--eb-amber)] [overflow-wrap:anywhere] md:px-[30px]">
+            {actionError}
           </div>
         )}
         {noCreds && view !== "status" && (

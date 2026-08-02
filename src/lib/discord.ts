@@ -103,7 +103,10 @@ export async function notify(
           body,
           signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS),
         });
-        const text = await res.text();
+        // Status before body: the deadline above covers the body read too, and a POST Discord
+        // already accepted must not be retried because its (empty, 204) body stalled - that
+        // reposts the same alert. Only the 429 path needs the text, and retrying there is
+        // what we'd do anyway.
         if (res.ok) {
           err = null;
           anyDelivered = true;
@@ -111,7 +114,7 @@ export async function notify(
           break;
         }
         err = `Discord webhook ${res.status}`;
-        if (res.status === 429) waitMs = discordRetryMs(res, text) || waitMs;
+        if (res.status === 429) waitMs = discordRetryMs(res, await res.text()) || waitMs;
       } catch (e) {
         // e.name only: fetch error messages can echo the webhook URL (its secret token)
         err = `Discord webhook send failed (${e instanceof Error ? e.name : "error"})`;

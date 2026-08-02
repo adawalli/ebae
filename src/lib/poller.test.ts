@@ -524,8 +524,10 @@ test("recordError buffers per user, and ownerless entries reach everyone", () =>
   expect(one).toContain("boot failed, retrying");
   expect(one.some((m) => m.startsWith("user 2"))).toBe(false);
 
-  // Newest first, and user 2's own 50-deep buffer fills the 20 the page shows.
+  // Newest first, and user 2's own 50-deep buffer fills the 20 the page shows. Asserted on
+  // user 2's own subset, not index 0: the ownerless entry is recorded last, so it takes the
+  // top slot whenever the clock ticks a millisecond mid-loop.
   const two = status(2).errors.map((e) => e.message);
-  expect(two[0]).toBe("user 2 #59");
+  expect(two.filter((m) => m.startsWith("user 2"))[0]).toBe("user 2 #59");
   expect(two).not.toContain("user 2 #39");
 });

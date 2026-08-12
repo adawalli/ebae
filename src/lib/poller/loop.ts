@@ -5,7 +5,7 @@ import { notify } from "@/lib/discord";
 import { RateLimitError, mockSearch, searchNewlyListed } from "@/lib/ebay";
 import { notifyPush } from "@/lib/push";
 import { alerts, searches, seenItems, trackedItems } from "@/lib/schema";
-import type { Item, PriceContext } from "@/lib/types";
+import type { Item, PriceContext, PushSub } from "@/lib/types";
 import { NOTHING_PUSHED, NOTHING_SENT, reapPush } from "./delivery";
 import { maybeSampleMarket, priceContext, suppressed } from "./market";
 import { projectedCalls } from "./projection";
@@ -107,6 +107,108 @@ function startFollowing(item: Item, follow: TrackedItem[]) {
   if (t) follow.push(t);
 }
 
+// Deal-context baseline. Prefer the daily market sample (reflects the whole market,
+// even for a band-limited search); only when there's no baseline fall back to the median of
+// this search's recent priced alerts, computed from before this batch lands (so the new items
+// don't skew their own "typical"). The recent-alert read is skipped whenever a market baseline
+// exists (dealField's market branch ignores its count) and whenever the poll is empty, so
+// steady-state polls stay DB-free. Realized prices beat asking prices when there are enough of
+// them: "sold ~$X" is what the thing is actually worth, where a market median is only what
+// sellers are asking.
+async function buildPriceContext(
+  database: ReturnType<typeof db>,
+  e: Entry,
+  fresh: readonly Item[],
+): Promise<PriceContext> {
+  const sold = e.s.trackSold ? soldContext(e.soldPrices, Date.now()) : null;
+  const market = e.s.marketMedian;
+  if (sold) return { ...sold, basis: "sold" };
+  if (market != null && market > 0) return { typical: market, count: 0, basis: "market" };
+  return { ...(fresh.length ? await priceContext(database, e.s.id) : { typical: null, count: 0 }), basis: "recent" };
+}
+
+// Backlog drain: a listing already alerted on (as a BIN, or before sold tracking widened this
+// poll to auctions) now running as an auction. It's in the seen set, so `fresh` skips it, but
+// its winning bid is what the sold median wants. Gated on an alert row with no tracked row yet:
+// the silent seed backlog and suppressed listings are never alerted (so "seeding follows
+// nothing" holds), and a follow that's already active or resolved has a row (so this drains
+// once, not every poll). The datable filter mirrors newTracked - an auction with no finite end
+// is never followed. Returns the listings to start following, and whether a connection opened
+// (so the piggyback flush below persists any prices the free-refresh loop dirtied this tick).
+async function drainAuctionBacklog(
+  database: ReturnType<typeof db>,
+  e: Entry,
+  items: readonly Item[],
+): Promise<{ follow: TrackedItem[]; wrote: boolean }> {
+  const follow: TrackedItem[] = [];
+  const candidates = items.filter(
+    (i) =>
+      i.buyingOption === "AUCTION" &&
+      Number.isFinite(Date.parse(i.itemEndDate ?? "")) &&
+      e.seen.has(i.itemId) &&
+      !e.tracked.has(i.itemId) &&
+      !suppressed(i, e.s),
+  );
+  if (!candidates.length) return { follow, wrote: false };
+  const rows = await database
+    .select({ itemId: alerts.itemId })
+    .from(alerts)
+    .where(
+      and(
+        eq(alerts.searchId, e.s.id),
+        inArray(
+          alerts.itemId,
+          candidates.map((i) => i.itemId),
+        ),
+        notExists(
+          database
+            .select({ n: trackedItems.itemId })
+            .from(trackedItems)
+            .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, alerts.itemId))),
+        ),
+      ),
+    );
+  const followable = new Set(rows.map((r) => r.itemId));
+  for (const item of candidates) if (followable.has(item.itemId)) startFollowing(item, follow);
+  return { follow, wrote: true };
+}
+
+// Fan one alert out to its owner's channels and push subscriptions, reap any dead endpoints, and
+// stamp the row delivered once any target accepts it. `subs` is the pinned, narrowing copy the
+// caller keeps across items; returns it filtered by whatever this call reaped. "Delivered" =
+// reached at least one target; on total failure the row stays deliveredAt=null and boot
+// redelivery retries it (never re-posting to a target that already has it).
+async function notifyItem(
+  database: ReturnType<typeof db>,
+  item: Item,
+  e: Entry,
+  u: UserCtx,
+  webhooks: string[],
+  subs: PushSub[],
+  ctx: PriceContext,
+  alertId: number,
+): Promise<PushSub[]> {
+  const [d, p] = await Promise.all([
+    webhooks.length ? notify(item, e.s, webhooks, ctx) : NOTHING_SENT,
+    subs.length ? notifyPush(item, e.s, subs) : NOTHING_PUSHED,
+  ]);
+  // Recorded separately, never `d.error ?? p.error`: this list is the only place a self-hoster
+  // sees an outage, so collapsing the two would hide a dead webhook behind a push failure (and
+  // vice versa).
+  if (d.error) recordError(u.id, e.s.q, d.error, "error");
+  if (p.error) recordError(u.id, e.s.q, p.error, "error");
+  let next: PushSub[] = subs;
+  if (p.dead.length) {
+    await reapPush(database, u, p.dead);
+    const gone = new Set(p.dead);
+    next = subs.filter((s) => !gone.has(s.endpoint)); // keep the pinned copy in step
+  }
+  if (d.anyDelivered || p.anyDelivered) {
+    await database.update(alerts).set({ deliveredAt: new Date() }).where(eq(alerts.id, alertId));
+  }
+  return next;
+}
+
 export async function pollOnce(e: Entry) {
   const st = state();
   // Which generation of the tracking state this tick belongs to. An edit that invalidates the
@@ -181,66 +283,16 @@ export async function pollOnce(e: Entry) {
       e.s.seeded = true;
       plog.info({ searchId: e.s.id, q: e.s.q, count: fresh.length }, "seeded");
     } else {
-      // Deal-context baseline. Prefer the daily market sample (reflects the whole market,
-      // even for a band-limited search); only when there's no baseline fall back to the
-      // median of this search's recent priced alerts, computed from before this batch lands
-      // (so the new items don't skew their own "typical"). The recent-alert read is skipped
-      // whenever a market baseline exists (dealField's market branch ignores its count) and
-      // whenever the poll is empty, so steady-state polls stay DB-free.
-      // Realized prices beat asking prices when there are enough of them: "sold ~$X" is what
-      // the thing is actually worth, where a market median is only what sellers are asking.
-      const sold = e.s.trackSold ? soldContext(e.soldPrices, Date.now()) : null;
-      const market = e.s.marketMedian;
-      const ctx: PriceContext = sold
-        ? { ...sold, basis: "sold" }
-        : market != null && market > 0
-          ? { typical: market, count: 0, basis: "market" }
-          : { ...(fresh.length ? await priceContext(database, e.s.id) : { typical: null, count: 0 }), basis: "recent" };
+      const ctx = await buildPriceContext(database, e, fresh);
       // Listings this tick alerted on, to start following once the loop is done. Suppressed
       // items are deliberately not here: an excluded listing ("for parts", "broken") is exactly
       // the junk whose realized price must not describe what the user is hunting - the market
       // baseline filters it out for the same reason.
-      const follow: TrackedItem[] = [];
-      // Backlog drain: a listing already alerted on (as a BIN, or before sold tracking widened this
-      // poll to auctions) now running as an auction. It's in the seen set, so `fresh` skips it, but
-      // its winning bid is what the sold median wants. Gated on an alert row with no tracked row
-      // yet: the silent seed backlog and suppressed listings are never alerted (so "seeding follows
-      // nothing" holds), and a follow that's already active or resolved has a row (so this drains
-      // once, not every poll). The datable filter mirrors newTracked - an auction with no finite
-      // end is never followed. Opening the drain's connection sets `wrote` so the piggyback flush
-      // below persists any prices the free-refresh loop dirtied this tick.
+      let follow: TrackedItem[] = [];
       if (e.s.trackSold) {
-        const candidates = items.filter(
-          (i) =>
-            i.buyingOption === "AUCTION" &&
-            Number.isFinite(Date.parse(i.itemEndDate ?? "")) &&
-            e.seen.has(i.itemId) &&
-            !e.tracked.has(i.itemId) &&
-            !suppressed(i, e.s),
-        );
-        if (candidates.length) {
-          wrote = true;
-          const rows = await database
-            .select({ itemId: alerts.itemId })
-            .from(alerts)
-            .where(
-              and(
-                eq(alerts.searchId, e.s.id),
-                inArray(
-                  alerts.itemId,
-                  candidates.map((i) => i.itemId),
-                ),
-                notExists(
-                  database
-                    .select({ n: trackedItems.itemId })
-                    .from(trackedItems)
-                    .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, alerts.itemId))),
-                ),
-              ),
-            );
-          const followable = new Set(rows.map((r) => r.itemId));
-          for (const item of candidates) if (followable.has(item.itemId)) startFollowing(item, follow);
-        }
+        const drain = await drainAuctionBacklog(database, e, items);
+        follow = drain.follow;
+        if (drain.wrote) wrote = true;
       }
       // Pin the owner's channel list for this batch: reload() swaps the UserCtx and its
       // channel list (never mutates), so a capture keeps the insert's deliveredAt seed and the
@@ -316,28 +368,7 @@ export async function pollOnce(e: Entry) {
         e.hitTimes.push(now);
         e.lastHitAt = now;
         plog.info({ searchId: e.s.id, itemId: item.itemId, price: item.price }, "alert sent");
-        if (targets) {
-          const [d, p] = await Promise.all([
-            webhooks.length ? notify(item, e.s, webhooks, ctx) : NOTHING_SENT,
-            subs.length ? notifyPush(item, e.s, subs) : NOTHING_PUSHED,
-          ]);
-          // Recorded separately, never `d.error ?? p.error`: this list is the only place a
-          // self-hoster sees an outage, so collapsing the two would hide a dead webhook
-          // behind a push failure (and vice versa).
-          if (d.error) recordError(u.id, e.s.q, d.error, "error");
-          if (p.error) recordError(u.id, e.s.q, p.error, "error");
-          if (p.dead.length) {
-            await reapPush(database, u, p.dead);
-            const gone = new Set(p.dead);
-            subs = subs.filter((s) => !gone.has(s.endpoint)); // keep the pinned copy in step
-          }
-          // "Delivered" = reached at least one target. On total failure the row stays
-          // deliveredAt=null and boot redelivery retries it (never re-posting to a target that
-          // already has it, since anyDelivered would have marked it delivered here).
-          if (d.anyDelivered || p.anyDelivered) {
-            await database.update(alerts).set({ deliveredAt: new Date() }).where(eq(alerts.id, alertId));
-          }
-        }
+        if (targets) subs = await notifyItem(database, item, e, u, webhooks, subs, ctx, alertId);
       }
       // One insert for the batch, on the connection the alerts above already opened.
       await insertTracked(database, e, follow, epoch);

@@ -355,6 +355,76 @@ function serialize<T>(e: Entry, fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+// The shared skeleton of the two sold-check side-tasks: guard, then for each candidate bill a
+// call, fetch (live or mock), infer the outcome, and either defer or resolve, with a single
+// flush of the dirty rows and the call counter at the end. The two loops differ only in how
+// they pick candidates, how they bill, what they do when a fetch throws, whether a successful
+// check counts against the listing's attempt cap, and whether a deferral always writes - each
+// supplied here as a closure so the differences stay explicit rather than buried in conditionals.
+// Wrapped in its own try/catch so a failure here never backs off the poll that called it.
+async function runCheckBatch(
+  e: Entry,
+  u: UserCtx,
+  database: ReturnType<typeof db>,
+  epoch: number,
+  opts: {
+    candidates: readonly TrackedItem[];
+    label: string;
+    // Bill one call before the fetch. Return false to stop the batch (the due loop's per-item
+    // ceiling gate); return true once billed.
+    bill: (t: TrackedItem) => boolean;
+    // Stamp the bonus ledger so the gap applies (both paths keep the surplus pass from re-asking
+    // the question this check just answered).
+    stamp: (t: TrackedItem) => void;
+    // A thrown fetch: the due loop reschedules (or resolves at the attempt cap) and counts the
+    // attempt, skipping both only if a reset landed mid-call; the surplus loop records the error
+    // and mutates nothing, since the schedule was never the reason it called.
+    onThrow: (t: TrackedItem, err: unknown) => Promise<void>;
+    // A successful infer: the due loop counts the check against the attempt cap; the surplus loop
+    // does not (a bonus look is extra and must not retire a listing whose real schedule is young).
+    countCheck: (t: TrackedItem) => void;
+    // A deferral: the due loop always writes the new schedule; the surplus loop only when it
+    // moved, so a row sitting on a failure retry takes the schedule's own answer back and nothing
+    // else dirties a row that agreed with itself.
+    onDefer: (t: TrackedItem, nextCheckAt: number) => void;
+  },
+): Promise<void> {
+  if (!e.s.trackSold || !e.tracked.size || stale(e, epoch)) return;
+  if (!opts.candidates.length) return;
+  try {
+    for (const t of opts.candidates) {
+      if (!opts.bill(t)) break;
+      opts.stamp(t);
+      let res: CheckResult;
+      try {
+        // Same mode gate as the poll that called us: live keys, or single mode's mock.
+        res = u.ebay ? await checkItem(u.ebay, t.itemId) : mockCheckItem(t.lastPrice);
+      } catch (err) {
+        // Stop after one failure rather than working down the list: a failing check is almost
+        // always rate limiting or auth, which the next two calls would hit as well. The rows we
+        // skip keep their schedules and come back on the next tick. Break rather than return so
+        // the call this did spend is still billed by the flush below.
+        await opts.onThrow(t, err);
+        break;
+      }
+      // Same window on the way out: this answer describes a listing the search may no longer
+      // match, and booking its sale would seed the fresh median with the old criteria's prices.
+      if (stale(e, epoch)) break;
+      const out = inferOutcome(t, res, Date.now());
+      opts.countCheck(t);
+      if (out.kind === "defer") {
+        opts.onDefer(t, out.nextCheckAt);
+        continue;
+      }
+      await resolve(database, e, t, out, epoch);
+    }
+    await flushTracked(database, e);
+    await flushCalls(database, u.id, u.calls); // piggyback the calls this side-task just spent
+  } catch (err) {
+    recordError(u.id, e.s.q, `${opts.label}: ${message(err)}`); // warn only; the poll keeps its cadence
+  }
+}
+
 // The tick's side-task: spend up to MAX_CHECKS_PER_TICK calls finding out how followed listings
 // ended. Modelled on maybeSampleMarket - quota-guarded, billed through the same counter, and
 // wrapped in its own try/catch so a failure here never backs off the poll that called it.
@@ -364,62 +434,44 @@ export async function runDueChecks(
   database: ReturnType<typeof db>,
   epoch: number,
 ): Promise<void> {
-  if (!e.s.trackSold || !e.tracked.size || stale(e, epoch)) return;
   const due = [...e.tracked.values()].filter((t) => t.nextCheckAt <= Date.now()).slice(0, MAX_CHECKS_PER_TICK);
-  if (!due.length) return;
-  try {
-    for (const t of due) {
-      // Checks are the first thing to give up when the budget runs low: they're a nicety, and
-      // the owner's remaining calls belong to the polls that find deals in the first place.
-      if (u.calls.used >= QUOTA_CEILING) break;
+  await runCheckBatch(e, u, database, epoch, {
+    candidates: due,
+    label: "sold check",
+    // Checks are the first thing to give up when the budget runs low: they're a nicety, and
+    // the owner's remaining calls belong to the polls that find deals in the first place.
+    bill: () => {
+      if (u.calls.used >= QUOTA_CEILING) return false;
       u.calls.used++;
-      // Stamped so the gap applies. Without this the surplus pass below would pick up whatever
-      // this check defers - a fresh future nextCheckAt makes it a prime candidate - and spend a
-      // second call re-asking the question this one just answered.
-      bonusDone(e).set(t.itemId, Date.now());
-      let res: CheckResult;
-      try {
-        // Same mode gate as the poll that called us: live keys, or single mode's mock.
-        res = u.ebay ? await checkItem(u.ebay, t.itemId) : mockCheckItem(t.lastPrice);
-      } catch (err) {
-        // checkItem only answers for a listing eBay says is gone; anything else (a 429, a 5xx,
-        // an expired token, an HTML gateway page) throws. The call was spent and told us
-        // nothing, so the row MUST move off `now`: left due it would be re-picked every single
-        // tick, spending a call each time, aborting the rest of this loop, and never resolving.
-        // Unless a reset landed while this was in flight, in which case t is orphaned and
-        // rescheduling it would put back a follow the edit dropped. Break rather than return so
-        // the call this did spend is still billed by the flush below.
-        if (stale(e, epoch)) break;
-        t.checksUsed++;
-        if (t.checksUsed >= MAX_CHECK_ATTEMPTS) {
-          await resolve(database, e, t, { kind: "resolved", state: "unknown", soldPrice: null }, epoch);
-        } else {
-          t.nextCheckAt = Date.now() + AUCTION_RETRY_MS;
-          e.trackDirty.add(t.itemId);
-        }
-        // Stop after one failure rather than working down the list: a failing check is almost
-        // always rate limiting or auth, which the next two calls would hit as well. The rows we
-        // skip keep their schedules and come back on the next tick.
-        recordError(u.id, e.s.q, `sold check: ${message(err)}`);
-        break;
-      }
-      // Same window on the way out: this answer describes a listing the search may no longer
-      // match, and booking its sale would seed the fresh median with the old criteria's prices.
-      if (stale(e, epoch)) break;
-      const out = inferOutcome(t, res, Date.now());
+      return true;
+    },
+    // Stamped so the gap applies. Without this the surplus pass below would pick up whatever
+    // this check defers - a fresh future nextCheckAt makes it a prime candidate - and spend a
+    // second call re-asking the question this one just answered.
+    stamp: (t) => bonusDone(e).set(t.itemId, Date.now()),
+    // checkItem only answers for a listing eBay says is gone; anything else (a 429, a 5xx, an
+    // expired token, an HTML gateway page) throws. The call was spent and told us nothing, so
+    // the row MUST move off `now`: left due it would be re-picked every single tick, spending a
+    // call each time, aborting the rest of this loop, and never resolving. Unless a reset landed
+    // while this was in flight, in which case t is orphaned and rescheduling it would put back a
+    // follow the edit dropped.
+    onThrow: async (t, err) => {
+      if (stale(e, epoch)) return;
       t.checksUsed++;
-      if (out.kind === "defer") {
-        t.nextCheckAt = out.nextCheckAt;
+      if (t.checksUsed >= MAX_CHECK_ATTEMPTS) {
+        await resolve(database, e, t, { kind: "resolved", state: "unknown", soldPrice: null }, epoch);
+      } else {
+        t.nextCheckAt = Date.now() + AUCTION_RETRY_MS;
         e.trackDirty.add(t.itemId);
-        continue;
       }
-      await resolve(database, e, t, out, epoch);
-    }
-    await flushTracked(database, e);
-    await flushCalls(database, u.id, u.calls); // piggyback the calls this side-task just spent
-  } catch (err) {
-    recordError(u.id, e.s.q, `sold check: ${message(err)}`); // warn only; the poll keeps its cadence
-  }
+      recordError(u.id, e.s.q, `sold check: ${message(err)}`);
+    },
+    countCheck: (t) => t.checksUsed++,
+    onDefer: (t, nextCheckAt) => {
+      t.nextCheckAt = nextCheckAt;
+      e.trackDirty.add(t.itemId);
+    },
+  });
 }
 
 // The other side of the same tick: spend quota that would otherwise expire at local midnight on
@@ -447,46 +499,36 @@ export async function runBonusChecks(
   const spare = bonusBudget(usedToday(u.calls, today), QUOTA_CEILING, frac, projected);
   if (spare <= 0) return;
   const picks = bonusEligible(e.tracked.values(), done, now.getTime()).slice(0, Math.min(spare, MAX_CHECKS_PER_TICK));
-  if (!picks.length) return;
-  try {
-    for (const t of picks) {
+  await runCheckBatch(e, u, database, epoch, {
+    candidates: picks,
+    label: "surplus sold check",
+    // The one path that bills the surplus. Both counters move together, so `used` stays the
+    // full billing total and the difference is what the configuration itself spent.
+    bill: () => {
       u.calls.used++;
-      // The one path that bills the surplus. Both counters move together, so `used` stays the
-      // full billing total and the difference is what the configuration itself spent.
       u.calls.surplus++;
-      // Stamped before the call, not after: an item whose check throws has still cost a call, and
-      // retrying it on the next tick would spend the day's surplus on one broken listing.
-      done.set(t.itemId, now.getTime());
-      let res: CheckResult;
-      try {
-        res = u.ebay ? await checkItem(u.ebay, t.itemId) : mockCheckItem(t.lastPrice);
-      } catch (err) {
-        // Nothing is mutated on the way out, unlike the due loop: this listing's schedule was
-        // never the reason we called, so there is nothing to move, and counting the attempt
-        // would spend a real check the schedule still owes it. Break for the same reason the
-        // due loop does - a failing check is nearly always rate limiting or auth.
-        recordError(u.id, e.s.q, `surplus sold check: ${message(err)}`);
-        break;
+      return true;
+    },
+    // Stamped before the call, not after: an item whose check throws has still cost a call, and
+    // retrying it on the next tick would spend the day's surplus on one broken listing.
+    stamp: (t) => done.set(t.itemId, now.getTime()),
+    // Nothing is mutated on the way out, unlike the due loop: this listing's schedule was never
+    // the reason we called, so there is nothing to move, and counting the attempt would spend a
+    // real check the schedule still owes it.
+    onThrow: async (t, err) => {
+      recordError(u.id, e.s.q, `surplus sold check: ${message(err)}`);
+    },
+    countCheck: () => {},
+    // Normally the same boundary it already had, so this writes nothing. It differs only when
+    // the row was sitting on a failure retry, and taking the schedule's own answer back is the
+    // right move there.
+    onDefer: (t, nextCheckAt) => {
+      if (nextCheckAt !== t.nextCheckAt) {
+        t.nextCheckAt = nextCheckAt;
+        e.trackDirty.add(t.itemId);
       }
-      if (stale(e, epoch)) break; // an edit landed mid-call; this answer describes dropped criteria
-      const out = inferOutcome(t, res, Date.now());
-      if (out.kind === "defer") {
-        // Normally the same boundary it already had, so this writes nothing. It differs only
-        // when the row was sitting on a failure retry, and taking the schedule's own answer
-        // back is the right move there.
-        if (out.nextCheckAt !== t.nextCheckAt) {
-          t.nextCheckAt = out.nextCheckAt;
-          e.trackDirty.add(t.itemId);
-        }
-        continue;
-      }
-      await resolve(database, e, t, out, epoch);
-    }
-    await flushTracked(database, e);
-    await flushCalls(database, u.id, u.calls);
-  } catch (err) {
-    recordError(u.id, e.s.q, `surplus sold check: ${message(err)}`); // warn only, like the due loop
-  }
+    },
+  });
 }
 
 // Rebuilds one search's follows from its rows (reload). Split by state: what is still

@@ -19,7 +19,16 @@ import {
 } from "./quota";
 import { SNOOZE_DEFAULT, activeMin, counterDayFrac, hhmm, snoozeMinutes, snoozeWindow, snoozing } from "./snooze";
 import { resetTracked, soldStats } from "./track";
-import { type SnoozeState, bumpAlerts, enabledSearchesFor, newEntry, plog, rowToSearch, state } from "./state";
+import {
+  type SnoozeState,
+  type UserCtx,
+  bumpAlerts,
+  enabledSearchesFor,
+  newEntry,
+  plog,
+  rowToSearch,
+  state,
+} from "./state";
 
 export const DEFAULT_INTERVAL = Number(process.env.POLL_INTERVAL_DEFAULT ?? 5);
 
@@ -348,6 +357,42 @@ export { callsPerDayFor, projectedCalls } from "./projection";
 // One user's view of the poller: their quota, their snooze, their errors (plus the ownerless
 // ones, which are everyone's), their eBay mode. ready/bootError/bootedAt/version are process
 // facts and stay global. Nothing here is derived from the client secret.
+// The quota tile: today's spend, the saved configuration's projection, the governor's current
+// factor, and the derived remaining/forecast/overage figures. One function so the status tile
+// and any other reader can't drift from the numbers the poller bills against. `u` may be absent
+// (a user the cache hasn't loaded yet), in which case everything reads as zero/neutral.
+function quotaInfo(u: UserCtx | undefined, userId: number, sn: SnoozeState, today: string): StatusInfo["quota"] {
+  const used = u ? usedToday(u.calls, today) : 0;
+  const enabled = enabledSearchesFor(userId);
+  const projected = projectedCalls(enabled, activeMinFor(userId));
+  const frac = counterDayFrac(sn);
+  const factor = factorFor(userId);
+  const configuredRemaining = Math.ceil(projected * (1 - frac));
+  const remaining = Math.max(QUOTA_CEILING - used, 0);
+  const configuredForecast = used + configuredRemaining;
+  // "expected" is what an evenly-paced day would have spent by now. Compared against
+  // `used - surplus` it answers the question the raw counter can't: is this spend on track,
+  // or early? Judging `used` whole would flag a user whose only overspend was quota that
+  // was going to expire tonight regardless.
+  return {
+    used,
+    // Clamped so the subset relation the type promises holds at the boundary: both UI
+    // surfaces derive configured = used - surplus, and neither should have to guard it.
+    surplus: u ? Math.min(used, surplusToday(u.calls, today)) : 0,
+    ceiling: QUOTA_CEILING,
+    projected,
+    expected: Math.round(projected * frac),
+    governor: { active: factor > 1, factor },
+    remaining,
+    configuredRemaining,
+    configuredForecast,
+    overage: Math.max(configuredForecast - QUOTA_CEILING, 0),
+    // Shipped rather than recomputed in the browser: it comes off a server-only env var the
+    // client can't read, and the new-search preview has no saved row to take a figure from.
+    marketSamplesPerDay: MARKET_SAMPLES_PER_DAY,
+  };
+}
+
 export function status(userId: number): StatusInfo {
   const st = state();
   const u = st.users.get(userId);
@@ -380,37 +425,7 @@ export function status(userId: number): StatusInfo {
       currency: currencyFor(marketplace),
       tokenExpiresAt: tokenExpiresAt(userId),
     },
-    quota: (() => {
-      const used = u ? usedToday(u.calls, today) : 0;
-      const enabled = enabledSearchesFor(userId);
-      const projected = projectedCalls(enabled, activeMinFor(userId));
-      const frac = counterDayFrac(sn);
-      const factor = factorFor(userId);
-      const configuredRemaining = Math.ceil(projected * (1 - frac));
-      const remaining = Math.max(QUOTA_CEILING - used, 0);
-      const configuredForecast = used + configuredRemaining;
-      // "expected" is what an evenly-paced day would have spent by now. Compared against
-      // `used - surplus` it answers the question the raw counter can't: is this spend on track,
-      // or early? Judging `used` whole would flag a user whose only overspend was quota that
-      // was going to expire tonight regardless.
-      return {
-        used,
-        // Clamped so the subset relation the type promises holds at the boundary: both UI
-        // surfaces derive configured = used - surplus, and neither should have to guard it.
-        surplus: u ? Math.min(used, surplusToday(u.calls, today)) : 0,
-        ceiling: QUOTA_CEILING,
-        projected,
-        expected: Math.round(projected * frac),
-        governor: { active: factor > 1, factor },
-        remaining,
-        configuredRemaining,
-        configuredForecast,
-        overage: Math.max(configuredForecast - QUOTA_CEILING, 0),
-        // Shipped rather than recomputed in the browser: it comes off a server-only env var the
-        // client can't read, and the new-search preview has no saved row to take a figure from.
-        marketSamplesPerDay: MARKET_SAMPLES_PER_DAY,
-      };
-    })(),
+    quota: quotaInfo(u, userId, sn, today),
     snooze: { active: snoozing(sn), window: snoozeWindow(sn), dailyMinutes: snoozeMinutes(sn) },
     errors: errors.slice(0, 20),
     user: { email: u?.email ?? "" },

@@ -14,7 +14,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.ref }} # preserve the annotated tag body instead of checking out its SHA
           fetch-depth: 0 # changelog diffs against the previous tag, so shallow won't do

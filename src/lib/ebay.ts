@@ -24,7 +24,7 @@ export type EbayCreds = {
 };
 
 // eBay's "for parts or not working" tier (rendered "Parts Only" on the web).
-export const FOR_PARTS_ID = "7000";
+const FOR_PARTS_ID = "7000";
 
 // The new-family IDs: 1000 New, 1500 New other/Open box, 1750 New with defects. All three are
 // sold as new, so a "New only" search should see them. 2750 "Like New" is NOT here - it's a

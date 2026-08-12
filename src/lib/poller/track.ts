@@ -101,7 +101,7 @@ export function harvest(t: TrackedItem, item: Item, now: number): boolean {
 }
 
 // Either the listing's final outcome, or when to look again.
-export type CheckOutcome =
+type CheckOutcome =
   | { kind: "resolved"; state: "sold" | "unsold" | "unknown"; soldPrice: number | null }
   | { kind: "defer"; nextCheckAt: number };
 

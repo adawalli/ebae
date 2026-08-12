@@ -155,23 +155,21 @@ function envCreds(userId: number): EbayCreds | null {
 
 // Full DB → cache load. Runs at boot and every CACHE_REFRESH_HOURS; between
 // those, the poller works purely from memory so serverless Postgres can sleep.
-async function reload() {
-  const database = db();
-  const today = new Date().toDateString();
-  // Each entry's tracking generation, before this function awaits anything. An edit landing while
-  // the queries below run bumps it and deletes that search's follows; the rebuild further down
-  // works from a snapshot that predates the DELETE, and `running` doesn't cover it because an
-  // edit arrives on an API route rather than in a tick. Without this the rebuild puts back the
-  // follows and - worse - the realized prices the edit dropped, and the sold median outranks
-  // every other basis, so the new criteria's alerts would carry the old search's going rate.
-  const epochs = new Map<number, number>();
-  for (const [id, e] of state().entries) epochs.set(id, e.trackEpoch);
-  // Write out any follow whose in-memory state hasn't reached its row yet. Must happen before
-  // the snapshot below, or the rebuild would hand back the schedule those changes moved - and a
-  // deferred check would be spent after all.
-  for (const e of state().entries.values()) {
-    if (e.trackDirty.size) await flushTracked(database, e);
-  }
+// The eight-way snapshot plus the two retention prunes, in one batch. Pruning happens here (not
+// in a separate step) so the rows the rebuild reads are already pruned, and the deletes share
+// the round-trip with the selects.
+type Snapshot = {
+  searchRows: (typeof searches.$inferSelect)[];
+  seenRows: { searchId: number; itemId: string }[];
+  trackedRows: (typeof trackedItems.$inferSelect)[];
+  hitRows: { searchId: number | null; createdAt: Date }[];
+  lastHitRows: { searchId: number | null; last: Date | null }[];
+  channelRows: { userId: number | null; webhookUrl: string }[];
+  pushRows: { userId: number; endpoint: string; p256dh: string; auth: string }[];
+  userRows: (typeof users.$inferSelect)[];
+};
+
+async function loadSnapshot(database: ReturnType<typeof db>): Promise<Snapshot> {
   // prune the dedupe set so it can't grow unbounded (SEEN_RETENTION_DAYS, default 90)
   await database
     .delete(seenItems)
@@ -207,25 +205,42 @@ async function reload() {
       .from(pushSubs),
     database.select().from(users),
   ]);
+  return { searchRows, seenRows, trackedRows, hitRows, lastHitRows, channelRows, pushRows, userRows };
+}
 
-  const st = state();
-  const webhooksByUser = new Map<number, string[]>();
-  for (const r of channelRows) {
+// Group the channel and push rows by user, so each UserCtx gets its targets in one shot.
+function channelsByUser(rows: Snapshot["channelRows"]): Map<number, string[]> {
+  const map = new Map<number, string[]>();
+  for (const r of rows) {
     if (r.userId == null) continue; // unclaimed, same as a null-owner search below
-    const list = webhooksByUser.get(r.userId);
+    const list = map.get(r.userId);
     if (list) list.push(r.webhookUrl);
-    else webhooksByUser.set(r.userId, [r.webhookUrl]);
+    else map.set(r.userId, [r.webhookUrl]);
   }
-  const pushByUser = new Map<number, PushSub[]>();
-  for (const r of pushRows) {
+  return map;
+}
+
+function pushByUserMap(rows: Snapshot["pushRows"]): Map<number, PushSub[]> {
+  const map = new Map<number, PushSub[]>();
+  for (const r of rows) {
     const sub = { endpoint: r.endpoint, p256dh: r.p256dh, auth: r.auth };
-    const list = pushByUser.get(r.userId);
+    const list = map.get(r.userId);
     if (list) list.push(sub);
-    else pushByUser.set(r.userId, [sub]);
+    else map.set(r.userId, [sub]);
   }
-  // Swap the map (and each user's channel list) rather than mutate: a tick mid-flight keeps
-  // polling against the context it captured instead of seeing half of a reload. `calls` is
-  // carried by reference so an increment landing during the swap isn't lost.
+  return map;
+}
+
+// Swap the map (and each user's channel list) rather than mutate: a tick mid-flight keeps
+// polling against the context it captured instead of seeing half of a reload. `calls` is
+// carried by reference so an increment landing during the swap isn't lost.
+function buildUserMap(
+  st: ReturnType<typeof state>,
+  userRows: Snapshot["userRows"],
+  webhooksByUser: Map<number, string[]>,
+  pushByUser: Map<number, PushSub[]>,
+  today: string,
+): Map<number, UserCtx> {
   const nextUsers = new Map<number, UserCtx>();
   for (const row of userRows) {
     nextUsers.set(row.id, {
@@ -260,8 +275,43 @@ async function reload() {
       if (process.env.DISCORD_WEBHOOK_URL) u.channels.push(process.env.DISCORD_WEBHOOK_URL);
     }
   }
-  st.users = nextUsers;
+  return nextUsers;
+}
 
+// Group the DB snapshot by search so each entry's seen set is swapped atomically.
+function groupBySearch(
+  seenRows: Snapshot["seenRows"],
+  trackedRows: Snapshot["trackedRows"],
+): {
+  seenBySearch: Map<number, Set<string>>;
+  trackedBySearch: Map<number, Snapshot["trackedRows"]>;
+} {
+  const seenBySearch = new Map<number, Set<string>>();
+  for (const r of seenRows) {
+    let set = seenBySearch.get(r.searchId);
+    if (!set) seenBySearch.set(r.searchId, (set = new Set()));
+    set.add(r.itemId);
+  }
+  const trackedBySearch = new Map<number, Snapshot["trackedRows"]>();
+  for (const r of trackedRows) {
+    const list = trackedBySearch.get(r.searchId);
+    if (list) list.push(r);
+    else trackedBySearch.set(r.searchId, [r]);
+  }
+  return { seenBySearch, trackedBySearch };
+}
+
+// Rebuild the entry map from the snapshot: update existing entries in place (preserving seeded
+// and hit data a concurrent tick may have advanced), schedule brand-new rows, drop deleted ones,
+// and swap each entry's seen/tracked containers from the DB - but never mid-tick. Returns the set
+// of search ids that survived, for the hit-time merge to filter against.
+function rebuildEntries(
+  st: ReturnType<typeof state>,
+  searchRows: Snapshot["searchRows"],
+  seenBySearch: Map<number, Set<string>>,
+  trackedBySearch: Map<number, Snapshot["trackedRows"]>,
+  epochs: Map<number, number>,
+): Set<number> {
   const fresh = new Set<number>();
   for (const row of searchRows) {
     // No owner means no keys to poll with, no channel to notify and no quota to bill: leave
@@ -284,29 +334,6 @@ async function reload() {
       schedule(entry, 1000 + Math.random() * 5000);
     }
   }
-  // Save in-memory hit data before rebuild: a concurrent tick may have newer
-  // data than the snapshot just queried.
-  const savedHitTimes = new Map<number, number[]>();
-  const savedLastHitAt = new Map<number, number | null>();
-  for (const [id, e] of st.entries) {
-    savedHitTimes.set(id, e.hitTimes.slice());
-    savedLastHitAt.set(id, e.lastHitAt);
-  }
-
-  // Group the DB snapshot by search so each entry's seen set is swapped atomically.
-  const seenBySearch = new Map<number, Set<string>>();
-  for (const r of seenRows) {
-    let set = seenBySearch.get(r.searchId);
-    if (!set) seenBySearch.set(r.searchId, (set = new Set()));
-    set.add(r.itemId);
-  }
-  const trackedBySearch = new Map<number, typeof trackedRows>();
-  for (const r of trackedRows) {
-    const list = trackedBySearch.get(r.searchId);
-    if (list) list.push(r);
-    else trackedBySearch.set(r.searchId, [r]);
-  }
-
   for (const [id, e] of st.entries) {
     if (!fresh.has(id)) {
       if (e.timer) clearTimeout(e.timer);
@@ -332,6 +359,18 @@ async function reload() {
       }
     }
   }
+  return fresh;
+}
+
+// Merge the DB snapshot's hit times, then fold in any in-memory hits newer than both the snapshot
+// and the 24h cutoff (concurrent tick data the snapshot missed).
+function mergeHitTimes(
+  st: ReturnType<typeof state>,
+  hitRows: Snapshot["hitRows"],
+  lastHitRows: Snapshot["lastHitRows"],
+  savedHitTimes: Map<number, number[]>,
+  savedLastHitAt: Map<number, number | null>,
+) {
   for (const r of hitRows) {
     if (r.searchId != null) st.entries.get(r.searchId)?.hitTimes.push(r.createdAt.getTime());
   }
@@ -339,7 +378,6 @@ async function reload() {
     const e = r.searchId != null ? st.entries.get(r.searchId) : undefined;
     if (e && r.last) e.lastHitAt = r.last.getTime();
   }
-  // Merge any in-memory hits newer than the DB snapshot (concurrent tick data)
   const cutoff = Date.now() - 24 * 3600_000;
   for (const [id, e] of st.entries) {
     const dbMax = e.hitTimes.length ? Math.max(...e.hitTimes) : 0;
@@ -349,24 +387,67 @@ async function reload() {
     const memLast = savedLastHitAt.get(id);
     if (memLast != null && (e.lastHitAt == null || memLast > e.lastHitAt)) e.lastHitAt = memLast;
   }
-  // Reconcile each user's daily quota counter. Flush our in-memory value and read back
-  // what greatest() resolved to: one round-trip that handles both directions,
-  // dying-process race (DB has more than we just read) and concurrent polls
-  // (we have more than DB). Guard midnight twice: a poll tick can reset a counter
-  // during the await, and if that happens we must not stamp it backward.
-  if (new Date().toDateString() === today) {
-    for (const u of st.users.values()) {
-      const fresh = u.calls.date === today;
-      const reconciled = await flushCalls(database, u.id, {
-        date: today,
-        used: fresh ? u.calls.used : 0,
-        surplus: fresh ? u.calls.surplus : 0,
-      });
-      if (new Date().toDateString() === today) {
-        u.calls = mergeCalls(u.calls, today, reconciled);
-      }
+}
+
+// Reconcile each user's daily quota counter. Flush our in-memory value and read back what
+// greatest() resolved to: one round-trip that handles both directions, dying-process race (DB
+// has more than we just read) and concurrent polls (we have more than DB). Guard midnight twice:
+// a poll tick can reset a counter during the await, and if that happens we must not stamp it
+// backward.
+async function reconcileCounters(database: ReturnType<typeof db>, st: ReturnType<typeof state>, today: string) {
+  if (new Date().toDateString() !== today) return;
+  for (const u of st.users.values()) {
+    const fresh = u.calls.date === today;
+    const reconciled = await flushCalls(database, u.id, {
+      date: today,
+      used: fresh ? u.calls.used : 0,
+      surplus: fresh ? u.calls.surplus : 0,
+    });
+    if (new Date().toDateString() === today) {
+      u.calls = mergeCalls(u.calls, today, reconciled);
     }
   }
+}
+
+// Full DB → cache load. Runs at boot and every CACHE_REFRESH_HOURS; between those, the poller
+// works purely from memory so serverless Postgres can sleep.
+async function reload() {
+  const database = db();
+  const today = new Date().toDateString();
+  // Each entry's tracking generation, before this function awaits anything. An edit landing while
+  // the queries below run bumps it and deletes that search's follows; the rebuild further down
+  // works from a snapshot that predates the DELETE, and `running` doesn't cover it because an
+  // edit arrives on an API route rather than in a tick. Without this the rebuild puts back the
+  // follows and - worse - the realized prices the edit dropped, and the sold median outranks
+  // every other basis, so the new criteria's alerts would carry the old search's going rate.
+  const epochs = new Map<number, number>();
+  for (const [id, e] of state().entries) epochs.set(id, e.trackEpoch);
+  // Write out any follow whose in-memory state hasn't reached its row yet. Must happen before
+  // the snapshot below, or the rebuild would hand back the schedule those changes moved - and a
+  // deferred check would be spent after all.
+  for (const e of state().entries.values()) {
+    if (e.trackDirty.size) await flushTracked(database, e);
+  }
+  const snap = await loadSnapshot(database);
+
+  const st = state();
+  const webhooksByUser = channelsByUser(snap.channelRows);
+  const pushByUser = pushByUserMap(snap.pushRows);
+  st.users = buildUserMap(st, snap.userRows, webhooksByUser, pushByUser, today);
+
+  // Save in-memory hit data before rebuild: a concurrent tick may have newer data than the
+  // snapshot just queried.
+  const savedHitTimes = new Map<number, number[]>();
+  const savedLastHitAt = new Map<number, number | null>();
+  for (const [id, e] of st.entries) {
+    savedHitTimes.set(id, e.hitTimes.slice());
+    savedLastHitAt.set(id, e.lastHitAt);
+  }
+
+  const { seenBySearch, trackedBySearch } = groupBySearch(snap.seenRows, snap.trackedRows);
+  rebuildEntries(st, snap.searchRows, seenBySearch, trackedBySearch, epochs);
+  mergeHitTimes(st, snap.hitRows, snap.lastHitRows, savedHitTimes, savedLastHitAt);
+  await reconcileCounters(database, st, today);
 }
 
 // auth.ts provisions a users row on first login, but the cache only rebuilds every

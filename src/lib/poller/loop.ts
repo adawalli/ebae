@@ -12,6 +12,7 @@ import { projectedCalls } from "./projection";
 import { QUOTA_CEILING, flushCalls, governedDelayMs, governorFor } from "./quota";
 import { activeMin, snoozing } from "./snooze";
 import {
+  NOTIFY_DEADLINE_MS,
   type Entry,
   type TrackedItem,
   type UserCtx,
@@ -310,7 +311,16 @@ export async function pollOnce(e: Entry) {
       // reassigns u.push rather than mutating it, so this alias would otherwise keep handing
       // a reaped endpoint to every later item in the batch.
       let subs = u.push;
+      // Oldest-first: fresh is newest-first from eBay, reversed here for chronological notify
+      // order.
+      const notifyStart = Date.now();
       for (const item of [...fresh].reverse()) {
+        // Wall-clock deadline, not a count: a slow or rate-limited target (or several - see
+        // NOTIFY_DEADLINE_MS) can otherwise wedge this tick past the health window. Checked
+        // before touching the item, so anything past the deadline is left completely untouched
+        // - not added to e.seen, not written to seen_items - and the next poll picks it up
+        // unchanged.
+        if (Date.now() - notifyStart >= NOTIFY_DEADLINE_MS) break;
         // Recomputed per item, not once per batch: reaping the last subscription has to be
         // able to take this to zero, or the rows below would seed deliveredAt=null for a
         // target that no longer exists and never be delivered by anyone.

@@ -1,4 +1,4 @@
-import { and, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { db } from "@/lib/db";
 import { notify } from "@/lib/discord";
 import { notifyPush } from "@/lib/push";
@@ -9,6 +9,82 @@ import { type UserCtx, markStalePush, plog, recordError, state } from "./state";
 // An alert that couldn't be delivered is retried at the next boot, but deals are time-sensitive:
 // past this age, retire it unsent rather than spam stale listings when the process comes back.
 const REDELIVER_MAX_AGE_MS = 60 * 60_000;
+
+// A memory bound only, not a time bound: keeps one boot from loading an unbounded backlog into
+// memory in a single query. Deliberately generous - the wall-clock budget (bootRedeliverBudgetMs,
+// checked in the loop below) is what actually keeps this sweep from wedging the boot heartbeat,
+// regardless of how many rows this returns.
+const REDELIVER_FETCH_LIMIT = 1000;
+
+// This sweep runs at boot, after `st.ready = true` but before the first schedule() (see
+// boot.ts) - deliberately, so a tick can't insert a fresh deliveredAt=null row the sweep's
+// SELECT then double-notifies. That ordering means /api/health reads 503 ("heartbeat stale",
+// lastScheduledAt null) for the sweep's whole duration, which puts it under the k8s liveness
+// probe grace (deploy/k8s.yaml), NOT the steadier /api/health freshness window loop.ts's
+// NOTIFY_DEADLINE_MS is calibrated against. Probe grace: failures land at t=30, 60, 90...
+// (initialDelaySeconds, then every periodSeconds), so the 10th (failureThreshold) lands at
+// 30 + 9x30 = 300s before kubelet restarts the pod - far tighter than the 35min health floor.
+// (docker-compose.yml's healthcheck is looser and, without an orchestrator watching container
+// health, doesn't restart the container at all under plain docker/compose, so it isn't the
+// binding constraint here.)
+//
+// 300s isn't all ours: migrations, the snapshot cache reload, and Next.js startup all burn probe
+// budget before this function ever runs, and one in-flight row's own fan-out (see
+// ONE_ROW_WORST_CASE_MS) is unbudgeted by the deadline (checked before a row, never mid-row - see
+// the residual below). A flat 3min deadline ignored both and could leave as little as ~55s for
+// everything before the sweep, which is not real margin. bootRedeliverBudgetMs derives the
+// budget from the REMAINING probe window instead: min(this ceiling, grace - elapsed - one row's
+// worst case), floored at zero so a slow boot skips the sweep entirely rather than overrunning
+// it - safe, since skipped rows just stay deliveredAt=null and retry oldest-first next boot,
+// which is already the contract. 60s keeps the common-case (near-zero elapsed) budget well clear
+// of BOTH the probe grace and the steady-state NOTIFY_DEADLINE_MS.
+export const BOOT_REDELIVER_DEADLINE_MS = 60_000;
+const PROBE_GRACE_MS = 300_000;
+const ONE_ROW_WORST_CASE_MS = 65_000; // same 65s derivation as NOTIFY_DEADLINE_MS (see state.ts)
+
+// Pure so it's unit-testable without a real boot: elapsedMs is process.uptime()*1000 at the
+// caller. Exported for tests only - redeliverPending is the one real caller.
+export function bootRedeliverBudgetMs(elapsedMs: number): number {
+  return Math.max(0, Math.min(BOOT_REDELIVER_DEADLINE_MS, PROBE_GRACE_MS - elapsedMs - ONE_ROW_WORST_CASE_MS));
+}
+
+// A fixed reservation, not a measurement: the batched deliveredAt flush after the loop has its
+// own duration we can't know in advance any better than the pending-row SELECT's, so this just
+// carves out a slice for it up front rather than timing it.
+const FLUSH_RESERVE_MS = 5_000;
+
+// What the row loop itself gets to spend, once the flush reservation comes out of the overall
+// budget. Also pure/testable: the loop's deadline is `sweepStart + bootRedeliverLoopBudgetMs(...)`,
+// anchored at the same instant elapsedMs is sampled - which is at the very top of
+// redeliverPending, before ANY database statement it issues (the age-retirement UPDATE included,
+// not just the pending-row SELECT). Neither query is backed by an index on alerts for the columns
+// they filter/sort on (known, separately tracked, out of scope here), so either can itself take
+// real time on a large table under a cold/suspended DB - exactly the slow-boot case this budget
+// exists to survive. Anchoring before both means their duration is charged against the loop's
+// window instead of being free; if they alone exhaust it, the loop's first deadline check is
+// already past due and it delivers nothing, falling through to an empty `done` (no-op flush, not
+// an error - see the `if (done.length)` guard below).
+export function bootRedeliverLoopBudgetMs(elapsedMs: number): number {
+  return Math.max(0, bootRedeliverBudgetMs(elapsedMs) - FLUSH_RESERVE_MS);
+}
+
+// ponytail: two residuals stack here. (1) Same as NOTIFY_DEADLINE_MS - one row's fan-out is
+// unbudgeted, so a search with enough dead targets can still push the sweep past whatever budget
+// bootRedeliverBudgetMs computed. (2) process.uptime() approximates elapsed-since-container-start
+// closely enough for this purpose, but isn't exact (e.g. a paused/throttled process). Upgrade
+// paths, both bigger changes than this fix justifies today: concurrent per-row fan-out (or a
+// configured-target-count limit) for (1); keeping the boot phase reporting healthy in
+// /api/health instead of budgeting around its 503 window for (2) and the root problem generally
+// - cleaner, but it changes health semantics and risks masking a genuinely wedged boot, so it
+// needs its own design and tests rather than riding along with this fix.
+//
+// This anchor has moved three times across review rounds - after the SELECT, then before the
+// SELECT, now before the age-retirement UPDATE too - each time chasing one more unbudgeted
+// database statement. That pattern is itself the tell: the actual root cause is /api/health
+// reporting 503 for the whole boot phase (see the ordering note above), not the placement of any
+// one Date.now() call. The "keep the boot phase healthy" upgrade path already named above is what
+// stops this from needing a fourth move; anyone tempted to shift the anchor again should read
+// that as the real fix instead.
 
 // Redeliver alerts committed but never confirmed delivered - a crash between the alerts insert
 // and the notify, or a webhook outage that spanned the last shutdown. Called once at boot, before
@@ -41,6 +117,23 @@ export async function reapPush(database: ReturnType<typeof db>, u: UserCtx, dead
 
 export async function redeliverPending(database: ReturnType<typeof db>) {
   const st = state();
+  // Anchored at the very top, before ANY database statement this sweep issues - including the
+  // age-retirement UPDATE right below, which scans the same unindexed deliveredAt/createdAt
+  // columns as the SELECT further down and can just as easily burn probe grace on a large or
+  // cold-starting table. See bootRedeliverLoopBudgetMs for why the anchor has to precede every
+  // query, not just the SELECT.
+  const sweepStart = Date.now();
+  const elapsedMs = process.uptime() * 1000;
+  // Startup alone already ate the probe grace: skip the ENTIRE sweep, including retirement,
+  // rather than risk overrunning it. Safe to skip retirement here: it's an optimization that
+  // stops stale alerts being re-sent, not a correctness requirement - the rows it would have
+  // retired simply stay deliveredAt=null, and the very next boot with any budget runs this same
+  // UPDATE first (before it could ever reach the delivery loop below), retiring them there
+  // instead. They can never reach a real delivery attempt on a budget-exhausted boot, because the
+  // rest of this sweep (SELECT and the notify loop) is skipped too - not just retirement.
+  if (bootRedeliverBudgetMs(elapsedMs) <= 0) return;
+  const deadline = sweepStart + bootRedeliverLoopBudgetMs(elapsedMs);
+
   const now = new Date(); // one stamp for the whole sweep, so the DB shows they came from one boot
   await database
     .update(alerts)
@@ -67,7 +160,12 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
       itemUrl: alerts.itemUrl,
     })
     .from(alerts)
-    .where(isNull(alerts.deliveredAt));
+    .where(isNull(alerts.deliveredAt))
+    // Oldest-first: with a wall-clock deadline the cut point varies per sweep, so deterministic
+    // ordering is what stops a row being skipped sweep after sweep - once earlier rows are
+    // delivered or retired, this one is guaranteed to reach the front and get a turn.
+    .orderBy(asc(alerts.createdAt), asc(alerts.id))
+    .limit(REDELIVER_FETCH_LIMIT);
 
   if (!rows.length) return;
 
@@ -77,6 +175,9 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
   // window the main path already accepts.
   const done: number[] = [];
   for (const row of rows) {
+    // Checked before touching the row, so anything past the deadline is left completely
+    // untouched - deliveredAt stays null, so it's retried (oldest-first, see above) next boot.
+    if (Date.now() >= deadline) break;
     const s = row.searchId != null ? st.entries.get(row.searchId)?.s : undefined;
     if (!s) {
       // search deleted (search_id null) or gone from cache: no criteria to attach, retire it.

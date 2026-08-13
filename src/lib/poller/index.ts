@@ -20,7 +20,7 @@ export {
   type SearchInput,
 } from "./api";
 export { boot } from "./boot";
-export { redeliverPending } from "./delivery";
+export { BOOT_REDELIVER_DEADLINE_MS, redeliverPending } from "./delivery";
 export { MAX_BACKOFF_MS, QUOTA_SKIP_MS, pollOnce } from "./loop";
 export { excludeMatch, median } from "./market";
 export {
@@ -37,4 +37,12 @@ export {
   usedToday,
 } from "./quota";
 export { activeFracElapsed, counterDayFrac, counterDayFracAt, inWindow, snoozeMinutes } from "./snooze";
-export { alertsTag, bumpAlerts, markStalePush, pushIsStale, type Entry, type UserCtx } from "./state";
+export {
+  NOTIFY_DEADLINE_MS,
+  alertsTag,
+  bumpAlerts,
+  markStalePush,
+  pushIsStale,
+  type Entry,
+  type UserCtx,
+} from "./state";

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
-import { eq } from "drizzle-orm";
+import { eq, isNotNull, isNull } from "drizzle-orm";
 import { freshTestDb } from "./helpers/db";
 import { stubEbayLive } from "./helpers/ebay-stub";
 import { mkItem } from "./helpers/fixtures";
@@ -10,7 +10,9 @@ import { userCtx } from "@/lib/poller/boot"; // not on the barrel: the reload se
 import { flushCalls } from "@/lib/poller/quota"; // ditto: persistence is the poller's own business
 import { BONUS_MIN_GAP_MS } from "@/lib/poller/track"; // ditto: the check schedule is internal
 import {
+  BOOT_REDELIVER_DEADLINE_MS,
   GOV_MAX_FACTOR,
+  NOTIFY_DEADLINE_MS,
   createSearch,
   listSearches,
   pollOnce,
@@ -115,6 +117,51 @@ test("a new listing after seeding writes exactly one alert", async () => {
   // No channels and no push subscriptions, so the insert stamps delivery itself.
   expect(rows[0].deliveredAt).not.toBeNull();
   expect(await database.select().from(seenItems)).toHaveLength(MOCK_POOL_SIZE + 1);
+});
+
+test("a fresh batch that runs past the wall-clock deadline notifies partially, rest lands next tick", async () => {
+  const e = await seededEntry();
+  g.__ebaeState.users.get(userId)!.channels = ["https://discord.com/api/webhooks/1/test"];
+  const pool = g.__ebaeMock.pools.get(e.s.id)!;
+  const total = 3;
+  // unshift oldest-first so the front of the pool (newest) is slow-(total-1) - matches
+  // mockSearch's own convention, which is what `fresh`'s reverse relies on.
+  for (let i = 0; i < total; i++) {
+    pool.unshift(injected({ itemId: `slow-${i}`, itemUrl: `https://www.ebay.com/itm/slow-${i}` }));
+  }
+
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  const tickStart = Date.now();
+  // Every send "takes" past the deadline - simulates a slow/rate-limited webhook without a real
+  // sleep, so the loop's second iteration must see the deadline already blown and break.
+  globalThis.fetch = (() => {
+    calls++;
+    setSystemTime(new Date(tickStart + NOTIFY_DEADLINE_MS + 1000));
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }) as unknown as typeof fetch;
+  try {
+    await pollOnce(e);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  expect(calls).toBe(1);
+  expect(await database.select().from(alerts)).toHaveLength(1);
+  // The un-notified items must not be marked seen anywhere, or the next poll would silently
+  // drop them instead of retrying them.
+  expect(await database.select().from(seenItems)).toHaveLength(MOCK_POOL_SIZE + 1);
+
+  setSystemTime(new Date(tickStart)); // a fresh tick, clock not already past its own deadline
+  globalThis.fetch = (() => Promise.resolve(new Response(null, { status: 204 }))) as unknown as typeof fetch;
+  try {
+    await pollOnce(e);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  expect(await database.select().from(alerts)).toHaveLength(total);
+  expect(await database.select().from(seenItems)).toHaveLength(MOCK_POOL_SIZE + total);
 });
 
 test("turning on sold tracking persists without re-seeding", async () => {
@@ -300,6 +347,54 @@ test("an alert under the age cutoff is delivered, not retired", async () => {
   );
   expect(byId.get(fresh.id)!.deliveredAt).not.toBeNull();
   expect(byId.get(done.id)!.deliveredAt!.toISOString()).toBe(alreadyDelivered.toISOString());
+});
+
+test("redeliverPending stops at the wall-clock deadline, oldest-first, and the remainder is picked up next sweep", async () => {
+  const s = await createSearch(userId, input());
+  g.__ebaeState.users.get(userId)!.channels = ["https://discord.com/api/webhooks/1/test"];
+  const base = { userId, searchId: s.id, searchQ: s.q, title: "leica m6", itemUrl: "https://www.ebay.com/itm/x" };
+  // Ascending createdAt (pending-0 oldest), but inserted NEWEST-first: an unordered scan often
+  // returns rows in insertion order, which here would be the wrong (newest-first) order. Only a
+  // real ORDER BY makes the sweep actually deliver pending-0 first.
+  const rows = Array.from({ length: 3 }, (_, i) => ({
+    ...base,
+    itemId: `pending-${i}`,
+    createdAt: new Date(Date.now() - (3 - i) * 1000),
+  }));
+  await database.insert(alerts).values([...rows].reverse());
+
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  const sweepStart = Date.now();
+  // Every send "takes" past the deadline - simulates a slow/rate-limited target without a real
+  // sleep, so the sweep's second row must see the deadline already blown and stop there.
+  globalThis.fetch = (() => {
+    calls++;
+    setSystemTime(new Date(sweepStart + BOOT_REDELIVER_DEADLINE_MS + 1000));
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }) as unknown as typeof fetch;
+  try {
+    await redeliverPending(db()); // first sweep: stops after the deadline trips
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  expect(calls).toBe(1);
+  const delivered = await database.select().from(alerts).where(isNotNull(alerts.deliveredAt));
+  const pending = await database.select().from(alerts).where(isNull(alerts.deliveredAt));
+  expect(delivered).toHaveLength(1);
+  expect(delivered[0].itemId).toBe("pending-0"); // oldest-first, proves the ORDER BY is doing work
+  expect(pending).toHaveLength(2);
+
+  setSystemTime(new Date(sweepStart)); // a fresh boot, clock not already past its own deadline
+  globalThis.fetch = (() => Promise.resolve(new Response(null, { status: 204 }))) as unknown as typeof fetch;
+  try {
+    await redeliverPending(db()); // second sweep: the leftovers are not starved, they go now
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  expect(await database.select().from(alerts).where(isNull(alerts.deliveredAt))).toHaveLength(0);
 });
 
 // ---------- budget governor ----------

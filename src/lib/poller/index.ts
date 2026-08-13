@@ -22,8 +22,8 @@ export {
   type SearchInput,
 } from "./api";
 export { boot } from "./boot";
-export { REDELIVER_BATCH_CAP, redeliverPending } from "./delivery";
-export { FRESH_BATCH_CAP, MAX_BACKOFF_MS, QUOTA_SKIP_MS, pollOnce } from "./loop";
+export { redeliverPending } from "./delivery";
+export { MAX_BACKOFF_MS, QUOTA_SKIP_MS, pollOnce } from "./loop";
 export { excludeMatch, median } from "./market";
 export {
   BONUS_HEADROOM,
@@ -40,6 +40,7 @@ export {
 } from "./quota";
 export { activeFracElapsed, counterDayFrac, counterDayFracAt, inWindow, snoozeMinutes } from "./snooze";
 export {
+  NOTIFY_DEADLINE_MS,
   alertsTag,
   bumpAlerts,
   discordWebhooks,

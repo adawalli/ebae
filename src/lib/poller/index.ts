@@ -20,8 +20,8 @@ export {
   type SearchInput,
 } from "./api";
 export { boot } from "./boot";
-export { REDELIVER_BATCH_CAP, redeliverPending } from "./delivery";
-export { FRESH_BATCH_CAP, MAX_BACKOFF_MS, QUOTA_SKIP_MS, pollOnce } from "./loop";
+export { redeliverPending } from "./delivery";
+export { MAX_BACKOFF_MS, QUOTA_SKIP_MS, pollOnce } from "./loop";
 export { excludeMatch, median } from "./market";
 export {
   BONUS_HEADROOM,
@@ -37,4 +37,12 @@ export {
   usedToday,
 } from "./quota";
 export { activeFracElapsed, counterDayFrac, counterDayFracAt, inWindow, snoozeMinutes } from "./snooze";
-export { alertsTag, bumpAlerts, markStalePush, pushIsStale, type Entry, type UserCtx } from "./state";
+export {
+  NOTIFY_DEADLINE_MS,
+  alertsTag,
+  bumpAlerts,
+  markStalePush,
+  pushIsStale,
+  type Entry,
+  type UserCtx,
+} from "./state";

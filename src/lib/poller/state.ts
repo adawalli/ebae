@@ -5,6 +5,19 @@ import type { PollError, PriceKind, PushSub, Search } from "@/lib/types";
 
 export const plog = log.child({ component: "poller" });
 
+// Wall-clock budget for one batch of serial deliveries (the fresh-item notify loop in loop.ts,
+// and the boot redelivery sweep in delivery.ts). A per-item worst case (Discord: 3 attempts x
+// 15s timeout + up to 2 x 10s backoff = 65s) only bounds elapsed time for a fixed, small number
+// of delivery targets - it says nothing once a user has configured several webhooks or push
+// subscriptions, since each item pays that cost per target (webhooks serially; push serially
+// too, but concurrently with the webhook leg, so per item it's the max of the two legs, not the
+// sum). A COUNT cap is therefore calibrated against a variable it doesn't control: two dead
+// webhooks alone put a 25-item batch back at ~54 minutes. Bounding wall-clock time directly is
+// invariant to target count, page size, and future retry-constant changes. Budget: the health
+// floor is max(QUOTA_SKIP_MS, MAX_BACKOFF_MS) + 5min = 35min (see healthWindowMs in api.ts);
+// 20min leaves real margin under that regardless of how a batch is spent.
+export const NOTIFY_DEADLINE_MS = 20 * 60_000;
+
 // Overnight snooze (UI-configured, stored on the user's row, cached in UserCtx.snooze):
 // skip that user's eBay polls during a local-time window so we don't burn their quota while
 // nobody's watching. Items listed during the window still alert on the first poll after it

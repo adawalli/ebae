@@ -4,22 +4,17 @@ import { notify } from "@/lib/discord";
 import { notifyPush } from "@/lib/push";
 import { alerts, pushSubs } from "@/lib/schema";
 import type { Item, PriceContext } from "@/lib/types";
-import { type UserCtx, markStalePush, plog, recordError, state } from "./state";
+import { NOTIFY_DEADLINE_MS, type UserCtx, markStalePush, plog, recordError, state } from "./state";
 
 // An alert that couldn't be delivered is retried at the next boot, but deals are time-sensitive:
 // past this age, retire it unsent rather than spam stale listings when the process comes back.
 const REDELIVER_MAX_AGE_MS = 60 * 60_000;
 
-// One sweep's worth of pending rows. Worst case per row (see discord.ts notify(), one webhook):
-// 3 attempts x DISCORD_TIMEOUT_MS(15s) + 2 waits x DISCORD_MAX_RETRY_MS(10s) = 65s. This sweep
-// runs at boot before the first schedule() - the window /api/health already reads as the
-// freshness floor (healthWindowMs floors at max(QUOTA_SKIP_MS, MAX_BACKOFF_MS) + 5min = 35min),
-// so it's if anything more exposed than the per-tick cap in loop.ts. 25 rows x 65s = ~27min,
-// leaving margin inside that floor (50 rows x 65s = ~54min would blow through it). Leftovers are
-// picked up on the next boot, which is already the contract for a failed sweep - ordered
-// oldest-first (see the .orderBy below) so a row that misses one sweep is guaranteed to be
-// picked up by the next, rather than being starved by an arbitrary LIMIT selection.
-export const REDELIVER_BATCH_CAP = 25;
+// A memory bound only, not a time bound: keeps one boot from loading an unbounded backlog into
+// memory in a single query. Deliberately generous - the wall-clock deadline (NOTIFY_DEADLINE_MS,
+// checked in the loop below) is what actually keeps this sweep from wedging the boot heartbeat,
+// regardless of how many rows this returns.
+const REDELIVER_FETCH_LIMIT = 1000;
 
 // Redeliver alerts committed but never confirmed delivered - a crash between the alerts insert
 // and the notify, or a webhook outage that spanned the last shutdown. Called once at boot, before
@@ -79,8 +74,11 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
     })
     .from(alerts)
     .where(isNull(alerts.deliveredAt))
+    // Oldest-first: with a wall-clock deadline the cut point varies per sweep, so deterministic
+    // ordering is what stops a row being skipped sweep after sweep - once earlier rows are
+    // delivered or retired, this one is guaranteed to reach the front and get a turn.
     .orderBy(asc(alerts.createdAt), asc(alerts.id))
-    .limit(REDELIVER_BATCH_CAP);
+    .limit(REDELIVER_FETCH_LIMIT);
 
   if (!rows.length) return;
 
@@ -89,7 +87,11 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
   // just re-posts the confirmed-but-unflushed rows next boot, which is the same at-least-once
   // window the main path already accepts.
   const done: number[] = [];
+  const deadline = Date.now() + NOTIFY_DEADLINE_MS;
   for (const row of rows) {
+    // Checked before touching the row, so anything past the deadline is left completely
+    // untouched - deliveredAt stays null, so it's retried (oldest-first, see above) next boot.
+    if (Date.now() >= deadline) break;
     const s = row.searchId != null ? st.entries.get(row.searchId)?.s : undefined;
     if (!s) {
       // search deleted (search_id null) or gone from cache: no criteria to attach, retire it.

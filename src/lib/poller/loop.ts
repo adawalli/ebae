@@ -12,6 +12,7 @@ import { projectedCalls } from "./projection";
 import { QUOTA_CEILING, flushCalls, governedDelayMs, governorFor } from "./quota";
 import { activeMin, snoozing } from "./snooze";
 import {
+  NOTIFY_DEADLINE_MS,
   type Entry,
   type TrackedItem,
   type UserCtx,
@@ -28,16 +29,6 @@ export const MAX_BACKOFF_MS = 30 * 60_000;
 // How long a quota-exhausted search idles before re-checking. healthWindowMs treats this as
 // the floor of the freshness window, so raising it here widens that window too.
 export const QUOTA_SKIP_MS = 15 * 60_000;
-
-// One tick's worth of fresh items to notify. Worst case per item (see discord.ts notify(), one
-// webhook): 3 attempts x DISCORD_TIMEOUT_MS(15s) + 2 waits x DISCORD_MAX_RETRY_MS(10s) = 65s.
-// This loop is otherwise bounded only by the 200-item eBay page, so a slow or rate-limited
-// webhook can wedge a tick past the health window - healthWindowMs floors at
-// max(QUOTA_SKIP_MS, MAX_BACKOFF_MS) + 5min = 35min. 25 items x 65s = ~27min, leaving margin
-// inside that floor (50 items x 65s = ~54min would blow through it). Un-notified items are never
-// added to e.seen or seen_items (see the slice below), so they're picked up unchanged by the
-// next poll.
-export const FRESH_BATCH_CAP = 25;
 
 // The reschedule delay after a failed poll. A RateLimitError carries eBay's own wait hint: honor
 // it, but never poll faster than the user's interval and never park so long the /api/health
@@ -320,12 +311,16 @@ export async function pollOnce(e: Entry) {
       // reassigns u.push rather than mutating it, so this alias would otherwise keep handing
       // a reaped endpoint to every later item in the batch.
       let subs = u.push;
-      // Oldest-first, capped: fresh is newest-first from eBay, reversed for chronological
-      // notify order, then sliced so a batch bigger than the cap doesn't wedge this tick. Items
-      // past the cap are left untouched here - not added to e.seen or seen_items - so the next
-      // poll picks them up unchanged (see FRESH_BATCH_CAP).
-      const toNotify = [...fresh].reverse().slice(0, FRESH_BATCH_CAP);
-      for (const item of toNotify) {
+      // Oldest-first: fresh is newest-first from eBay, reversed here for chronological notify
+      // order.
+      const notifyStart = Date.now();
+      for (const item of [...fresh].reverse()) {
+        // Wall-clock deadline, not a count: a slow or rate-limited target (or several - see
+        // NOTIFY_DEADLINE_MS) can otherwise wedge this tick past the health window. Checked
+        // before touching the item, so anything past the deadline is left completely untouched
+        // - not added to e.seen, not written to seen_items - and the next poll picks it up
+        // unchanged.
+        if (Date.now() - notifyStart >= NOTIFY_DEADLINE_MS) break;
         // Recomputed per item, not once per batch: reaping the last subscription has to be
         // able to take this to zero, or the rows below would seed deliveredAt=null for a
         // target that no longer exists and never be delivered by anyone.

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { BOOT_REDELIVER_DEADLINE_MS, bootRedeliverBudgetMs } from "./delivery";
+import { BOOT_REDELIVER_DEADLINE_MS, bootRedeliverBudgetMs, bootRedeliverLoopBudgetMs } from "./delivery";
 
 // deploy/k8s.yaml's liveness probe, not the /api/health freshness window: the boot redelivery
 // sweep runs after st.ready = true but before the first schedule() (see boot.ts), so it's the
@@ -27,4 +27,28 @@ test("bootRedeliverBudgetMs leaves room for startup AND one row's worst-case fan
   // incidental.
   expect(bootRedeliverBudgetMs(260_000)).toBe(0);
   expect(bootRedeliverBudgetMs(1_000_000)).toBe(0);
+});
+
+// The loop's own deadline (sweepStart + this) is anchored BEFORE the pending-row SELECT in
+// redeliverPending, so the query's own duration erodes it rather than being free - see the
+// comment on bootRedeliverLoopBudgetMs in delivery.ts. That anchoring behavior itself needs a
+// real clock and a slow query to exercise end-to-end, which isn't worth a clock-injection harness
+// for; what's pure and worth pinning here is the arithmetic budgetMs feeds into: the loop always
+// gets strictly less than the overall budget, by exactly the flush reservation, and never negative.
+test("bootRedeliverLoopBudgetMs reserves a fixed slice for the flush and never goes negative", () => {
+  const zeroElapsed = bootRedeliverLoopBudgetMs(0);
+  expect(zeroElapsed).toBeLessThan(bootRedeliverBudgetMs(0));
+  expect(bootRedeliverBudgetMs(0) - zeroElapsed).toBeGreaterThan(0); // the reservation itself
+
+  // Once the overall budget floors at zero, the loop budget floors at zero too - not negative.
+  expect(bootRedeliverBudgetMs(1_000_000)).toBe(0);
+  expect(bootRedeliverLoopBudgetMs(1_000_000)).toBe(0);
+
+  // A budget smaller than the reservation itself must still floor at zero, not go negative.
+  // At 232s elapsed, bootRedeliverBudgetMs = 300s - 232s - 65s(one row) = 3s - less than the 5s
+  // flush reservation.
+  const almostGone = bootRedeliverBudgetMs(232_000);
+  expect(almostGone).toBeGreaterThan(0);
+  expect(almostGone).toBeLessThan(5_000);
+  expect(bootRedeliverLoopBudgetMs(232_000)).toBe(0);
 });

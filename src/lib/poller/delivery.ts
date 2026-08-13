@@ -48,6 +48,25 @@ export function bootRedeliverBudgetMs(elapsedMs: number): number {
   return Math.max(0, Math.min(BOOT_REDELIVER_DEADLINE_MS, PROBE_GRACE_MS - elapsedMs - ONE_ROW_WORST_CASE_MS));
 }
 
+// A fixed reservation, not a measurement: the batched deliveredAt flush after the loop has its
+// own duration we can't know in advance any better than the pending-row SELECT's, so this just
+// carves out a slice for it up front rather than timing it.
+const FLUSH_RESERVE_MS = 5_000;
+
+// What the row loop itself gets to spend, once the flush reservation comes out of the overall
+// budget. Also pure/testable: the loop's deadline is `sweepStart + bootRedeliverLoopBudgetMs(...)`,
+// anchored at the same instant elapsedMs is sampled - i.e. BEFORE the pending-row SELECT runs
+// below, not after. That anchoring matters: the SELECT filters deliveredAt IS NULL and sorts by
+// createdAt with no supporting index on alerts (known, separately tracked, out of scope here), so
+// on a large table under a cold/suspended DB it can itself take real time - exactly the slow-boot
+// case this budget exists for. Anchoring before it means that time is charged against the loop's
+// window instead of being free; if the SELECT alone exhausts it, the loop's first deadline check
+// is already past due and it delivers nothing, falling through to an empty `done` (no-op flush,
+// not an error - see the `if (done.length)` guard below).
+export function bootRedeliverLoopBudgetMs(elapsedMs: number): number {
+  return Math.max(0, bootRedeliverBudgetMs(elapsedMs) - FLUSH_RESERVE_MS);
+}
+
 // ponytail: two residuals stack here. (1) Same as NOTIFY_DEADLINE_MS - one row's fan-out is
 // unbudgeted, so a search with enough dead targets can still push the sweep past whatever budget
 // bootRedeliverBudgetMs computed. (2) process.uptime() approximates elapsed-since-container-start
@@ -100,11 +119,15 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
       ),
     );
 
-  const budgetMs = bootRedeliverBudgetMs(process.uptime() * 1000);
+  // Anchored HERE, before the SELECT below, not after it returns: see bootRedeliverLoopBudgetMs
+  // for why that ordering is load-bearing.
+  const sweepStart = Date.now();
+  const elapsedMs = process.uptime() * 1000;
   // Startup alone already ate the probe grace: skip the sweep entirely rather than risk
   // overrunning it. Rows stay deliveredAt=null and are retried, oldest-first, next boot - the
   // same contract a partial sweep already relies on.
-  if (budgetMs <= 0) return;
+  if (bootRedeliverBudgetMs(elapsedMs) <= 0) return;
+  const deadline = sweepStart + bootRedeliverLoopBudgetMs(elapsedMs);
 
   const rows = await database
     .select({
@@ -135,7 +158,6 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
   // just re-posts the confirmed-but-unflushed rows next boot, which is the same at-least-once
   // window the main path already accepts.
   const done: number[] = [];
-  const deadline = Date.now() + budgetMs;
   for (const row of rows) {
     // Checked before touching the row, so anything past the deadline is left completely
     // untouched - deliveredAt stays null, so it's retried (oldest-first, see above) next boot.

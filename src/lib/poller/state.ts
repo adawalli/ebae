@@ -15,8 +15,18 @@ export const plog = log.child({ component: "poller" });
 // webhooks alone put a 25-item batch back at ~54 minutes. Bounding wall-clock time directly is
 // invariant to target count, page size, and future retry-constant changes. Budget: the health
 // floor is max(QUOTA_SKIP_MS, MAX_BACKOFF_MS) + 5min = 35min (see healthWindowMs in api.ts);
-// 20min leaves real margin under that regardless of how a batch is spent.
-export const NOTIFY_DEADLINE_MS = 20 * 60_000;
+// 10min leaves margin under that even after the residual below, and stays far above a single
+// item's ~65s worst case, so a batch always makes forward progress (the deadline is only checked
+// before an item, never mid-item, so the first item in any invocation always gets attempted).
+//
+// ponytail: the deadline bounds elapsed time up to the start of the last item it lets through,
+// but that item's own webhook/push fan-out is unbounded and serial - so the real ceiling is
+// deadline + one item's full fan-out cost, not the deadline alone. At this budget the health
+// floor is breached around 23 dead Discord webhooks on one search (10min + 23 x 65s ~= 35min).
+// Upgrade path if that's ever a real risk: send to targets concurrently (Promise.all across
+// webhooks, not just across the webhook/push legs), or cap configured target count - both are
+// bigger changes to the delivery contract than this fix justifies today.
+export const NOTIFY_DEADLINE_MS = 10 * 60_000;
 
 // Overnight snooze (UI-configured, stored on the user's row, cached in UserCtx.snooze):
 // skip that user's eBay polls during a local-time window so we don't burn their quota while

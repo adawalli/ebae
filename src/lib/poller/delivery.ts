@@ -55,14 +55,15 @@ const FLUSH_RESERVE_MS = 5_000;
 
 // What the row loop itself gets to spend, once the flush reservation comes out of the overall
 // budget. Also pure/testable: the loop's deadline is `sweepStart + bootRedeliverLoopBudgetMs(...)`,
-// anchored at the same instant elapsedMs is sampled - i.e. BEFORE the pending-row SELECT runs
-// below, not after. That anchoring matters: the SELECT filters deliveredAt IS NULL and sorts by
-// createdAt with no supporting index on alerts (known, separately tracked, out of scope here), so
-// on a large table under a cold/suspended DB it can itself take real time - exactly the slow-boot
-// case this budget exists for. Anchoring before it means that time is charged against the loop's
-// window instead of being free; if the SELECT alone exhausts it, the loop's first deadline check
-// is already past due and it delivers nothing, falling through to an empty `done` (no-op flush,
-// not an error - see the `if (done.length)` guard below).
+// anchored at the same instant elapsedMs is sampled - which is at the very top of
+// redeliverPending, before ANY database statement it issues (the age-retirement UPDATE included,
+// not just the pending-row SELECT). Neither query is backed by an index on alerts for the columns
+// they filter/sort on (known, separately tracked, out of scope here), so either can itself take
+// real time on a large table under a cold/suspended DB - exactly the slow-boot case this budget
+// exists to survive. Anchoring before both means their duration is charged against the loop's
+// window instead of being free; if they alone exhaust it, the loop's first deadline check is
+// already past due and it delivers nothing, falling through to an empty `done` (no-op flush, not
+// an error - see the `if (done.length)` guard below).
 export function bootRedeliverLoopBudgetMs(elapsedMs: number): number {
   return Math.max(0, bootRedeliverBudgetMs(elapsedMs) - FLUSH_RESERVE_MS);
 }
@@ -76,6 +77,14 @@ export function bootRedeliverLoopBudgetMs(elapsedMs: number): number {
 // /api/health instead of budgeting around its 503 window for (2) and the root problem generally
 // - cleaner, but it changes health semantics and risks masking a genuinely wedged boot, so it
 // needs its own design and tests rather than riding along with this fix.
+//
+// This anchor has moved three times across review rounds - after the SELECT, then before the
+// SELECT, now before the age-retirement UPDATE too - each time chasing one more unbudgeted
+// database statement. That pattern is itself the tell: the actual root cause is /api/health
+// reporting 503 for the whole boot phase (see the ordering note above), not the placement of any
+// one Date.now() call. The "keep the boot phase healthy" upgrade path already named above is what
+// stops this from needing a fourth move; anyone tempted to shift the anchor again should read
+// that as the real fix instead.
 
 // Redeliver alerts committed but never confirmed delivered - a crash between the alerts insert
 // and the notify, or a webhook outage that spanned the last shutdown. Called once at boot, before
@@ -108,6 +117,23 @@ export async function reapPush(database: ReturnType<typeof db>, u: UserCtx, dead
 
 export async function redeliverPending(database: ReturnType<typeof db>) {
   const st = state();
+  // Anchored at the very top, before ANY database statement this sweep issues - including the
+  // age-retirement UPDATE right below, which scans the same unindexed deliveredAt/createdAt
+  // columns as the SELECT further down and can just as easily burn probe grace on a large or
+  // cold-starting table. See bootRedeliverLoopBudgetMs for why the anchor has to precede every
+  // query, not just the SELECT.
+  const sweepStart = Date.now();
+  const elapsedMs = process.uptime() * 1000;
+  // Startup alone already ate the probe grace: skip the ENTIRE sweep, including retirement,
+  // rather than risk overrunning it. Safe to skip retirement here: it's an optimization that
+  // stops stale alerts being re-sent, not a correctness requirement - the rows it would have
+  // retired simply stay deliveredAt=null, and the very next boot with any budget runs this same
+  // UPDATE first (before it could ever reach the delivery loop below), retiring them there
+  // instead. They can never reach a real delivery attempt on a budget-exhausted boot, because the
+  // rest of this sweep (SELECT and the notify loop) is skipped too - not just retirement.
+  if (bootRedeliverBudgetMs(elapsedMs) <= 0) return;
+  const deadline = sweepStart + bootRedeliverLoopBudgetMs(elapsedMs);
+
   const now = new Date(); // one stamp for the whole sweep, so the DB shows they came from one boot
   await database
     .update(alerts)
@@ -118,16 +144,6 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
         lt(alerts.createdAt, sql`now() - (${REDELIVER_MAX_AGE_MS / 60_000} * interval '1 minute')`),
       ),
     );
-
-  // Anchored HERE, before the SELECT below, not after it returns: see bootRedeliverLoopBudgetMs
-  // for why that ordering is load-bearing.
-  const sweepStart = Date.now();
-  const elapsedMs = process.uptime() * 1000;
-  // Startup alone already ate the probe grace: skip the sweep entirely rather than risk
-  // overrunning it. Rows stay deliveredAt=null and are retried, oldest-first, next boot - the
-  // same contract a partial sweep already relies on.
-  if (bootRedeliverBudgetMs(elapsedMs) <= 0) return;
-  const deadline = sweepStart + bootRedeliverLoopBudgetMs(elapsedMs);
 
   const rows = await database
     .select({

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
-import { eq } from "drizzle-orm";
+import { eq, isNotNull, isNull } from "drizzle-orm";
 import { freshTestDb } from "./helpers/db";
 import { stubEbayLive } from "./helpers/ebay-stub";
 import { mkItem } from "./helpers/fixtures";
@@ -10,7 +10,9 @@ import { userCtx } from "@/lib/poller/boot"; // not on the barrel: the reload se
 import { flushCalls } from "@/lib/poller/quota"; // ditto: persistence is the poller's own business
 import { BONUS_MIN_GAP_MS } from "@/lib/poller/track"; // ditto: the check schedule is internal
 import {
+  FRESH_BATCH_CAP,
   GOV_MAX_FACTOR,
+  REDELIVER_BATCH_CAP,
   createSearch,
   listSearches,
   pollOnce,
@@ -115,6 +117,28 @@ test("a new listing after seeding writes exactly one alert", async () => {
   // No channels and no push subscriptions, so the insert stamps delivery itself.
   expect(rows[0].deliveredAt).not.toBeNull();
   expect(await database.select().from(seenItems)).toHaveLength(MOCK_POOL_SIZE + 1);
+});
+
+test("a fresh batch larger than the cap notifies at most the cap in one tick, rest lands next tick", async () => {
+  const e = await seededEntry();
+  const pool = g.__ebaeMock.pools.get(e.s.id)!;
+  const extra = FRESH_BATCH_CAP + 5;
+  // unshift oldest-first so the front of the pool (newest) is batch-(extra-1) - matches
+  // mockSearch's own convention, which is what `fresh`'s reverse-then-slice relies on.
+  for (let i = 0; i < extra; i++) {
+    pool.unshift(injected({ itemId: `batch-${i}`, itemUrl: `https://www.ebay.com/itm/batch-${i}` }));
+  }
+
+  await pollOnce(e);
+
+  expect(await database.select().from(alerts)).toHaveLength(FRESH_BATCH_CAP);
+  // Un-notified items must not be marked seen anywhere, or the next poll would silently drop them.
+  expect(await database.select().from(seenItems)).toHaveLength(MOCK_POOL_SIZE + FRESH_BATCH_CAP);
+
+  await pollOnce(e);
+
+  expect(await database.select().from(alerts)).toHaveLength(extra);
+  expect(await database.select().from(seenItems)).toHaveLength(MOCK_POOL_SIZE + extra);
 });
 
 test("turning on sold tracking persists without re-seeding", async () => {
@@ -300,6 +324,26 @@ test("an alert under the age cutoff is delivered, not retired", async () => {
   );
   expect(byId.get(fresh.id)!.deliveredAt).not.toBeNull();
   expect(byId.get(done.id)!.deliveredAt!.toISOString()).toBe(alreadyDelivered.toISOString());
+});
+
+test("redeliverPending caps a sweep and leaves the remainder pending for the next boot", async () => {
+  const s = await createSearch(userId, input());
+  g.__ebaeState.users.get(userId)!.channels = ["https://discord.com/api/webhooks/1/test"];
+  const base = { userId, searchId: s.id, searchQ: s.q, title: "leica m6", itemUrl: "https://www.ebay.com/itm/x" };
+  await database
+    .insert(alerts)
+    .values(Array.from({ length: REDELIVER_BATCH_CAP + 1 }, (_, i) => ({ ...base, itemId: `pending-${i}` })));
+
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.resolve(new Response(null, { status: 204 }))) as unknown as typeof fetch;
+  try {
+    await redeliverPending(db());
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  expect(await database.select().from(alerts).where(isNotNull(alerts.deliveredAt))).toHaveLength(REDELIVER_BATCH_CAP);
+  expect(await database.select().from(alerts).where(isNull(alerts.deliveredAt))).toHaveLength(1);
 });
 
 // ---------- budget governor ----------

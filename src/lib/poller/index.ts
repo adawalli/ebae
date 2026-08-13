@@ -20,8 +20,8 @@ export {
   type SearchInput,
 } from "./api";
 export { boot } from "./boot";
-export { redeliverPending } from "./delivery";
-export { MAX_BACKOFF_MS, QUOTA_SKIP_MS, pollOnce } from "./loop";
+export { REDELIVER_BATCH_CAP, redeliverPending } from "./delivery";
+export { FRESH_BATCH_CAP, MAX_BACKOFF_MS, QUOTA_SKIP_MS, pollOnce } from "./loop";
 export { excludeMatch, median } from "./market";
 export {
   BONUS_HEADROOM,

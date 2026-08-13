@@ -37,6 +37,7 @@ export type Entry = {
   hitTimes: number[]; // alert timestamps within the last 24h
   lastHitAt: number | null;
   lastPolledAt: number | null;
+  truncated: boolean; // whether the last successful Browse poll exceeded its 200-item page
   timer: ReturnType<typeof setTimeout> | null;
   backoffMs: number; // 0 = healthy
   running: boolean; // a tick is in flight; blocks overlapping ticks
@@ -153,6 +154,7 @@ export function newEntry(s: Search): Entry {
     hitTimes: [],
     lastHitAt: null,
     lastPolledAt: null,
+    truncated: false,
     timer: null,
     backoffMs: 0,
     running: false,

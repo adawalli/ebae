@@ -134,15 +134,18 @@ async function token(creds: EbayCreds): Promise<string> {
 // names, condition-ID mapping, price-bound syntax) is unit-tested — mock mode bypasses
 // this whole path, which is how a `conditions` vs `conditionIds` mistake could ship.
 export function browseFilters(s: Search, currency: string): string[] {
+  const mixed = s.includeAuctions || s.trackSold;
   const filters = [
     // always constrain buying options: without a filter eBay returns auctions too.
     // includeAuctions is the source of truth (binOnly is its UI inverse); default is BIN-only.
     // trackSold also widens to auctions: their winning bids feed the sold median even on a
     // BIN-only search, where the poller follows them without alerting (see loop.ts).
-    s.includeAuctions || s.trackSold ? "buyingOptions:{FIXED_PRICE|AUCTION}" : "buyingOptions:{FIXED_PRICE}",
+    mixed ? "buyingOptions:{FIXED_PRICE|AUCTION}" : "buyingOptions:{FIXED_PRICE}",
   ];
   // eBay accepts [min..max], [min..], or [..max] — build whichever bounds are set.
-  if (s.priceFloor != null || s.priceCap != null) {
+  // Its mixed-mode filter compares hybrids against their current auction bid instead of their
+  // BIN price, so mixed results are bounded locally after normalization (browseSearch).
+  if (!mixed && (s.priceFloor != null || s.priceCap != null)) {
     const lo = s.priceFloor ?? "";
     const hi = s.priceCap ?? "";
     filters.push(`price:[${lo}..${hi}]`, `priceCurrency:${currency}`);
@@ -169,7 +172,11 @@ export function marketSampleSearch(s: Search): Search {
 // Shared Browse item_summary/search call. searchNewlyListed and sampleMarket differ only in
 // page size and (via marketSampleSearch) the price bounds, so auth/params/error-handling/
 // parsing live here once — a fix to any of those can't land in one path and miss the other.
-async function browseSearch(creds: EbayCreds, s: Search, limit: number): Promise<Item[]> {
+async function browseSearch(
+  creds: EbayCreds,
+  s: Search,
+  limit: number,
+): Promise<{ items: Item[]; truncated: boolean }> {
   const filters = browseFilters(s, currencyFor(creds.marketplace));
   const params = new URLSearchParams({ q: s.q, sort: "newlyListed", limit: String(limit) });
   if (s.categoryId) params.set("category_ids", s.categoryId);
@@ -191,15 +198,25 @@ async function browseSearch(creds: EbayCreds, s: Search, limit: number): Promise
     if (res.status === 429) throw new RateLimitError(retryAfterMs(res) ?? RATE_LIMIT_DEFAULT_MS);
     throw new Error(`eBay search failed (${s.q}): ${res.status} ${await res.text()}`);
   }
-  const data = (await res.json()) as { itemSummaries?: EbaySummary[] };
-  return (data.itemSummaries ?? []).map(normalize);
+  const data = (await res.json()) as { itemSummaries?: EbaySummary[]; total?: number };
+  return {
+    items: (data.itemSummaries ?? [])
+      .map(normalize)
+      .filter(
+        (i) =>
+          (s.priceFloor == null || (i.price != null && i.price >= s.priceFloor)) &&
+          (s.priceCap == null || (i.price != null && i.price <= s.priceCap)),
+      ),
+    truncated: (data.total ?? 0) > limit,
+  };
 }
 
 // Newest-first page 1 of the Browse API for one saved search. limit 200 (Browse max) is one
 // call but covers 200 newly-listed items per poll, so a hot search or a long snooze can't
 // silently drop new listings off a 50-item page 1.
-// ponytail: single page; if 200 new between two polls ever happens, add offset paging.
-export async function searchNewlyListed(creds: EbayCreds, s: Search): Promise<Item[]> {
+// ponytail: single page; the poller warns when eBay reports more than 200 matches. Add offset
+// paging only if that warning proves narrowing the search is insufficient.
+export async function searchNewlyListed(creds: EbayCreds, s: Search): Promise<{ items: Item[]; truncated: boolean }> {
   return browseSearch(creds, s, 200);
 }
 
@@ -208,7 +225,7 @@ export async function searchNewlyListed(creds: EbayCreds, s: Search): Promise<It
 // would clip it — while the kept floor keeps sub-band accessories out of the median. Newest
 // 100; active asking prices only (Browse has no sold data).
 export async function sampleMarket(creds: EbayCreds, s: Search): Promise<Item[]> {
-  return browseSearch(creds, marketSampleSearch(s), 100);
+  return (await browseSearch(creds, marketSampleSearch(s), 100)).items;
 }
 
 type EbaySummary = {

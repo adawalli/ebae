@@ -46,6 +46,13 @@ export function pollingEnabled(): boolean {
   return process.env.NODE_ENV !== "development" || process.env.ENABLE_DEV_POLLER === "1";
 }
 
+// One tick's worth of fresh items to notify. Each item can cost ~65s in the retry path (3
+// attempts x 15s timeout + up to 10s backoff), and this loop is otherwise bounded only by the
+// 200-item eBay page - a slow or rate-limited webhook can wedge a tick past the health window.
+// Un-notified items are never added to e.seen or seen_items (see the slice below), so they're
+// picked up unchanged by the next poll.
+export const FRESH_BATCH_CAP = 50;
+
 // The reschedule delay after a failed poll. A RateLimitError carries eBay's own wait hint: honor
 // it, but never poll faster than the user's interval and never park so long the /api/health
 // heartbeat goes stale. The freshness window is at least intervalMs*GOV_MAX_FACTOR (see
@@ -363,7 +370,12 @@ export async function pollOnce(e: Entry) {
           });
         }
       }
-      for (const item of [...fresh].reverse()) {
+      // Oldest-first, capped: fresh is newest-first from eBay, reversed for chronological
+      // notify order, then sliced so a batch bigger than the cap doesn't wedge this tick. Items
+      // past the cap are left untouched here - not added to e.seen or seen_items - so the next
+      // poll picks them up unchanged (see FRESH_BATCH_CAP).
+      const toNotify = [...fresh].reverse().slice(0, FRESH_BATCH_CAP);
+      for (const item of toNotify) {
         // Recomputed per item, not once per batch: reaping the last subscription has to be
         // able to take this to zero, or the rows below would seed deliveredAt=null for a
         // target that no longer exists and never be delivered by anyone.

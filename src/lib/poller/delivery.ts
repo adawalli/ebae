@@ -11,9 +11,9 @@ import { type UserCtx, markStalePush, plog, recordError, state } from "./state";
 const REDELIVER_MAX_AGE_MS = 60 * 60_000;
 
 // A memory bound only, not a time bound: keeps one boot from loading an unbounded backlog into
-// memory in a single query. Deliberately generous - the wall-clock deadline
-// (BOOT_REDELIVER_DEADLINE_MS, checked in the loop below) is what actually keeps this sweep from
-// wedging the boot heartbeat, regardless of how many rows this returns.
+// memory in a single query. Deliberately generous - the wall-clock budget (bootRedeliverBudgetMs,
+// checked in the loop below) is what actually keeps this sweep from wedging the boot heartbeat,
+// regardless of how many rows this returns.
 const REDELIVER_FETCH_LIMIT = 1000;
 
 // This sweep runs at boot, after `st.ready = true` but before the first schedule() (see
@@ -21,19 +21,42 @@ const REDELIVER_FETCH_LIMIT = 1000;
 // SELECT then double-notifies. That ordering means /api/health reads 503 ("heartbeat stale",
 // lastScheduledAt null) for the sweep's whole duration, which puts it under the k8s liveness
 // probe grace (deploy/k8s.yaml), NOT the steadier /api/health freshness window loop.ts's
-// NOTIFY_DEADLINE_MS is calibrated against. Probe grace = initialDelaySeconds(30) +
-// failureThreshold(10) x periodSeconds(30) = 330s (~5.5min) before kubelet restarts the pod -
-// far tighter than the 35min health floor. (docker-compose.yml's healthcheck is looser and,
-// without an orchestrator watching container health, doesn't restart the container at all, so
-// it isn't the binding constraint here.) 3min leaves ~2.5min of margin under the probe grace,
-// and - like NOTIFY_DEADLINE_MS - stays far above a single item's ~65s worst case, so the sweep
-// always attempts at least its first row (checked before touching a row, never mid-row).
+// NOTIFY_DEADLINE_MS is calibrated against. Probe grace: failures land at t=30, 60, 90...
+// (initialDelaySeconds, then every periodSeconds), so the 10th (failureThreshold) lands at
+// 30 + 9x30 = 300s before kubelet restarts the pod - far tighter than the 35min health floor.
+// (docker-compose.yml's healthcheck is looser and, without an orchestrator watching container
+// health, doesn't restart the container at all under plain docker/compose, so it isn't the
+// binding constraint here.)
 //
-// ponytail: same residual as NOTIFY_DEADLINE_MS - the real ceiling is this deadline plus one
-// row's full webhook/push fan-out, so a search with enough dead targets can still push the sweep
-// past the probe grace (roughly 2-3 dead webhooks on the row in flight when the deadline trips).
-// Same upgrade path: concurrent per-row fan-out, or a configured-target-count limit.
-export const BOOT_REDELIVER_DEADLINE_MS = 3 * 60_000;
+// 300s isn't all ours: migrations, the snapshot cache reload, and Next.js startup all burn probe
+// budget before this function ever runs, and one in-flight row's own fan-out (see
+// ONE_ROW_WORST_CASE_MS) is unbudgeted by the deadline (checked before a row, never mid-row - see
+// the residual below). A flat 3min deadline ignored both and could leave as little as ~55s for
+// everything before the sweep, which is not real margin. bootRedeliverBudgetMs derives the
+// budget from the REMAINING probe window instead: min(this ceiling, grace - elapsed - one row's
+// worst case), floored at zero so a slow boot skips the sweep entirely rather than overrunning
+// it - safe, since skipped rows just stay deliveredAt=null and retry oldest-first next boot,
+// which is already the contract. 60s keeps the common-case (near-zero elapsed) budget well clear
+// of BOTH the probe grace and the steady-state NOTIFY_DEADLINE_MS.
+export const BOOT_REDELIVER_DEADLINE_MS = 60_000;
+const PROBE_GRACE_MS = 300_000;
+const ONE_ROW_WORST_CASE_MS = 65_000; // same 65s derivation as NOTIFY_DEADLINE_MS (see state.ts)
+
+// Pure so it's unit-testable without a real boot: elapsedMs is process.uptime()*1000 at the
+// caller. Exported for tests only - redeliverPending is the one real caller.
+export function bootRedeliverBudgetMs(elapsedMs: number): number {
+  return Math.max(0, Math.min(BOOT_REDELIVER_DEADLINE_MS, PROBE_GRACE_MS - elapsedMs - ONE_ROW_WORST_CASE_MS));
+}
+
+// ponytail: two residuals stack here. (1) Same as NOTIFY_DEADLINE_MS - one row's fan-out is
+// unbudgeted, so a search with enough dead targets can still push the sweep past whatever budget
+// bootRedeliverBudgetMs computed. (2) process.uptime() approximates elapsed-since-container-start
+// closely enough for this purpose, but isn't exact (e.g. a paused/throttled process). Upgrade
+// paths, both bigger changes than this fix justifies today: concurrent per-row fan-out (or a
+// configured-target-count limit) for (1); keeping the boot phase reporting healthy in
+// /api/health instead of budgeting around its 503 window for (2) and the root problem generally
+// - cleaner, but it changes health semantics and risks masking a genuinely wedged boot, so it
+// needs its own design and tests rather than riding along with this fix.
 
 // Redeliver alerts committed but never confirmed delivered - a crash between the alerts insert
 // and the notify, or a webhook outage that spanned the last shutdown. Called once at boot, before
@@ -77,6 +100,12 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
       ),
     );
 
+  const budgetMs = bootRedeliverBudgetMs(process.uptime() * 1000);
+  // Startup alone already ate the probe grace: skip the sweep entirely rather than risk
+  // overrunning it. Rows stay deliveredAt=null and are retried, oldest-first, next boot - the
+  // same contract a partial sweep already relies on.
+  if (budgetMs <= 0) return;
+
   const rows = await database
     .select({
       id: alerts.id,
@@ -106,7 +135,7 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
   // just re-posts the confirmed-but-unflushed rows next boot, which is the same at-least-once
   // window the main path already accepts.
   const done: number[] = [];
-  const deadline = Date.now() + BOOT_REDELIVER_DEADLINE_MS;
+  const deadline = Date.now() + budgetMs;
   for (const row of rows) {
     // Checked before touching the row, so anything past the deadline is left completely
     // untouched - deliveredAt stays null, so it's retried (oldest-first, see above) next boot.

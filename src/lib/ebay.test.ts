@@ -77,6 +77,15 @@ test("browseFilters: price bounds build [lo..hi], [..hi], [lo..] with a currency
   expect(browseFilters({ ...base, priceFloor: 100 }, "USD")).toContain("price:[100..]");
 });
 
+// eBay applies a mixed FIXED_PRICE|AUCTION price filter to an auction's current bid, which can
+// hide a hybrid listing whose BIN price is inside the band. Mixed searches fetch the page
+// without a server-side band and enforce the same bounds after normalization instead.
+test("browseFilters: mixed buying options leave price bounds for local filtering", () => {
+  const banded = { ...base, priceFloor: 150, priceCap: 800 };
+  expect(browseFilters({ ...banded, trackSold: true }, "USD")).toEqual(["buyingOptions:{FIXED_PRICE|AUCTION}"]);
+  expect(browseFilters({ ...banded, includeAuctions: true }, "USD")).toEqual(["buyingOptions:{FIXED_PRICE|AUCTION}"]);
+});
+
 // The currency clause comes from the caller's marketplace, not a module-global.
 test("browseFilters: priceCurrency follows the passed currency", () => {
   expect(browseFilters({ ...base, priceFloor: 100 }, "GBP")).toContain("priceCurrency:GBP");
@@ -128,8 +137,7 @@ test("conditionExcluded: an unknown future condition ID survives NOT_PARTS and U
 
 test("browseFilters: all clauses compose in order", () => {
   const f = browseFilters({ ...base, includeAuctions: true, priceFloor: 50, priceCap: 900, conditions: "NEW" }, "USD");
-  expect(f[0]).toBe("buyingOptions:{FIXED_PRICE|AUCTION}");
-  expect(f).toContain("price:[50..900]");
+  expect(f).toEqual(["buyingOptions:{FIXED_PRICE|AUCTION}"]);
 });
 
 // The market sample keeps the FLOOR and drops only the CAP. Regression guard for the
@@ -193,6 +201,48 @@ const creds = (userId: number): EbayCreds => ({
   clientSecret: "secret",
   env: "production",
   marketplace: "EBAY_US",
+});
+
+test("searchNewlyListed: mixed searches filter normalized prices locally and report truncation", async () => {
+  let asked = "";
+  const summary = (itemId: string, value: string | null, buyingOptions: string[]) => ({
+    itemId,
+    title: itemId,
+    ...(value == null ? {} : { price: { value, currency: "USD" } }),
+    buyingOptions,
+    itemWebUrl: `https://www.ebay.com/itm/${itemId}`,
+  });
+  const restore = stubEbay((url) => {
+    asked = url;
+    return Response.json({
+      total: 201,
+      itemSummaries: [
+        summary("hybrid", "699", ["FIXED_PRICE", "AUCTION"]),
+        summary("floor-auction", "150", ["AUCTION"]),
+        summary("cap-fixed", "800", ["FIXED_PRICE"]),
+        summary("below", "149.99", ["FIXED_PRICE"]),
+        summary("above", "800.01", ["FIXED_PRICE"]),
+        summary("unpriced", null, ["FIXED_PRICE"]),
+      ],
+    });
+  });
+  try {
+    const result = await searchNewlyListed(creds(940), {
+      ...base,
+      trackSold: true,
+      priceFloor: 150,
+      priceCap: 800,
+    });
+    expect(result.truncated).toBe(true);
+    expect(result.items.map(({ itemId, price, buyingOption }) => ({ itemId, price, buyingOption }))).toEqual([
+      { itemId: "hybrid", price: 699, buyingOption: "FIXED_PRICE" },
+      { itemId: "floor-auction", price: 150, buyingOption: "AUCTION" },
+      { itemId: "cap-fixed", price: 800, buyingOption: "FIXED_PRICE" },
+    ]);
+  } finally {
+    restore();
+  }
+  expect(new URL(asked).searchParams.get("filter")).toBe("buyingOptions:{FIXED_PRICE|AUCTION}");
 });
 
 test("checkItem: a sold listing reads back its availability, sold quantity and price", async () => {

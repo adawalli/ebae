@@ -197,6 +197,42 @@ test("a failing poll backs off by doubling, capped at 30 minutes", async () => {
   expect(e.backoffMs).toBe(0);
 });
 
+test("a truncated Browse episode warns once and rearms after a complete result", async () => {
+  const s = await createSearch(userId, input());
+  const e = g.__ebaeState.entries.get(s.id)!;
+  const u = g.__ebaeState.users.get(userId)!;
+  u.ebay = {
+    userId,
+    clientId: "fake-client-id",
+    clientSecret: "fake-client-secret",
+    env: "production",
+    marketplace: "EBAY_US",
+  };
+  const realFetch = globalThis.fetch;
+  let total = 201;
+  globalThis.fetch = (async (request: RequestInfo | URL) =>
+    String(request).includes("/oauth2/token")
+      ? Response.json({ access_token: "t", expires_in: 7200 })
+      : Response.json({ total, itemSummaries: [] })) as typeof fetch;
+  const warnings = () => status(userId).errors.filter((x) => x.message.includes("more than 200 matches")).length;
+
+  try {
+    await pollOnce(e);
+    expect(warnings()).toBe(1);
+    await pollOnce(e);
+    expect(warnings()).toBe(1);
+    total = 200;
+    await pollOnce(e);
+    expect(warnings()).toBe(1);
+    total = 201;
+    await pollOnce(e);
+    expect(warnings()).toBe(2);
+  } finally {
+    globalThis.fetch = realFetch;
+    u.ebay = null;
+  }
+});
+
 test("an over-age alert is retired without a delivery attempt", async () => {
   const s = await createSearch(userId, input());
   g.__ebaeState.users.get(userId)!.channels = ["https://discord.com/api/webhooks/1/test"];

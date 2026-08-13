@@ -251,7 +251,15 @@ export async function pollOnce(e: Entry) {
   plog.debug({ searchId: e.s.id, q: e.s.q }, "polling");
   try {
     u.calls.used++;
-    const items = u.ebay ? await searchNewlyListed(u.ebay, e.s) : mockSearch(e.s);
+    const result = u.ebay ? await searchNewlyListed(u.ebay, e.s) : { items: mockSearch(e.s), truncated: false };
+    const { items, truncated } = result;
+    if (truncated && !e.truncated)
+      recordError(
+        u.id,
+        e.s.q,
+        "eBay returned more than 200 matches - older listings may be missed; narrow this search",
+      );
+    e.truncated = truncated;
     e.lastPolledAt = Date.now();
     plog.info({ q: e.s.q, count: items.length, quotaUsed: u.calls.used }, "eBay poll");
     const database = db();

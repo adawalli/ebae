@@ -10,6 +10,7 @@ import { userCtx } from "@/lib/poller/boot"; // not on the barrel: the reload se
 import { flushCalls } from "@/lib/poller/quota"; // ditto: persistence is the poller's own business
 import { BONUS_MIN_GAP_MS } from "@/lib/poller/track"; // ditto: the check schedule is internal
 import {
+  BOOT_REDELIVER_DEADLINE_MS,
   GOV_MAX_FACTOR,
   NOTIFY_DEADLINE_MS,
   createSearch,
@@ -369,7 +370,7 @@ test("redeliverPending stops at the wall-clock deadline, oldest-first, and the r
   // sleep, so the sweep's second row must see the deadline already blown and stop there.
   globalThis.fetch = (() => {
     calls++;
-    setSystemTime(new Date(sweepStart + NOTIFY_DEADLINE_MS + 1000));
+    setSystemTime(new Date(sweepStart + BOOT_REDELIVER_DEADLINE_MS + 1000));
     return Promise.resolve(new Response(null, { status: 204 }));
   }) as unknown as typeof fetch;
   try {

@@ -4,17 +4,36 @@ import { notify } from "@/lib/discord";
 import { notifyPush } from "@/lib/push";
 import { alerts, pushSubs } from "@/lib/schema";
 import type { Item, PriceContext } from "@/lib/types";
-import { NOTIFY_DEADLINE_MS, type UserCtx, markStalePush, plog, recordError, state } from "./state";
+import { type UserCtx, markStalePush, plog, recordError, state } from "./state";
 
 // An alert that couldn't be delivered is retried at the next boot, but deals are time-sensitive:
 // past this age, retire it unsent rather than spam stale listings when the process comes back.
 const REDELIVER_MAX_AGE_MS = 60 * 60_000;
 
 // A memory bound only, not a time bound: keeps one boot from loading an unbounded backlog into
-// memory in a single query. Deliberately generous - the wall-clock deadline (NOTIFY_DEADLINE_MS,
-// checked in the loop below) is what actually keeps this sweep from wedging the boot heartbeat,
-// regardless of how many rows this returns.
+// memory in a single query. Deliberately generous - the wall-clock deadline
+// (BOOT_REDELIVER_DEADLINE_MS, checked in the loop below) is what actually keeps this sweep from
+// wedging the boot heartbeat, regardless of how many rows this returns.
 const REDELIVER_FETCH_LIMIT = 1000;
+
+// This sweep runs at boot, after `st.ready = true` but before the first schedule() (see
+// boot.ts) - deliberately, so a tick can't insert a fresh deliveredAt=null row the sweep's
+// SELECT then double-notifies. That ordering means /api/health reads 503 ("heartbeat stale",
+// lastScheduledAt null) for the sweep's whole duration, which puts it under the k8s liveness
+// probe grace (deploy/k8s.yaml), NOT the steadier /api/health freshness window loop.ts's
+// NOTIFY_DEADLINE_MS is calibrated against. Probe grace = initialDelaySeconds(30) +
+// failureThreshold(10) x periodSeconds(30) = 330s (~5.5min) before kubelet restarts the pod -
+// far tighter than the 35min health floor. (docker-compose.yml's healthcheck is looser and,
+// without an orchestrator watching container health, doesn't restart the container at all, so
+// it isn't the binding constraint here.) 3min leaves ~2.5min of margin under the probe grace,
+// and - like NOTIFY_DEADLINE_MS - stays far above a single item's ~65s worst case, so the sweep
+// always attempts at least its first row (checked before touching a row, never mid-row).
+//
+// ponytail: same residual as NOTIFY_DEADLINE_MS - the real ceiling is this deadline plus one
+// row's full webhook/push fan-out, so a search with enough dead targets can still push the sweep
+// past the probe grace (roughly 2-3 dead webhooks on the row in flight when the deadline trips).
+// Same upgrade path: concurrent per-row fan-out, or a configured-target-count limit.
+export const BOOT_REDELIVER_DEADLINE_MS = 3 * 60_000;
 
 // Redeliver alerts committed but never confirmed delivered - a crash between the alerts insert
 // and the notify, or a webhook outage that spanned the last shutdown. Called once at boot, before
@@ -87,7 +106,7 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
   // just re-posts the confirmed-but-unflushed rows next boot, which is the same at-least-once
   // window the main path already accepts.
   const done: number[] = [];
-  const deadline = Date.now() + NOTIFY_DEADLINE_MS;
+  const deadline = Date.now() + BOOT_REDELIVER_DEADLINE_MS;
   for (const row of rows) {
     // Checked before touching the row, so anything past the deadline is left completely
     // untouched - deliveredAt stays null, so it's retried (oldest-first, see above) next boot.

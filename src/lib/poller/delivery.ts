@@ -1,4 +1,4 @@
-import { and, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { db } from "@/lib/db";
 import { notify } from "@/lib/discord";
 import { notifyPush } from "@/lib/push";
@@ -10,12 +10,16 @@ import { type UserCtx, markStalePush, plog, recordError, state } from "./state";
 // past this age, retire it unsent rather than spam stale listings when the process comes back.
 const REDELIVER_MAX_AGE_MS = 60 * 60_000;
 
-// One sweep's worth of pending rows. Each row can cost ~65s in the retry path (3 attempts x 15s
-// timeout + up to 10s backoff), and this sweep runs at boot before the first schedule() - the
-// window /api/health already reads as the freshness floor. Capping it keeps a large backlog from
-// wedging the heartbeat past healthWindowMs; leftovers are picked up on the next boot, which is
-// already the contract for a failed sweep.
-export const REDELIVER_BATCH_CAP = 50;
+// One sweep's worth of pending rows. Worst case per row (see discord.ts notify(), one webhook):
+// 3 attempts x DISCORD_TIMEOUT_MS(15s) + 2 waits x DISCORD_MAX_RETRY_MS(10s) = 65s. This sweep
+// runs at boot before the first schedule() - the window /api/health already reads as the
+// freshness floor (healthWindowMs floors at max(QUOTA_SKIP_MS, MAX_BACKOFF_MS) + 5min = 35min),
+// so it's if anything more exposed than the per-tick cap in loop.ts. 25 rows x 65s = ~27min,
+// leaving margin inside that floor (50 rows x 65s = ~54min would blow through it). Leftovers are
+// picked up on the next boot, which is already the contract for a failed sweep - ordered
+// oldest-first (see the .orderBy below) so a row that misses one sweep is guaranteed to be
+// picked up by the next, rather than being starved by an arbitrary LIMIT selection.
+export const REDELIVER_BATCH_CAP = 25;
 
 // Redeliver alerts committed but never confirmed delivered - a crash between the alerts insert
 // and the notify, or a webhook outage that spanned the last shutdown. Called once at boot, before
@@ -75,6 +79,7 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
     })
     .from(alerts)
     .where(isNull(alerts.deliveredAt))
+    .orderBy(asc(alerts.createdAt), asc(alerts.id))
     .limit(REDELIVER_BATCH_CAP);
 
   if (!rows.length) return;

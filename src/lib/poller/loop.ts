@@ -29,12 +29,15 @@ export const MAX_BACKOFF_MS = 30 * 60_000;
 // the floor of the freshness window, so raising it here widens that window too.
 export const QUOTA_SKIP_MS = 15 * 60_000;
 
-// One tick's worth of fresh items to notify. Each item can cost ~65s in the retry path (3
-// attempts x 15s timeout + up to 10s backoff), and this loop is otherwise bounded only by the
-// 200-item eBay page - a slow or rate-limited webhook can wedge a tick past the health window.
-// Un-notified items are never added to e.seen or seen_items (see the slice below), so they're
-// picked up unchanged by the next poll.
-export const FRESH_BATCH_CAP = 50;
+// One tick's worth of fresh items to notify. Worst case per item (see discord.ts notify(), one
+// webhook): 3 attempts x DISCORD_TIMEOUT_MS(15s) + 2 waits x DISCORD_MAX_RETRY_MS(10s) = 65s.
+// This loop is otherwise bounded only by the 200-item eBay page, so a slow or rate-limited
+// webhook can wedge a tick past the health window - healthWindowMs floors at
+// max(QUOTA_SKIP_MS, MAX_BACKOFF_MS) + 5min = 35min. 25 items x 65s = ~27min, leaving margin
+// inside that floor (50 items x 65s = ~54min would blow through it). Un-notified items are never
+// added to e.seen or seen_items (see the slice below), so they're picked up unchanged by the
+// next poll.
+export const FRESH_BATCH_CAP = 25;
 
 // The reschedule delay after a failed poll. A RateLimitError carries eBay's own wait hint: honor
 // it, but never poll faster than the user's interval and never park so long the /api/health

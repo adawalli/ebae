@@ -326,24 +326,43 @@ test("an alert under the age cutoff is delivered, not retired", async () => {
   expect(byId.get(done.id)!.deliveredAt!.toISOString()).toBe(alreadyDelivered.toISOString());
 });
 
-test("redeliverPending caps a sweep and leaves the remainder pending for the next boot", async () => {
+test("redeliverPending caps a sweep oldest-first, and the remainder is picked up by the next sweep", async () => {
   const s = await createSearch(userId, input());
   g.__ebaeState.users.get(userId)!.channels = ["https://discord.com/api/webhooks/1/test"];
   const base = { userId, searchId: s.id, searchQ: s.q, title: "leica m6", itemUrl: "https://www.ebay.com/itm/x" };
-  await database
-    .insert(alerts)
-    .values(Array.from({ length: REDELIVER_BATCH_CAP + 1 }, (_, i) => ({ ...base, itemId: `pending-${i}` })));
+  // Distinct, ascending createdAt so the cap's ORDER BY has something to bite on: without it,
+  // an arbitrary LIMIT subset could skip the same row every sweep until it ages out and is
+  // retired unsent (REDELIVER_MAX_AGE_MS) - the exact loss this cap must not reintroduce.
+  const rows = Array.from({ length: REDELIVER_BATCH_CAP + 1 }, (_, i) => ({
+    ...base,
+    itemId: `pending-${i}`,
+    createdAt: new Date(Date.now() - (REDELIVER_BATCH_CAP + 1 - i) * 1000),
+  }));
+  await database.insert(alerts).values(rows);
 
   const realFetch = globalThis.fetch;
   globalThis.fetch = (() => Promise.resolve(new Response(null, { status: 204 }))) as unknown as typeof fetch;
   try {
-    await redeliverPending(db());
+    await redeliverPending(db()); // first sweep: only the cap's worth
   } finally {
     globalThis.fetch = realFetch;
   }
 
-  expect(await database.select().from(alerts).where(isNotNull(alerts.deliveredAt))).toHaveLength(REDELIVER_BATCH_CAP);
-  expect(await database.select().from(alerts).where(isNull(alerts.deliveredAt))).toHaveLength(1);
+  const delivered = await database.select().from(alerts).where(isNotNull(alerts.deliveredAt));
+  const pending = await database.select().from(alerts).where(isNull(alerts.deliveredAt));
+  expect(delivered).toHaveLength(REDELIVER_BATCH_CAP);
+  expect(pending).toHaveLength(1);
+  // The one left behind is the newest row (oldest-first ordering picked every older one first).
+  expect(pending[0].itemId).toBe(`pending-${REDELIVER_BATCH_CAP}`);
+
+  globalThis.fetch = (() => Promise.resolve(new Response(null, { status: 204 }))) as unknown as typeof fetch;
+  try {
+    await redeliverPending(db()); // second sweep: the leftover is not starved, it goes now
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  expect(await database.select().from(alerts).where(isNull(alerts.deliveredAt))).toHaveLength(0);
 });
 
 // ---------- budget governor ----------

@@ -154,7 +154,7 @@ Config stopped being strictly env-only with multi-user: a shared deployment can'
 
 ## 7. Roadmap
 
-**Phase 1 - MVP**
+**Phase 1 - ✅ MVP Complete**
 
 - eBay Browse polling with per-search intervals, BIN filter, newly-listed sort, itemId dedupe
 - Postgres persistence + in-memory cache (Neon-friendly)
@@ -162,22 +162,24 @@ Config stopped being strictly env-only with multi-user: a shared deployment can'
 - Next.js UI: searches CRUD, alert history, status/quota page
 - Docker image on docker.io, compose example, k8s manifest
 
-**Phase 2 - More channels & filters**
+**Phase 2 - ✅ Complete, 🟡 In Progress**
 
-- Telegram bot notifications (outbound send; long-polling if commands are wanted)
-- Generic webhook channel (POST JSON → ntfy, Slack, Home Assistant, ...)
-- Richer per-search filters: price caps ✓, condition ✓, exclude-keywords ✓, seller location
+- Telegram bot notifications (outbound send; long-polling if commands are wanted) 🟡
+- Generic webhook channel (POST JSON → ntfy, Slack, Home Assistant, ...) 🟡
+- Richer per-search filters: price caps ✓, condition ✓, exclude-keywords ✓, seller location 🟡
 - Deal context: within-band **Typical** median ✓, daily **Market** baseline ✓ (cap removed, floor kept; asking prices), realized **Sold** median ✓ (enabled by default with per-search opt-out; see §3, no Marketplace Insights access required)
 - Quota dashboard ✓ + adaptive polling: slow down to protect the daily budget ✓ (see §3). Speeding up on hot searches is deliberately **not** built - polling faster than the interval a user set is a promise ebae doesn't make.
 
-**Phase 3 - Nice-to-haves**
+**Phase 3 - 🟡 In Progress**
 
-- ~~PWA with web push notifications~~ ✅
-- Two-way Telegram commands (/pause, /list, /add)
-- Price-drop alerts on watched items
-- Multi-marketplace (eBay UK/DE/etc. per search)
+- PWA with web push notifications ✅
+- Two-way Telegram commands (/pause, /list, /add) 🟡
+- Price-drop alerts on watched items 🟡 (enabled via sold‑tracking checks)
+- Multi-marketplace (eBay UK/DE/etc. per search) 🟡
 
 ## 8. Open Questions
 
-- **Marketplace scope for MVP:** single `EBAY_MARKETPLACE` env var globally, or per-search? (Leaning global for MVP.)
+- **Marketplace scope for MVP:** single `EBAY_MARKETPLACE` env var globally, or per-search? (Leaning global for MVP. Per-search marketplace is technically possible but adds UI complexity; still under consideration.)
 - **Seen-set pruning:** resolved - fixed-day retention pruned on each cache refresh, default 90 days, tunable via `SEEN_RETENTION_DAYS`. Tying retention to actual eBay listing lifetime is a future refinement.
+- **Per-search poll intervals:** resolved - each search stores its own `intervalMin` and the poller respects individual timers. No plans for dynamic interval adjustment beyond the budget governor.
+- **Multi-user deployment model:** resolved - the app supports single-user (env‑only) and multi-user (per‑user eBay keys in DB, encrypted) modes. The transition between modes at boot is handled by `claimLegacyRows` and `authMode()`.

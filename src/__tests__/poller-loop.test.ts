@@ -582,6 +582,35 @@ test("a re-sighted listing that becomes excluded does not record a price drop", 
   expect(await database.select().from(alerts)).toHaveLength(1);
 });
 
+test("a re-sight price-drop write failure does not abort fresh listings", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected({ price: 1000 });
+  const fresh = injected({ itemId: "v1|after-drop-write-failure|0" });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+
+  item.price = 900;
+  g.__ebaeMock.pools.set(e.s.id, [item, fresh]);
+  const realDatabase = g.__ebaeDb as { transaction: (...args: never[]) => Promise<unknown> };
+  let transactionCalls = 0;
+  g.__ebaeDb = new Proxy(realDatabase, {
+    get(target, prop, receiver) {
+      if (prop !== "transaction") return Reflect.get(target, prop, receiver);
+      return (...args: never[]) => {
+        if (transactionCalls++ === 0) throw new Error("price-drop write unavailable");
+        return target.transaction(...args);
+      };
+    },
+  });
+
+  try {
+    await pollOnce(e);
+    expect((await database.select().from(alerts)).some((a) => a.itemId === fresh.itemId)).toBe(true);
+  } finally {
+    g.__ebaeDb = realDatabase;
+  }
+});
+
 test("a re-sighted price rise is persisted for a later price-drop alert", async () => {
   const e = await seededEntry({ trackSold: true });
   const item = injected({ price: 1000 });

@@ -329,6 +329,7 @@ export async function recordPriceDrop(
   return serialize(e, async () => {
     if (stale(e, epoch)) return null;
     let alertId: number | null = null;
+    let lowered = false;
     await database.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(alerts)
@@ -356,10 +357,11 @@ export async function recordPriceDrop(
           .update(trackedItems)
           .set({ lastPrice: t.lastPrice, notifiedPrice: drop.price, snapshot: t.snapshot })
           .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, t.itemId)));
-        t.notifiedPrice = drop.price;
+        lowered = true;
       }
       alertId = inserted?.id ?? null;
     });
+    if (lowered) t.notifiedPrice = drop.price;
     if (alertId != null) bumpAlerts(e.s.userId);
     return alertId;
   });

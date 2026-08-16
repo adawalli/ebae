@@ -7,13 +7,14 @@ import {
   inferOutcome,
   newTracked,
   priceDrop,
+  recordPriceDrop,
   soldStats,
   soldSampleCount,
   soldContext,
 } from "./track";
-import type { TrackedItem } from "./state";
+import { newEntry, type TrackedItem } from "./state";
 import { mkItem } from "@/__tests__/helpers/fixtures";
-import type { Item } from "@/lib/types";
+import type { Item, Search } from "@/lib/types";
 import * as tracking from "./track";
 
 const DAY = 86400_000;
@@ -121,6 +122,26 @@ test("priceDrop: returns the previous notified price for a new lower fixed-price
 
 test("priceDrop: displays the latest observed price while deduping against the low-water mark", () => {
   expect(priceDrop(tracked({ lastPrice: 1200, notifiedPrice: 900 }), 850)).toEqual({ previousPrice: 1200, price: 850 });
+});
+
+test("recordPriceDrop: keeps the in-memory baseline when the transaction fails", async () => {
+  const t = tracked();
+  const e = newEntry({ id: 1, userId: 1 } as Search);
+  const tx = {
+    insert: () => ({ values: () => ({ onConflictDoNothing: () => ({ returning: async () => [{ id: 1 }] }) }) }),
+    update: () => ({ set: () => ({ where: async () => {} }) }),
+  };
+  const database = {
+    transaction: async (fn: (value: typeof tx) => Promise<void>) => {
+      await fn(tx);
+      throw new Error("commit failed");
+    },
+  };
+
+  await expect(
+    recordPriceDrop(database as never, e, t, item(), { previousPrice: 1000, price: 900 }, false, 0),
+  ).rejects.toThrow("commit failed");
+  expect(t.notifiedPrice).toBe(1000);
 });
 
 // The uniform rule, verified against the live API: a sold listing reads OUT_OF_STOCK with a

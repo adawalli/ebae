@@ -90,6 +90,19 @@ test("harvest: an unchanged re-sighting before the next check is not a write", (
   expect(t.nextCheckAt).toBe(NOW + BIN_CHECK_DAYS[0] * DAY);
 });
 
+test("harvest: a reloaded snapshot with reordered keys is not a write", () => {
+  const t = tracked({ snapshot: Object.fromEntries(Object.entries(item()).reverse()) as Item });
+
+  expect(harvest(t, item(), NOW + 60_000)).toBe(false);
+});
+
+test("harvest: a re-sighting refreshes changed alert presentation", () => {
+  const t = tracked();
+
+  expect(harvest(t, item({ title: "Leica M6 classic", shippingCost: 25 }), NOW + 60_000)).toBe(true);
+  expect(t.snapshot).toMatchObject({ title: "Leica M6 classic", shippingCost: 25 });
+});
+
 test("harvest: past the last decay step the check stays due, so one call can resolve it", () => {
   const last = BIN_CHECK_DAYS[BIN_CHECK_DAYS.length - 1];
   const t = tracked({ nextCheckAt: NOW + last * DAY });

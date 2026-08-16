@@ -334,7 +334,13 @@ export async function pollOnce(e: Entry) {
       let subs = u.push;
       for (const drop of drops) {
         const targets = webhooks.length + subs.length;
-        const alertId = await recordPriceDrop(database, e, drop.t, drop.item, drop, targets > 0, epoch);
+        let alertId: number | null;
+        try {
+          alertId = await recordPriceDrop(database, e, drop.t, drop.item, drop, targets > 0, epoch);
+        } catch (err) {
+          recordError(u.id, e.s.q, `price drop: ${message(err)}`);
+          continue;
+        }
         if (alertId == null) continue;
         wrote = true;
         plog.info({ searchId: e.s.id, itemId: drop.item.itemId, price: drop.price }, "price drop alert sent");

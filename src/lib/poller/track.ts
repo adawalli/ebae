@@ -109,7 +109,9 @@ export function newTracked(item: Item, now: number): TrackedItem | null {
 // remaining call make the positive observation ("still listed after 30 days") that resolves it.
 export function harvest(t: TrackedItem, item: Item, now: number): boolean {
   let dirty = false;
-  if (!t.snapshot) {
+  const snapshotChanged =
+    t.snapshot == null || Object.entries(item).some(([key, value]) => t.snapshot?.[key as keyof Item] !== value);
+  if (t.priceKind !== "bid" && snapshotChanged) {
     t.snapshot = { ...item };
     dirty = true;
   }

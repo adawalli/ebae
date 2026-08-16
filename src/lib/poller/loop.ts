@@ -440,6 +440,7 @@ export async function pollOnce(e: Entry) {
       const drop = priceDrop(t, price, previousPrice);
       if (!drop || !t.snapshot || !priceInRange(price, e.s)) return;
       const item = { ...t.snapshot, price };
+      if (suppressed(item, e.s)) return;
       const webhooks = u.channels;
       const subs = u.push;
       const targets = webhooks.length + subs.length;

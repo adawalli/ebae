@@ -5,7 +5,7 @@ import { notify } from "@/lib/discord";
 import { RateLimitError, mockSearch, searchNewlyListed } from "@/lib/ebay";
 import { notifyPush } from "@/lib/push";
 import { alerts, searches, seenItems, trackedItems } from "@/lib/schema";
-import type { Item, PriceContext, PushSub } from "@/lib/types";
+import type { AlertEvent, Item, PriceContext, PushSub } from "@/lib/types";
 import { NOTHING_PUSHED, NOTHING_SENT, reapPush } from "./delivery";
 import { maybeSampleMarket, priceContext, suppressed } from "./market";
 import { projectedCalls } from "./projection";
@@ -22,7 +22,17 @@ import {
   recordError,
   state,
 } from "./state";
-import { flushTracked, harvest, insertTracked, newTracked, runBonusChecks, runDueChecks, soldContext } from "./track";
+import {
+  flushTracked,
+  harvest,
+  insertTracked,
+  newTracked,
+  priceDrop,
+  recordPriceDrop,
+  runBonusChecks,
+  runDueChecks,
+  soldContext,
+} from "./track";
 
 export const MAX_BACKOFF_MS = 30 * 60_000;
 // How long a quota-exhausted search idles before re-checking. healthWindowMs treats this as
@@ -156,6 +166,7 @@ async function drainAuctionBacklog(
     .where(
       and(
         eq(alerts.searchId, e.s.id),
+        eq(alerts.kind, "listing"),
         inArray(
           alerts.itemId,
           candidates.map((i) => i.itemId),
@@ -187,10 +198,11 @@ async function notifyItem(
   subs: PushSub[],
   ctx: PriceContext,
   alertId: number,
+  event?: AlertEvent,
 ): Promise<PushSub[]> {
   const [d, p] = await Promise.all([
-    webhooks.length ? notify(item, e.s, webhooks, ctx) : NOTHING_SENT,
-    subs.length ? notifyPush(item, e.s, subs) : NOTHING_PUSHED,
+    webhooks.length ? notify(item, e.s, webhooks, ctx, event) : NOTHING_SENT,
+    subs.length ? notifyPush(item, e.s, subs, event) : NOTHING_PUSHED,
   ]);
   // Recorded separately, never `d.error ?? p.error`: this list is the only place a self-hoster
   // sees an outage, so collapsing the two would hide a dead webhook behind a push failure (and
@@ -266,16 +278,25 @@ export async function pollOnce(e: Entry) {
     const fresh = items.filter((i) => !e.seen.has(i.itemId));
     plog.debug({ searchId: e.s.id, fresh: fresh.length, of: items.length }, "dedup");
     let wrote = false; // did this tick open a connection? gates the piggyback flush below
+    const drops: { t: TrackedItem; item: Item; previousPrice: number; price: number }[] = [];
 
-    // Every listing we're following that turns up again in these results is a free check: it's
-    // demonstrably still for sale, so its price refreshes and any check that came due is skipped
-    // rather than spent. Runs against the full result set, not `fresh` - a followed listing is
-    // by definition already in the seen set.
+    // A followed fixed-price listing that turns up again is a free check: it is demonstrably
+    // still for sale, so its price refreshes and any due step is skipped rather than spent.
+    // Auction bids stay untouched until their final check. Runs against the full result set, not
+    // `fresh` - a followed listing is by definition already in the seen set.
     if (e.tracked.size) {
       const at = Date.now();
       for (const item of items) {
         const t = e.tracked.get(item.itemId);
-        if (t && harvest(t, item, at)) e.trackDirty.add(item.itemId);
+        if (!t) continue;
+        const missingSnapshot = t.snapshot == null;
+        const missingBaseline = t.notifiedPrice == null;
+        const drop = e.s.trackSold && item.buyingOption === "FIXED_PRICE" ? priceDrop(t, item.price) : null;
+        if (harvest(t, item, at)) {
+          e.trackDirty.add(item.itemId);
+          if ((missingSnapshot && t.snapshot) || (missingBaseline && t.notifiedPrice != null)) wrote = true;
+        }
+        if (drop) drops.push({ t, item, ...drop });
       }
     }
 
@@ -291,7 +312,7 @@ export async function pollOnce(e: Entry) {
       e.s.seeded = true;
       plog.info({ searchId: e.s.id, q: e.s.q, count: fresh.length }, "seeded");
     } else {
-      const ctx = await buildPriceContext(database, e, fresh);
+      const ctx = await buildPriceContext(database, e, fresh.length ? fresh : drops.map(({ item }) => item));
       // Listings this tick alerted on, to start following once the loop is done. Suppressed
       // items are deliberately not here: an excluded listing ("for parts", "broken") is exactly
       // the junk whose realized price must not describe what the user is hunting - the market
@@ -310,6 +331,19 @@ export async function pollOnce(e: Entry) {
       // reassigns u.push rather than mutating it, so this alias would otherwise keep handing
       // a reaped endpoint to every later item in the batch.
       let subs = u.push;
+      for (const drop of drops) {
+        const targets = webhooks.length + subs.length;
+        const alertId = await recordPriceDrop(database, e, drop.t, drop.item, drop, targets > 0, epoch);
+        if (alertId == null) continue;
+        wrote = true;
+        plog.info({ searchId: e.s.id, itemId: drop.item.itemId, price: drop.price }, "price drop alert sent");
+        if (targets) {
+          subs = await notifyItem(database, drop.item, e, u, webhooks, subs, ctx, alertId, {
+            kind: "price_drop",
+            previousPrice: drop.previousPrice,
+          });
+        }
+      }
       for (const item of [...fresh].reverse()) {
         // Recomputed per item, not once per batch: reaping the last subscription has to be
         // able to take this to zero, or the rows below would seed deliveredAt=null for a
@@ -339,7 +373,7 @@ export async function pollOnce(e: Entry) {
         }
         // Transaction: if alerts insert fails, seen_items also rolls back so the
         // item is retried next poll instead of being permanently dropped. The alerts
-        // insert is conflict-guarded (see alerts_search_item_idx): a reload race that
+        // insert is conflict-guarded (see alerts_listing_search_item_idx): a reload race that
         // re-processes an item hits the unique index and inserts nothing, so alertId
         // comes back null and we skip the notify. deliveredAt is stamped now only when
         // there's nothing to deliver to; otherwise it stays null until notify succeeds.
@@ -363,7 +397,7 @@ export async function pollOnce(e: Entry) {
               itemUrl: item.itemUrl,
               deliveredAt: targets ? null : new Date(),
             })
-            .onConflictDoNothing({ target: [alerts.searchId, alerts.itemId] })
+            .onConflictDoNothing()
             .returning({ id: alerts.id });
           alertId = inserted?.id ?? null;
         });
@@ -395,14 +429,32 @@ export async function pollOnce(e: Entry) {
     await maybeSampleMarket(e, u, database);
     // Check in on followed listings that have come due. Same shape as the sample above:
     // self-limiting, quota-guarded, isolated, and a no-op for a search that isn't tracking.
-    await runDueChecks(e, u, database, epoch);
+    const onCheckedPrice = async (t: TrackedItem, price: number) => {
+      const drop = priceDrop(t, price);
+      if (!drop || !t.snapshot) return;
+      const item = { ...t.snapshot, price };
+      const webhooks = u.channels;
+      const subs = u.push;
+      const targets = webhooks.length + subs.length;
+      const alertId = await recordPriceDrop(database, e, t, item, drop, targets > 0, epoch);
+      if (alertId == null) return;
+      plog.info({ searchId: e.s.id, itemId: item.itemId, price }, "price drop alert sent");
+      if (targets) {
+        const ctx = await buildPriceContext(database, e, [item]);
+        await notifyItem(database, item, e, u, webhooks, subs, ctx, alertId, {
+          kind: "price_drop",
+          previousPrice: drop.previousPrice,
+        });
+      }
+    };
+    await runDueChecks(e, u, database, epoch, onCheckedPrice);
     const active = enabledSearchesFor(u.id);
     const projected = projectedCalls(active, activeMin(u.snooze));
     // Last, so the budget it reads has this tick's poll, sample and due checks already in it.
     // Deliberately absent from `projected`: these calls are the surplus that projection leaves
     // over, and budgeting for them would engage the governor against the very thing it makes
     // affordable. Resolving a listing early only ever shrinks the projection (checksDue24h).
-    await runBonusChecks(e, u, database, epoch, projected);
+    await runBonusChecks(e, u, database, epoch, projected, onCheckedPrice);
     e.backoffMs = 0;
     // Governed only here, on the path that actually spent a call. The snooze, no-creds and
     // owner-not-cached reschedules above cost no quota, so stretching them would delay noticing

@@ -1,7 +1,7 @@
 import type { EbayCreds } from "@/lib/ebay";
 import { log, redact } from "@/lib/log";
 import type { searches } from "@/lib/schema";
-import type { PollError, PriceKind, PushSub, Search } from "@/lib/types";
+import type { Item, PollError, PriceKind, PushSub, Search } from "@/lib/types";
 
 export const plog = log.child({ component: "poller" });
 
@@ -20,6 +20,12 @@ export type TrackedItem = {
   itemId: string;
   priceKind: PriceKind;
   lastPrice: number | null;
+  // Lowest price already represented by an alert. Price rises never move it up, so a later
+  // return to the same price cannot produce a duplicate "drop" notification.
+  notifiedPrice: number | null;
+  // The compact getItem checks only return price/availability. Keep the original listing
+  // snapshot so those already-budgeted checks can still produce a useful alert after a restart.
+  snapshot: Item | null;
   currency: string;
   itemEndDate: number | null; // auctions only
   firstSeenAt: number; // anchors the fixed-price decay schedule

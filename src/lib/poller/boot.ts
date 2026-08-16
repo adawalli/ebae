@@ -1,4 +1,4 @@
-import { eq, gt, lt, max, sql } from "drizzle-orm";
+import { and, eq, gt, lt, max, sql } from "drizzle-orm";
 import { SINGLE_USER_EMAIL, assertAuthEnv, authMode } from "@/lib/authmode";
 import { claimLegacyRows } from "@/lib/claim";
 import { decryptSecret } from "@/lib/crypto";
@@ -191,10 +191,11 @@ async function loadSnapshot(database: ReturnType<typeof db>): Promise<Snapshot> 
     database
       .select({ searchId: alerts.searchId, createdAt: alerts.createdAt })
       .from(alerts)
-      .where(gt(alerts.createdAt, sql`now() - interval '24 hours'`)),
+      .where(and(gt(alerts.createdAt, sql`now() - interval '24 hours'`), eq(alerts.kind, "listing"))),
     database
       .select({ searchId: alerts.searchId, last: max(alerts.createdAt) })
       .from(alerts)
+      .where(eq(alerts.kind, "listing"))
       .groupBy(alerts.searchId),
     database
       .select({ userId: channels.userId, webhookUrl: channels.webhookUrl })

@@ -251,6 +251,7 @@ test("checkItem: a sold listing reads back its availability, sold quantity and p
     asked = url;
     return Response.json({
       price: { value: "162.50", currency: "USD" },
+      buyingOptions: ["FIXED_PRICE"],
       estimatedAvailabilities: [{ estimatedAvailabilityStatus: "OUT_OF_STOCK", estimatedSoldQuantity: 1 }],
     });
   });
@@ -260,6 +261,7 @@ test("checkItem: a sold listing reads back its availability, sold quantity and p
       price: 162.5,
       availability: "OUT_OF_STOCK",
       soldQuantity: 1,
+      buyingOption: "FIXED_PRICE",
     });
   } finally {
     restore();

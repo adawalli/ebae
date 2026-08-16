@@ -58,7 +58,7 @@ export async function priceContext(
   const rows = await database
     .select({ price: alerts.price })
     .from(alerts)
-    .where(and(eq(alerts.searchId, searchId), isNotNull(alerts.price)))
+    .where(and(eq(alerts.searchId, searchId), eq(alerts.kind, "listing"), isNotNull(alerts.price)))
     .orderBy(desc(alerts.createdAt))
     .limit(20);
   const prices = rows.map((r) => r.price).filter((p): p is number => p != null);

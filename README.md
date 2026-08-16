@@ -38,10 +38,14 @@ An alert is only useful if you know what the thing is worth. By default ebae tra
 _actually went for_ and prefers that: alerts then read "Sold ~$420 · ▼ 30% under", and the
 search's subtitle shows `sold ~$420`. Until it has enough sales, it compares against **asking**
 prices - a daily unfiltered sample of the same search, shown as "Market". Turn off **Track sold
-prices** on an individual search to save API calls.
+prices & price drops** on an individual search to save API calls.
 
 eBay's sold-search APIs are enterprise-only, so ebae gets there by checking back on listings the
 search already found:
+
+It also sends a price-drop alert whenever a followed fixed-price or Best Offer listing reaches a
+new lower price. Re-sightings use the ordinary poll result, and scheduled checks reuse their
+existing response, so this adds no eBay API calls.
 
 - **Auctions** are checked **once**, five minutes after they end. The end time arrives free with
   every poll, so nothing is spent guessing - and a snipe in the closing seconds is still captured.

@@ -154,6 +154,27 @@ test("the alerts ETag answers 304 until something invalidates it", async () => {
   expect(await afterClear.json()).toEqual({ alerts: [] });
 });
 
+test("GET exposes price-drop alert metadata", async () => {
+  const { search } = await (await create({ q: "leica m6" })).json();
+  await database.insert(alertsTable).values({
+    userId: search.userId,
+    searchId: search.id,
+    searchQ: search.q,
+    itemId: "v1|333|0",
+    title: "M6 body",
+    price: 1800,
+    previousPrice: 2000,
+    kind: "price_drop",
+    itemUrl: "https://ebay.test/333",
+  });
+
+  const res = await alertsGET(new Request("http://localhost/api/alerts"));
+  expect(res.status).toBe(200);
+  expect((await res.json()).alerts).toMatchObject([
+    { itemId: "v1|333|0", kind: "price_drop", price: 1800, previousPrice: 2000 },
+  ]);
+});
+
 test("status reports quota, mock mode and the snooze window", async () => {
   // caches the user ctx, without which ebay.mode reads no-creds
   const { search } = await (await create({ q: "contax t2" })).json();

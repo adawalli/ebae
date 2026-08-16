@@ -6,6 +6,7 @@ import {
   harvest,
   inferOutcome,
   newTracked,
+  priceDrop,
   soldStats,
   soldSampleCount,
   soldContext,
@@ -13,6 +14,7 @@ import {
 import type { TrackedItem } from "./state";
 import { mkItem } from "@/__tests__/helpers/fixtures";
 import type { Item } from "@/lib/types";
+import * as tracking from "./track";
 
 const DAY = 86400_000;
 const NOW = Date.UTC(2026, 6, 19, 12, 0, 0);
@@ -24,6 +26,8 @@ const tracked = (over: Partial<TrackedItem> = {}): TrackedItem => ({
   itemId: "v1|123|0",
   priceKind: "fixed",
   lastPrice: 1000,
+  notifiedPrice: 1000,
+  snapshot: item(),
   currency: "USD",
   itemEndDate: null,
   firstSeenAt: NOW,
@@ -50,10 +54,12 @@ test("newTracked: an auction without an end date is not tracked", () => {
 });
 
 test("newTracked: a fixed-price listing starts on the decay schedule", () => {
-  const t = newTracked(item(), NOW)!;
+  const listing = item();
+  const t = newTracked(listing, NOW)!;
   expect(t.priceKind).toBe("fixed");
   expect(t.nextCheckAt).toBe(NOW + BIN_CHECK_DAYS[0] * DAY);
   expect(t.lastPrice).toBe(1000);
+  expect(t).toMatchObject({ notifiedPrice: 1000, snapshot: listing });
 });
 
 // Best Offer listings keep showing the asking price after they sell, so what we can learn is
@@ -94,16 +100,23 @@ test("harvest: past the last decay step the check stays due, so one call can res
 });
 
 // A re-sighted auction whose post-end check has already come due (an ended listing still turning
-// up in results) refreshes its closing bid, but its schedule must NOT be walked onto the
-// fixed-price decay - the one check it gets has to land, or the winning bid is lost. This is the
-// priceKind guard: without it a bid row's due check would defer 3 days out and never resolve.
-test("harvest: a re-sighted due auction refreshes its bid but keeps its schedule", () => {
+// up in results) keeps its schedule without persisting a live bid. The one check it gets has to
+// land, or the winning bid is lost; only that ended response may record the final bid.
+test("harvest: a re-sighted due auction keeps its bid and schedule", () => {
   const t = tracked({ priceKind: "bid", itemEndDate: NOW - 10 * 60_000, nextCheckAt: NOW - 1000 });
   const before = t.nextCheckAt;
 
-  expect(harvest(t, item({ price: 1200 }), NOW)).toBe(true); // the bid moved, so it's a write
-  expect(t.lastPrice).toBe(1200); // refreshed
+  expect(harvest(t, item({ price: 1200, buyingOption: "AUCTION" }), NOW)).toBe(false);
+  expect(t.lastPrice).toBe(1000);
   expect(t.nextCheckAt).toBe(before); // schedule untouched: the due post-end check still stands
+});
+
+test("priceDrop: exposes one shared decision for poll re-sights and item checks", () => {
+  expect((tracking as Record<string, unknown>).priceDrop).toBeFunction();
+});
+
+test("priceDrop: returns the previous notified price for a new lower fixed-price listing", () => {
+  expect(priceDrop(tracked({ notifiedPrice: 1000 }), 900)).toEqual({ previousPrice: 1000, price: 900 });
 });
 
 // The uniform rule, verified against the live API: a sold listing reads OUT_OF_STOCK with a

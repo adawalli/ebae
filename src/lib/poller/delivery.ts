@@ -65,6 +65,8 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
       condition: alerts.condition,
       imageUrl: alerts.imageUrl,
       itemUrl: alerts.itemUrl,
+      kind: alerts.kind,
+      previousPrice: alerts.previousPrice,
     })
     .from(alerts)
     .where(isNull(alerts.deliveredAt));
@@ -118,8 +120,12 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
     const ctx: PriceContext | undefined =
       market != null && market > 0 ? { typical: market, count: 0, basis: "market" } : undefined;
     const [d, p] = await Promise.all([
-      u.channels.length ? notify(item, s, u.channels, ctx) : NOTHING_SENT,
-      u.push.length ? notifyPush(item, s, u.push) : NOTHING_PUSHED,
+      u.channels.length
+        ? notify(item, s, u.channels, ctx, { kind: row.kind, previousPrice: row.previousPrice })
+        : NOTHING_SENT,
+      u.push.length
+        ? notifyPush(item, s, u.push, { kind: row.kind, previousPrice: row.previousPrice })
+        : NOTHING_PUSHED,
     ]);
     // Log any failure even on partial success (matches the main-path notify, which records the
     // error independently of anyDelivered); confirm the row if a target took it, else leave it

@@ -206,11 +206,11 @@ export function SearchFormDialog({
           <Field orientation="horizontal" className="rounded-lg border bg-[var(--eb-input-bg)] px-3.5 py-3">
             <FieldContent>
               <FieldLabel htmlFor="toggle-track-sold" className="text-[13.5px] font-medium">
-                Track sold prices
+                Track sold prices &amp; price drops
               </FieldLabel>
               <FieldDescription className="text-[11.5px]">
-                check back on listings this search finds to learn what they actually sold for · turn off to save API
-                calls
+                check back on listings this search finds for price drops and to learn what they actually sold for · turn
+                off to save API calls
               </FieldDescription>
             </FieldContent>
             <Switch

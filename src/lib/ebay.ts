@@ -267,7 +267,13 @@ function normalize(i: EbaySummary): Item {
 // back null even for an ended auction that took no bids, reservePriceMet was null throughout).
 // Availability plus sold quantity is the one signal that reads the same for both listing types.
 export type CheckResult =
-  | { ok: true; price: number | null; availability: string | null; soldQuantity: number }
+  | {
+      ok: true;
+      price: number | null;
+      availability: string | null;
+      soldQuantity: number;
+      buyingOption?: "FIXED_PRICE" | "AUCTION" | null;
+    }
   | { ok: false; errorId: number | null };
 
 // eBay's "this listing is gone" errors: 11001 not found, 11004 unavailable. Any other failure
@@ -277,6 +283,7 @@ const GONE_ERROR_IDS = new Set([11001, 11004]);
 
 type EbayItemDetail = {
   price?: { value: string };
+  buyingOptions?: string[];
   estimatedAvailabilities?: { estimatedAvailabilityStatus?: string; estimatedSoldQuantity?: number }[];
 };
 
@@ -312,6 +319,11 @@ export async function checkItem(creds: EbayCreds, itemId: string): Promise<Check
     price: data.price ? parseFloat(data.price.value) : null,
     availability: avail?.estimatedAvailabilityStatus ?? null,
     soldQuantity: avail?.estimatedSoldQuantity ?? 0,
+    buyingOption: data.buyingOptions?.includes("FIXED_PRICE")
+      ? "FIXED_PRICE"
+      : data.buyingOptions?.includes("AUCTION")
+        ? "AUCTION"
+        : null,
   };
 }
 

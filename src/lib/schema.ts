@@ -1,6 +1,8 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
   integer,
+  jsonb,
   numeric,
   pgTable,
   primaryKey,
@@ -9,6 +11,7 @@ import {
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import type { AlertKind, Item } from "./types";
 
 // Source of truth for the schema and for migrations (bun run db:generate). numeric
 // columns use mode:"number" so price fields read/write as numbers (no manual
@@ -109,6 +112,12 @@ export const trackedItems = pgTable(
     // Last price we saw it at: the first sighting's price, refreshed for free whenever a poll
     // re-sights the listing. For a BIN item that sells, this is the sold price.
     lastPrice: numeric("last_price", { mode: "number" }),
+    // Lowest price that has already produced an alert. Price rises leave this alone, so a
+    // later return to the same amount does not produce a second notification.
+    notifiedPrice: numeric("notified_price", { mode: "number" }),
+    // A compact getItem check has price/availability but not enough presentation data for an
+    // alert. The original Item keeps scheduled checks useful without a second eBay request.
+    snapshot: jsonb("snapshot").$type<Item>(),
     currency: text("currency").notNull().default("USD"),
     // Auctions only, captured from the search summary (getItem's COMPACT view omits it).
     // An auction without one isn't tracked - there'd be no way to know when to look.
@@ -199,15 +208,23 @@ export const alerts = pgTable(
     condition: text("condition"),
     imageUrl: text("image_url"),
     itemUrl: text("item_url").notNull(),
+    kind: text("kind").$type<AlertKind>().notNull().default("listing"),
+    // Non-null only for kind=price_drop; this is the price shown as "Was" in the alert.
+    previousPrice: numeric("previous_price", { mode: "number" }),
     // null = created but not yet confirmed delivered to any channel. The poller retries
     // undelivered rows (redeliverPending) so a webhook outage doesn't lose an alert; set
     // at insert time when there are no channels (nothing to deliver to).
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  // DB backstop for the in-memory dedupe: even if a reload race lets a tick re-process an
-  // item, the second alerts insert conflicts and is dropped (onConflictDoNothing). NULLS
-  // DISTINCT leaves orphaned alerts (search_id set null on delete) unconstrained, which is
-  // fine - they're history, never re-alerted.
-  (t) => [uniqueIndex("alerts_search_item_idx").on(t.searchId, t.itemId)],
+  // A listing is emitted once; each distinct lower price can emit one drop. Orphaned alerts
+  // (search_id set null on delete) remain unconstrained because they are history only.
+  (t) => [
+    uniqueIndex("alerts_listing_search_item_idx")
+      .on(t.searchId, t.itemId)
+      .where(sql`${t.kind} = 'listing'`),
+    uniqueIndex("alerts_price_drop_search_item_price_idx")
+      .on(t.searchId, t.itemId, t.price)
+      .where(sql`${t.kind} = 'price_drop'`),
+  ],
 );

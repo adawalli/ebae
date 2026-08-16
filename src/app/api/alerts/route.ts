@@ -46,6 +46,8 @@ export async function GET(req: Request) {
       id: r.id,
       searchId: r.searchId,
       searchQ: r.searchQ,
+      kind: r.kind,
+      previousPrice: r.previousPrice,
       itemId: r.itemId,
       title: r.title,
       price: r.price, // numeric mode:"number" -> number | null

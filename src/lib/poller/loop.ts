@@ -2,7 +2,7 @@ import { and, eq, inArray, notExists } from "drizzle-orm";
 import { authMode } from "@/lib/authmode";
 import { db } from "@/lib/db";
 import { notify } from "@/lib/discord";
-import { RateLimitError, mockSearch, searchNewlyListed } from "@/lib/ebay";
+import { RateLimitError, mockSearch, priceInRange, searchNewlyListed } from "@/lib/ebay";
 import { notifyPush } from "@/lib/push";
 import { alerts, searches, seenItems, trackedItems } from "@/lib/schema";
 import type { AlertEvent, Item, PriceContext, PushSub } from "@/lib/types";
@@ -289,12 +289,10 @@ export async function pollOnce(e: Entry) {
       for (const item of items) {
         const t = e.tracked.get(item.itemId);
         if (!t) continue;
-        const missingSnapshot = t.snapshot == null;
-        const missingBaseline = t.notifiedPrice == null;
         const drop = e.s.trackSold && item.buyingOption === "FIXED_PRICE" ? priceDrop(t, item.price) : null;
         if (harvest(t, item, at)) {
           e.trackDirty.add(item.itemId);
-          if ((missingSnapshot && t.snapshot) || (missingBaseline && t.notifiedPrice != null)) wrote = true;
+          wrote = true;
         }
         if (drop) drops.push({ t, item, ...drop });
       }
@@ -431,7 +429,7 @@ export async function pollOnce(e: Entry) {
     // self-limiting, quota-guarded, isolated, and a no-op for a search that isn't tracking.
     const onCheckedPrice = async (t: TrackedItem, price: number, previousPrice: number | null) => {
       const drop = priceDrop(t, price, previousPrice);
-      if (!drop || !t.snapshot) return;
+      if (!drop || !t.snapshot || !priceInRange(price, e.s)) return;
       const item = { ...t.snapshot, price };
       const webhooks = u.channels;
       const subs = u.push;

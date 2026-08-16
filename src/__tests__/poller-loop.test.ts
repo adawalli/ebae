@@ -750,6 +750,35 @@ test("a scheduled check does not alert outside the saved price band", async () =
   }
 });
 
+test("a scheduled check does not alert a listing excluded on its last re-sighting", async () => {
+  const e = await seededEntry({ trackSold: true, excludeTerms: "broken" });
+  const item = injected({ price: 1000 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+
+  item.title = "leica m6 - broken shutter";
+  await pollOnce(e); // refresh the tracked snapshot with the exclusion
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const u = g.__ebaeState.users.get(userId)!;
+  e.tracked.get(item.itemId)!.nextCheckAt = Date.now() - 1;
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const ebay = stubEbayLive(() =>
+    Response.json({
+      price: { value: "900", currency: "USD" },
+      buyingOptions: ["FIXED_PRICE"],
+      estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
+    }),
+  );
+
+  try {
+    await pollOnce(e);
+    expect(await database.select().from(alerts)).toHaveLength(1);
+  } finally {
+    ebay.restore();
+    u.ebay = null;
+  }
+});
+
 test("a price-drop delivery failure does not stop the remaining due checks", async () => {
   const e = await seededEntry({ trackSold: true });
   const first = injected({ itemId: "v1|delivery-first|0", price: 1000 });

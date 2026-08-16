@@ -569,6 +569,23 @@ test("a re-sighted fixed-price listing records a price drop without another eBay
   expect(status(userId).errors).toEqual([]); // recording the event must not abort the tick
 });
 
+test("a re-sighted price rise is persisted for a later price-drop alert", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected({ price: 1000 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, [item]); // no auction-backlog read may incidentally flush the row
+
+  item.price = 1200;
+  await pollOnce(e);
+
+  const [row] = await database
+    .select({ lastPrice: trackedItems.lastPrice })
+    .from(trackedItems)
+    .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, item.itemId)));
+  expect(row.lastPrice).toBe(1200);
+});
+
 test("a re-sighted price drop keeps the listing Typical context", async () => {
   const e = await seededEntry({ trackSold: true });
   const item = injected({ price: 1000 });
@@ -660,6 +677,31 @@ test("a scheduled check records a lower in-stock price from its existing respons
     expect(t.lastPrice).toBe(900);
     expect(ebay.calls).toBe(1);
     expect(u.calls.used - beforeCalls).toBe(2); // one search and its one already-due item check
+  } finally {
+    ebay.restore();
+    u.ebay = null;
+  }
+});
+
+test("a scheduled check does not alert outside the saved price band", async () => {
+  const e = await seededEntry({ trackSold: true, priceFloor: 500 });
+  const item = injected({ price: 600 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const u = g.__ebaeState.users.get(userId)!;
+  e.tracked.get(item.itemId)!.nextCheckAt = Date.now() - 1;
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const ebay = stubEbayLive(() =>
+    Response.json({
+      price: { value: "400", currency: "USD" },
+      estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
+    }),
+  );
+
+  try {
+    await pollOnce(e);
+    expect(await database.select().from(alerts)).toHaveLength(1);
   } finally {
     ebay.restore();
     u.ebay = null;

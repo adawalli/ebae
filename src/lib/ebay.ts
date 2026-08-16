@@ -155,6 +155,13 @@ export function browseFilters(s: Search, currency: string): string[] {
   return filters;
 }
 
+export function priceInRange(price: number | null, s: Pick<Search, "priceFloor" | "priceCap">): boolean {
+  return (
+    (s.priceFloor == null || (price != null && price >= s.priceFloor)) &&
+    (s.priceCap == null || (price != null && price <= s.priceCap))
+  );
+}
+
 // The market sample's search: keeps the price FLOOR but drops the cap. The floor filters out
 // the sub-band accessories/parts that share the query's keywords (mounts, cables, "for parts")
 // — without it a loose keyword query's median collapses to accessory noise (measured $23 for a
@@ -200,13 +207,7 @@ async function browseSearch(
   }
   const data = (await res.json()) as { itemSummaries?: EbaySummary[]; total?: number };
   return {
-    items: (data.itemSummaries ?? [])
-      .map(normalize)
-      .filter(
-        (i) =>
-          (s.priceFloor == null || (i.price != null && i.price >= s.priceFloor)) &&
-          (s.priceCap == null || (i.price != null && i.price <= s.priceCap)),
-      ),
+    items: (data.itemSummaries ?? []).map(normalize).filter((i) => priceInRange(i.price, s)),
     truncated: (data.total ?? 0) > limit,
   };
 }

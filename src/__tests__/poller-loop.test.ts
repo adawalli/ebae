@@ -569,6 +569,19 @@ test("a re-sighted fixed-price listing records a price drop without another eBay
   expect(status(userId).errors).toEqual([]); // recording the event must not abort the tick
 });
 
+test("a re-sighted listing that becomes excluded does not record a price drop", async () => {
+  const e = await seededEntry({ trackSold: true, excludeTerms: "broken" });
+  const item = injected({ price: 1000 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+
+  item.title = "leica m6 - broken shutter";
+  item.price = 900;
+  await pollOnce(e);
+
+  expect(await database.select().from(alerts)).toHaveLength(1);
+});
+
 test("a re-sighted price rise is persisted for a later price-drop alert", async () => {
   const e = await seededEntry({ trackSold: true });
   const item = injected({ price: 1000 });

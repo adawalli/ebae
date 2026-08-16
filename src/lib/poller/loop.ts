@@ -289,7 +289,10 @@ export async function pollOnce(e: Entry) {
       for (const item of items) {
         const t = e.tracked.get(item.itemId);
         if (!t) continue;
-        const drop = e.s.trackSold && item.buyingOption === "FIXED_PRICE" ? priceDrop(t, item.price) : null;
+        const drop =
+          e.s.trackSold && !suppressed(item, e.s) && item.buyingOption === "FIXED_PRICE"
+            ? priceDrop(t, item.price)
+            : null;
         if (harvest(t, item, at)) {
           e.trackDirty.add(item.itemId);
           wrote = true;

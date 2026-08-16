@@ -45,18 +45,24 @@ const MAX_CHECK_ATTEMPTS = 6;
 // once enough of them agree. Below the minimum the deal context falls back to asking prices.
 const SOLD_WINDOW_DAYS = 30;
 
-export function priceDrop(t: TrackedItem, price: number | null): { previousPrice: number; price: number } | null {
-  const previousPrice = t.notifiedPrice;
+export function priceDrop(
+  t: TrackedItem,
+  price: number | null,
+  observedPrice: number | null = t.lastPrice,
+): { previousPrice: number; price: number } | null {
+  const notifiedPrice = t.notifiedPrice;
   if (
     t.priceKind === "bid" ||
     price == null ||
-    previousPrice == null ||
+    notifiedPrice == null ||
     !Number.isFinite(price) ||
-    !Number.isFinite(previousPrice) ||
-    previousPrice <= 0 ||
-    price >= previousPrice
+    !Number.isFinite(notifiedPrice) ||
+    notifiedPrice <= 0 ||
+    price >= notifiedPrice
   )
     return null;
+  const previousPrice =
+    observedPrice != null && Number.isFinite(observedPrice) && observedPrice > price ? observedPrice : notifiedPrice;
   return { previousPrice, price };
 }
 
@@ -475,7 +481,7 @@ async function runCheckBatch(
     onDefer: (t: TrackedItem, nextCheckAt: number) => void;
     // A compact check can also observe a live price. The caller owns alert delivery, while this
     // shared path keeps the observation on the one eBay response it already paid for.
-    onPriceObserved?: (t: TrackedItem, price: number) => Promise<void>;
+    onPriceObserved?: (t: TrackedItem, price: number, previousPrice: number | null) => Promise<void>;
   },
 ): Promise<void> {
   if (!e.s.trackSold || !e.tracked.size || stale(e, epoch)) return;
@@ -502,11 +508,12 @@ async function runCheckBatch(
       if (
         res.ok &&
         t.priceKind !== "bid" &&
-        res.buyingOption === "FIXED_PRICE" &&
+        res.buyingOption !== "AUCTION" &&
         res.availability !== "OUT_OF_STOCK" &&
         res.price != null &&
         Number.isFinite(res.price)
       ) {
+        const previousPrice = t.lastPrice;
         if (res.price !== t.lastPrice) {
           t.lastPrice = res.price;
           e.trackDirty.add(t.itemId);
@@ -517,7 +524,12 @@ async function runCheckBatch(
         }
         // A migration can restore the original alert price while lastPrice already reflects an
         // older lower re-sighting, so the callback must evaluate every fixed-price observation.
-        if (res.buyingOption === "FIXED_PRICE" && t.snapshot) await opts.onPriceObserved?.(t, res.price);
+        if (t.snapshot)
+          try {
+            await opts.onPriceObserved?.(t, res.price, previousPrice);
+          } catch (err) {
+            recordError(u.id, e.s.q, `${opts.label} price drop: ${message(err)}`);
+          }
       }
       const out = inferOutcome(t, res, Date.now());
       opts.countCheck(t);
@@ -542,7 +554,7 @@ export async function runDueChecks(
   u: UserCtx,
   database: ReturnType<typeof db>,
   epoch: number,
-  onPriceObserved?: (t: TrackedItem, price: number) => Promise<void>,
+  onPriceObserved?: (t: TrackedItem, price: number, previousPrice: number | null) => Promise<void>,
 ): Promise<void> {
   const due = [...e.tracked.values()].filter((t) => t.nextCheckAt <= Date.now()).slice(0, MAX_CHECKS_PER_TICK);
   await runCheckBatch(e, u, database, epoch, {
@@ -601,7 +613,7 @@ export async function runBonusChecks(
   database: ReturnType<typeof db>,
   epoch: number,
   projected: number,
-  onPriceObserved?: (t: TrackedItem, price: number) => Promise<void>,
+  onPriceObserved?: (t: TrackedItem, price: number, previousPrice: number | null) => Promise<void>,
 ): Promise<void> {
   if (!e.s.trackSold || !e.tracked.size || stale(e, epoch)) return;
   const now = new Date();

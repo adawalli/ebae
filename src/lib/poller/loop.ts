@@ -429,8 +429,8 @@ export async function pollOnce(e: Entry) {
     await maybeSampleMarket(e, u, database);
     // Check in on followed listings that have come due. Same shape as the sample above:
     // self-limiting, quota-guarded, isolated, and a no-op for a search that isn't tracking.
-    const onCheckedPrice = async (t: TrackedItem, price: number) => {
-      const drop = priceDrop(t, price);
+    const onCheckedPrice = async (t: TrackedItem, price: number, previousPrice: number | null) => {
+      const drop = priceDrop(t, price, previousPrice);
       if (!drop || !t.snapshot) return;
       const item = { ...t.snapshot, price };
       const webhooks = u.channels;

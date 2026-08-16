@@ -119,6 +119,10 @@ test("priceDrop: returns the previous notified price for a new lower fixed-price
   expect(priceDrop(tracked({ notifiedPrice: 1000 }), 900)).toEqual({ previousPrice: 1000, price: 900 });
 });
 
+test("priceDrop: displays the latest observed price while deduping against the low-water mark", () => {
+  expect(priceDrop(tracked({ lastPrice: 1200, notifiedPrice: 900 }), 850)).toEqual({ previousPrice: 1200, price: 850 });
+});
+
 // The uniform rule, verified against the live API: a sold listing reads OUT_OF_STOCK with a
 // sold quantity, and its price is the realized one (for an ended auction, the final bid).
 test("inferOutcome: out of stock with a sold quantity is a sale at that price", () => {

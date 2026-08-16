@@ -1,12 +1,12 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { db } from "@/lib/db";
 import { type CheckResult, checkItem, mockCheckItem } from "@/lib/ebay";
-import { trackedItems } from "@/lib/schema";
+import { alerts, trackedItems } from "@/lib/schema";
 import { SOLD_MIN_COUNT, type Item, type PriceKind } from "@/lib/types";
 import { median } from "./market";
 import { QUOTA_CEILING, bonusBudget, flushCalls, usedToday } from "./quota";
 import { counterDayFrac } from "./snooze";
-import { type Entry, type TrackedItem, type UserCtx, message, plog, recordError } from "./state";
+import { type Entry, type TrackedItem, type UserCtx, bumpAlerts, message, plog, recordError } from "./state";
 
 // Sold-price tracking: what a followed listing actually went for, inferred by re-fetching it
 // after it ends. eBay's sold-search APIs are enterprise-only, so this is the available path -
@@ -45,6 +45,21 @@ const MAX_CHECK_ATTEMPTS = 6;
 // once enough of them agree. Below the minimum the deal context falls back to asking prices.
 const SOLD_WINDOW_DAYS = 30;
 
+export function priceDrop(t: TrackedItem, price: number | null): { previousPrice: number; price: number } | null {
+  const previousPrice = t.notifiedPrice;
+  if (
+    t.priceKind === "bid" ||
+    price == null ||
+    previousPrice == null ||
+    !Number.isFinite(price) ||
+    !Number.isFinite(previousPrice) ||
+    previousPrice <= 0 ||
+    price >= previousPrice
+  )
+    return null;
+  return { previousPrice, price };
+}
+
 // The next scheduled check for a fixed-price listing after `afterMs`, or null when the schedule
 // is spent. Derived from the schedule rather than counted, so a step skipped by a re-sighting
 // is simply never visited.
@@ -69,6 +84,8 @@ export function newTracked(item: Item, now: number): TrackedItem | null {
     // bid kind wins; only a pure Best Offer listing is a mere ceiling.
     priceKind: auction ? "bid" : item.bestOffer ? "offer_cap" : "fixed",
     lastPrice: item.price,
+    notifiedPrice: item.price,
+    snapshot: { ...item },
     currency: item.currency,
     itemEndDate: auction ? end : null,
     firstSeenAt: now,
@@ -77,18 +94,33 @@ export function newTracked(item: Item, now: number): TrackedItem | null {
   };
 }
 
-// Folds a re-sighting into a followed listing. Seeing it in poll results proves it is still for
-// sale, which is the same thing a check would have found out - so this refreshes the price and
-// skips any step that has come due, for free. Returns whether anything changed, so an unchanged
-// re-sighting doesn't dirty the row and force a write.
+// Folds a re-sighting into a followed listing. Seeing a fixed-price item in poll results proves it
+// is still for sale, so this refreshes its price and skips any step that has come due for free.
+// Auction bids stay untouched until their final check. Returns whether anything changed, so an
+// unchanged re-sighting doesn't dirty the row and force a write.
 //
 // The schedule running out is deliberately not handled here: leaving the check due lets the one
 // remaining call make the positive observation ("still listed after 30 days") that resolves it.
 export function harvest(t: TrackedItem, item: Item, now: number): boolean {
   let dirty = false;
-  if (item.price != null && item.price !== t.lastPrice) {
-    t.lastPrice = item.price;
+  if (!t.snapshot) {
+    t.snapshot = { ...item };
     dirty = true;
+  }
+  if (
+    t.priceKind !== "bid" &&
+    item.buyingOption === "FIXED_PRICE" &&
+    item.price != null &&
+    Number.isFinite(item.price)
+  ) {
+    if (item.price !== t.lastPrice) {
+      t.lastPrice = item.price;
+      dirty = true;
+    }
+    if (t.notifiedPrice == null) {
+      t.notifiedPrice = item.price;
+      dirty = true;
+    }
   }
   if (t.priceKind !== "bid" && t.nextCheckAt <= now) {
     const next = nextBinCheck(t.firstSeenAt, now);
@@ -199,6 +231,8 @@ function toRow(searchId: number, t: TrackedItem): typeof trackedItems.$inferInse
     itemId: t.itemId,
     priceKind: t.priceKind,
     lastPrice: t.lastPrice,
+    notifiedPrice: t.notifiedPrice,
+    snapshot: t.snapshot,
     currency: t.currency,
     itemEndDate: t.itemEndDate == null ? null : new Date(t.itemEndDate),
     firstSeenAt: new Date(t.firstSeenAt),
@@ -259,6 +293,8 @@ export async function flushTracked(database: ReturnType<typeof db>, e: Entry): P
         target: [trackedItems.searchId, trackedItems.itemId],
         set: {
           lastPrice: sql`excluded.last_price`,
+          notifiedPrice: sql`excluded.notified_price`,
+          snapshot: sql`excluded.snapshot`,
           nextCheckAt: sql`excluded.next_check_at`,
           checksUsed: sql`excluded.checks_used`,
         },
@@ -270,6 +306,56 @@ export async function flushTracked(database: ReturnType<typeof db>, e: Entry): P
     // forgot the deferral it was persisting, and the next reload would hand back the older
     // schedule - spending the check this poll had already established wasn't needed.
     for (const id of ids) e.trackDirty.delete(id);
+  });
+}
+
+// Writes the price-drop event and the new low-water mark together. The partial unique index on
+// alerts makes a repeated observation of the same price harmless across reloads or processes.
+export async function recordPriceDrop(
+  database: ReturnType<typeof db>,
+  e: Entry,
+  t: TrackedItem,
+  item: Item,
+  drop: { previousPrice: number; price: number },
+  hasTargets: boolean,
+  epoch: number,
+): Promise<number | null> {
+  return serialize(e, async () => {
+    if (stale(e, epoch)) return null;
+    let alertId: number | null = null;
+    await database.transaction(async (tx) => {
+      const [inserted] = await tx
+        .insert(alerts)
+        .values({
+          userId: e.s.userId,
+          searchId: e.s.id,
+          searchQ: e.s.q,
+          itemId: item.itemId,
+          title: item.title,
+          price: drop.price,
+          currency: item.currency,
+          shippingCost: item.shippingCost,
+          buyingOption: item.buyingOption,
+          condition: item.condition,
+          imageUrl: item.imageUrl,
+          itemUrl: item.itemUrl,
+          kind: "price_drop",
+          previousPrice: drop.previousPrice,
+          deliveredAt: hasTargets ? null : new Date(),
+        })
+        .onConflictDoNothing()
+        .returning({ id: alerts.id });
+      if (t.notifiedPrice == null || drop.price < t.notifiedPrice) {
+        await tx
+          .update(trackedItems)
+          .set({ lastPrice: t.lastPrice, notifiedPrice: drop.price, snapshot: t.snapshot })
+          .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, t.itemId)));
+        t.notifiedPrice = drop.price;
+      }
+      alertId = inserted?.id ?? null;
+    });
+    if (alertId != null) bumpAlerts(e.s.userId);
+    return alertId;
   });
 }
 
@@ -387,6 +473,9 @@ async function runCheckBatch(
     // moved, so a row sitting on a failure retry takes the schedule's own answer back and nothing
     // else dirties a row that agreed with itself.
     onDefer: (t: TrackedItem, nextCheckAt: number) => void;
+    // A compact check can also observe a live price. The caller owns alert delivery, while this
+    // shared path keeps the observation on the one eBay response it already paid for.
+    onPriceObserved?: (t: TrackedItem, price: number) => Promise<void>;
   },
 ): Promise<void> {
   if (!e.s.trackSold || !e.tracked.size || stale(e, epoch)) return;
@@ -410,6 +499,26 @@ async function runCheckBatch(
       // Same window on the way out: this answer describes a listing the search may no longer
       // match, and booking its sale would seed the fresh median with the old criteria's prices.
       if (stale(e, epoch)) break;
+      if (
+        res.ok &&
+        t.priceKind !== "bid" &&
+        res.buyingOption === "FIXED_PRICE" &&
+        res.availability !== "OUT_OF_STOCK" &&
+        res.price != null &&
+        Number.isFinite(res.price)
+      ) {
+        if (res.price !== t.lastPrice) {
+          t.lastPrice = res.price;
+          e.trackDirty.add(t.itemId);
+        }
+        if (t.notifiedPrice == null) {
+          t.notifiedPrice = res.price;
+          e.trackDirty.add(t.itemId);
+        }
+        // A migration can restore the original alert price while lastPrice already reflects an
+        // older lower re-sighting, so the callback must evaluate every fixed-price observation.
+        if (res.buyingOption === "FIXED_PRICE" && t.snapshot) await opts.onPriceObserved?.(t, res.price);
+      }
       const out = inferOutcome(t, res, Date.now());
       opts.countCheck(t);
       if (out.kind === "defer") {
@@ -433,6 +542,7 @@ export async function runDueChecks(
   u: UserCtx,
   database: ReturnType<typeof db>,
   epoch: number,
+  onPriceObserved?: (t: TrackedItem, price: number) => Promise<void>,
 ): Promise<void> {
   const due = [...e.tracked.values()].filter((t) => t.nextCheckAt <= Date.now()).slice(0, MAX_CHECKS_PER_TICK);
   await runCheckBatch(e, u, database, epoch, {
@@ -471,6 +581,7 @@ export async function runDueChecks(
       t.nextCheckAt = nextCheckAt;
       e.trackDirty.add(t.itemId);
     },
+    onPriceObserved,
   });
 }
 
@@ -490,6 +601,7 @@ export async function runBonusChecks(
   database: ReturnType<typeof db>,
   epoch: number,
   projected: number,
+  onPriceObserved?: (t: TrackedItem, price: number) => Promise<void>,
 ): Promise<void> {
   if (!e.s.trackSold || !e.tracked.size || stale(e, epoch)) return;
   const now = new Date();
@@ -528,6 +640,7 @@ export async function runBonusChecks(
         e.trackDirty.add(t.itemId);
       }
     },
+    onPriceObserved,
   });
 }
 
@@ -546,6 +659,8 @@ export function hydrateTracked(rows: readonly (typeof trackedItems.$inferSelect)
         itemId: r.itemId,
         priceKind: r.priceKind as PriceKind,
         lastPrice: r.lastPrice,
+        notifiedPrice: r.notifiedPrice,
+        snapshot: r.snapshot,
         currency: r.currency,
         itemEndDate: r.itemEndDate?.getTime() ?? null,
         firstSeenAt: r.firstSeenAt.getTime(),

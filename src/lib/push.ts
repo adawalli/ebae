@@ -4,7 +4,7 @@ import { db } from "./db";
 import { buyingOptionLabel, money } from "./format";
 import { log } from "./log";
 import { vapidKeys } from "./schema";
-import type { Item, PushSub, Search } from "./types";
+import type { AlertEvent, Item, PushSub, Search } from "./types";
 
 const plog = log.child({ component: "push" });
 
@@ -63,7 +63,24 @@ export async function vapid(): Promise<Vapid | null> {
   }
 }
 
-function body(item: Item, search: Search) {
+export function pushPayload(item: Item, search: Search, event?: AlertEvent) {
+  const priceDrop =
+    event?.kind === "price_drop" &&
+    event.previousPrice != null &&
+    event.previousPrice > 0 &&
+    item.price != null &&
+    item.price < event.previousPrice;
+  if (priceDrop) {
+    const delta = event.previousPrice! - item.price!;
+    const pct = Math.round((delta / event.previousPrice!) * 100);
+    return JSON.stringify({
+      title: `Price drop: ${item.title ?? "Untitled listing"}`,
+      body: `${money(event.previousPrice!, item.currency)} → ${money(item.price, item.currency)} · ▼ ${money(delta, item.currency)} · ${pct}% price drop`,
+      url: item.itemUrl,
+      image: item.imageUrl,
+      tag: `${search.id}:${item.itemId}:drop:${item.price}`,
+    });
+  }
   const price = item.price == null ? "" : money(item.price, item.currency);
   const ship = item.shippingCost === 0 ? " · free shipping" : "";
   return JSON.stringify({
@@ -83,10 +100,11 @@ export async function notifyPush(
   item: Item,
   search: Search,
   subs: PushSub[],
+  event?: AlertEvent,
 ): Promise<{ error: string | null; anyDelivered: boolean; dead: string[] }> {
   const keys = await vapid();
   if (!keys) return { error: "push is not configured", anyDelivered: false, dead: [] };
-  const payload = body(item, search);
+  const payload = pushPayload(item, search, event);
   let lastError: string | null = null;
   let anyDelivered = false;
   const dead: string[] = [];

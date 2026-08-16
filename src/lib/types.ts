@@ -44,6 +44,9 @@ export const MARKETPLACE_CURRENCY: Record<string, string> = {
 // realized price, which is why those rows are excluded from the sold median.
 export type PriceKind = "bid" | "fixed" | "offer_cap";
 
+export type AlertKind = "listing" | "price_drop";
+export type AlertEvent = { kind: AlertKind; previousPrice: number | null };
+
 export type Search = {
   id: number;
   userId: number;
@@ -121,6 +124,8 @@ export type Alert = Omit<Item, "conditionId" | "itemEndDate" | "bestOffer"> & {
   id: number;
   searchId: number | null;
   searchQ: string;
+  kind: AlertKind;
+  previousPrice: number | null;
   createdAt: string;
 };
 

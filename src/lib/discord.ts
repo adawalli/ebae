@@ -1,6 +1,6 @@
 import { buyingOptionLabel, money } from "./format";
 import { log } from "./log";
-import type { Item, PriceContext, Search } from "./types";
+import type { AlertEvent, Item, PriceContext, Search } from "./types";
 
 const dlog = log.child({ component: "discord" });
 
@@ -24,7 +24,7 @@ export function dealField(item: Item, ctx?: PriceContext): { name: string; value
 }
 
 // DESIGN.md §5: thumbnail, linked title, price/type/condition fields, matched-search footer
-function embed(item: Item, search: Search, ctx?: PriceContext) {
+function embed(item: Item, search: Search, ctx?: PriceContext, event?: AlertEvent) {
   const ship =
     item.shippingCost == null
       ? ""
@@ -32,20 +32,38 @@ function embed(item: Item, search: Search, ctx?: PriceContext) {
         ? " · free shipping"
         : ` + ${money(item.shippingCost, item.currency)} ship`;
   const deal = dealField(item, ctx);
+  const priceDrop =
+    event?.kind === "price_drop" &&
+    event.previousPrice != null &&
+    event.previousPrice > 0 &&
+    item.price != null &&
+    item.price < event.previousPrice;
+  const delta = priceDrop ? event.previousPrice! - item.price! : null;
+  const pct = delta == null ? null : Math.round((delta / event!.previousPrice!) * 100);
   return {
     embeds: [
       {
         title: (item.title ?? "Untitled listing").slice(0, 256),
         url: item.itemUrl,
-        color: 0x21a2c4,
+        color: priceDrop ? 0x23a55a : 0x21a2c4,
+        description: priceDrop
+          ? `${money(item.price, item.currency)}${ship}\n▼ ${money(delta, item.currency)} · ${pct}% price drop`
+          : undefined,
         thumbnail: item.imageUrl ? { url: item.imageUrl } : undefined,
-        fields: [
-          { name: "Price", value: money(item.price, item.currency) + ship, inline: true },
-          { name: "Type", value: buyingOptionLabel(item.buyingOption), inline: true },
-          { name: "Condition", value: item.condition ?? "—", inline: true },
-          ...(deal ? [deal] : []),
-        ],
-        footer: { text: `ebae · matched "${search.q}"` },
+        fields: priceDrop
+          ? [
+              { name: "Was", value: money(event!.previousPrice, item.currency), inline: true },
+              ...(deal ? [deal] : []),
+              { name: "Type", value: buyingOptionLabel(item.buyingOption), inline: true },
+              { name: "Condition", value: item.condition ?? "—", inline: true },
+            ]
+          : [
+              { name: "Price", value: money(item.price, item.currency) + ship, inline: true },
+              { name: "Type", value: buyingOptionLabel(item.buyingOption), inline: true },
+              { name: "Condition", value: item.condition ?? "—", inline: true },
+              ...(deal ? [deal] : []),
+            ],
+        footer: { text: `ebae ·${priceDrop ? " price drop ·" : ""} matched "${search.q}"` },
         timestamp: new Date().toISOString(),
       },
     ],
@@ -85,8 +103,9 @@ export async function notify(
   search: Search,
   webhookUrls: string[],
   ctx?: PriceContext,
+  event?: AlertEvent,
 ): Promise<{ error: string | null; anyDelivered: boolean }> {
-  const body = JSON.stringify(embed(item, search, ctx));
+  const body = JSON.stringify(embed(item, search, ctx, event));
   let lastError: string | null = null;
   let anyDelivered = false;
   // index-based: logs identify a webhook by position, never its URL (secret token)

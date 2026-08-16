@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { pollerState } from "@/__tests__/helpers/poller-state";
 import { evictPushElsewhere, markStalePush, pushIsStale } from "./poller";
+import { pushPayload } from "./push";
+import type { Search } from "./types";
 import { parsePushBody, pushHostAllowed } from "./validate";
 
 // The allowlist is an SSRF guard, not a formality: the poller POSTs to whatever endpoint
@@ -9,6 +11,35 @@ import { parsePushBody, pushHostAllowed } from "./validate";
 const P256DH = "B".repeat(87);
 const AUTH = "A".repeat(22);
 const body = (endpoint: string) => ({ endpoint, keys: { p256dh: P256DH, auth: AUTH } });
+
+test("a price-drop push keeps the original listing notification and labels the lower price", () => {
+  const payload = JSON.parse(
+    pushPayload(
+      {
+        itemId: "v1|drop|0",
+        title: "Sonos Era 300",
+        price: 179.95,
+        currency: "USD",
+        shippingCost: 0,
+        buyingOption: "FIXED_PRICE",
+        condition: "New",
+        conditionId: null,
+        imageUrl: null,
+        itemUrl: "https://www.ebay.com/itm/drop",
+        itemEndDate: null,
+        bestOffer: false,
+      },
+      { id: 7 } as Search,
+      { kind: "price_drop", previousPrice: 200 },
+    ),
+  );
+
+  expect(payload).toMatchObject({
+    title: "Price drop: Sonos Era 300",
+    body: "$200.00 → $179.95 · ▼ $20.05 · 10% price drop",
+    tag: "7:v1|drop|0:drop:179.95",
+  });
+});
 
 test("accepts the real push services", () => {
   for (const e of [

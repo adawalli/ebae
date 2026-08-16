@@ -65,6 +65,34 @@ test("notify: delivers to every webhook and reports success", async () => {
   }
 });
 
+test("notify: a price drop uses the approved delta-first Discord embed", async () => {
+  let payload: { embeds: Array<Record<string, unknown>> } | undefined;
+  const s = stubFetch((_url, _call, init) => {
+    payload = JSON.parse(String(init?.body));
+    return new Response("", { status: 204 });
+  });
+  try {
+    await notify(item, search, ["https://discord.com/api/webhooks/a"], undefined, {
+      kind: "price_drop",
+      previousPrice: 200,
+    });
+  } finally {
+    s.restore();
+  }
+
+  expect(payload?.embeds[0]).toMatchObject({
+    color: 0x23a55a,
+    title: item.title,
+    description: "$179.95 · free shipping\n▼ $20.05 · 10% price drop",
+    footer: { text: 'ebae · price drop · matched "Sonos Era 300"' },
+  });
+  expect(payload?.embeds[0].fields).toEqual([
+    { name: "Was", value: "$200.00", inline: true },
+    { name: "Type", value: "Buy It Now", inline: true },
+    { name: "Condition", value: "New", inline: true },
+  ]);
+});
+
 test("notify: retries a failing webhook up to 3 times, then reports the last error", async () => {
   const s = stubFetch(() => new Response("boom", { status: 500 }));
   const timers = fastTimers();

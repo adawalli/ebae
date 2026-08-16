@@ -85,6 +85,13 @@
       "when": 1784576424847,
       "tag": "0011_youthful_nighthawk",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1786891626946,
+      "tag": "0012_real_sentry",
+      "breakpoints": true
     }
   ]
 }

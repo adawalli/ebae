@@ -13,7 +13,7 @@ eBay's native saved-search alerts are slow - often hours behind. For sought-afte
 - **No sniping or auto-buying.** Alerting only; the human clicks Buy.
 - **No scraping.** Official eBay developer API only - keeps the project ToS-clean and stable.
 - **No SaaS / consumer scale.** A handful of people sharing one deployment is in (see §4); signup flows, billing, roles and horizontal scale are not. Identity comes from an auth proxy in front of the app - ebae never handles passwords. Multi-user does **not** relax the single-replica constraint: poll timers and the seen cache are in process memory, so it stays one instance.
-- **No live auction bid tracking.** New-listing detection is the product; price-drop and ending-soon alerts are future maybes. Sold tracking does read an ended auction's _final_ bid to feed the realized-price median (§3), but nothing follows bids as they climb.
+- **No live auction bid tracking.** New-listing detection is the product; price-drop alerts apply only to re-seen fixed-price and Best Offer listings. Sold tracking does read an ended auction's _final_ bid to feed the realized-price median (§3), but nothing follows bids as they climb.
 
 ## 3. eBay API Approach
 
@@ -39,6 +39,8 @@ Projected usage is computed server-side from the cached entries (`projectedCalls
 **Sold prices without Marketplace Insights.** eBay's sold-search APIs are Limited Release/enterprise-only, so a realized price is inferred instead: `GET /buy/browse/v1/item/{itemId}?fieldgroups=COMPACT` on a listing already seen. Ended listings stay readable for days, and one rule reads both listing types (verified by live probing): `OUT_OF_STOCK` with `estimatedSoldQuantity > 0` means **sold at `price`** - for an ended auction that mirrors the frozen final bid - while `IN_STOCK` past an auction's end means nobody bid. `bidCount` and `reservePriceMet` are unusable (null even where they should be set). Bulk `getItems` is partner-only, so a check is one call.
 
 Timing is what keeps that affordable, and it comes free: search summaries already carry `itemEndDate`, so an **auction costs exactly one check** (end + 5 min, late enough to catch a snipe). A **fixed-price listing decays** over 3/7/14/30 days, at most four checks ever, and any poll that re-sights it skips the next check outright. Enabled by default per search (`searches.track_sold`) with a per-search opt-out, capped at 3 checks per tick, and dropped first when the budget runs low.
+
+The same tracking state holds the lowest price already alerted for each live fixed-price/Best Offer listing. A re-sighting or existing scheduled/bonus check that observes a new low writes a separate price-drop alert; no extra eBay request is made. The original listing alert remains intact, while the drop event shows the prior price and reduction.
 
 On a BIN-only search, sold tracking still surfaces auctions (it widens the poll filter, §2) and follows them silently: the winning bid joins the **same blended sold median** as BIN closes - an auction close is a realized value too - and no auction ever produces an alert. Mixed FIXED_PRICE/AUCTION polls omit eBay's server-side price band because eBay applies it to a hybrid listing's current bid and can hide an in-band Buy It Now offer. The returned page is bounded locally after normalization instead: a hybrid is FIXED_PRICE and compares its BIN price, while a pure auction compares its current bid. Fixed-only polls and market samples keep the server-side band. One extra path drains the pre-feature backlog: a listing already alerted on that is now running as an auction is normally passed over (dedupe filters it out of the alert loop), but if it carries an **alert row** - the user was told about it, as a BIN or before tracking widened the poll - it is re-followed for its close. The alert row is the discriminator that keeps the silent seed backlog and suppressed listings out; once followed (or already resolved) it is inert, so the scan's small extra read only fires while that backlog drains.
 
@@ -94,7 +96,7 @@ One Bun + Next.js app, one container image.
 | `searches`   | query terms, filters (BIN-only, price cap, category), poll interval, enabled flag, `user_id`                                                                                                            |
 | `seen_items` | `(search_id, item_id)` - the dedupe set; prunable after N days. Scoped via the search FK, no `user_id` of its own                                                                                       |
 | `channels`   | notification targets (MVP: Discord webhook URL, one or more), `user_id`                                                                                                                                 |
-| `alerts`     | log of sent notifications (item snapshot: title, price, image, url) - powers the UI history view, `user_id`                                                                                             |
+| `alerts`     | listing and price-drop notifications (item snapshot, prior price for drops) - powers the UI history view, `user_id`                                                                                     |
 | `api_usage`  | daily eBay call counter, PK `(user_id, day)` - the quota is per user, since each user brings their own eBay app. `surplus` is the slice of `used` spent on bonus sold checks, kept for attribution only |
 
 `user_id` is a cascading FK, nullable in the DB only because rows predating multi-user are backfilled at boot (`claim.ts`); the app always writes it and the poller skips a search that somehow has none. The old single-row `settings` table is gone - snooze moved onto `users`. Single mode is not a special case: it has exactly one implicit user row (`local@localhost`), so every query is user-scoped in all modes.
@@ -115,6 +117,8 @@ Embed layout per new item:
   - **Market**: comparison against a daily market baseline (median asking price of the same criteria with the price **cap removed but the floor kept** — the floor keeps sub-band accessories that share the query's keywords out of the median, the removed cap reveals the true going rate above the deal-hunt ceiling). Poller-managed on `searches.market_median` / `market_sampled_at`, refreshed once/day for searches with both a floor and a cap (`MARKET_SAMPLE_HOURS`)
   - **Typical**: median of recent alerts for the search, when there is no baseline yet; shown once ≥3 priced alerts exist
 - Footer: which saved search matched
+
+**Price-drop embeds** are green and lead with the current price, shipping, and `▼ amount · percent`; `Was` carries the prior alerted price. Push uses the same old → new reduction and a distinct tag, so a price drop does not replace the original listing notification.
 
 Two senders: `notify()` (Discord, `discord.ts`) and `notifyPush()` (Web Push, `push.ts`). The poller awaits both and ORs the results. Still deliberately no channel-plugin framework - a `Notifier` interface over two concrete functions is more code than calling both, so it waits for a third channel (Telegram) to actually land.
 
@@ -174,7 +178,7 @@ Config stopped being strictly env-only with multi-user: a shared deployment can'
 
 - PWA with web push notifications ✅
 - Two-way Telegram commands (/pause, /list, /add) 🟡
-- Price-drop alerts on watched items 🟡 (enabled via sold‑tracking checks)
+- Price-drop alerts on watched items ✅ (enabled via sold‑tracking checks)
 - Multi-marketplace (eBay UK/DE/etc. per search) 🟡
 
 ## 8. Open Questions

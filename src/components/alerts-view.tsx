@@ -33,7 +33,7 @@ export function AlertsView({
         <div>
           <h2 className="text-[21px] font-bold tracking-[-0.01em]">Alert history</h2>
           <div className="mt-1 text-[13px] text-muted-foreground">
-            {visibleAlerts.length} item{visibleAlerts.length === 1 ? "" : "s"} matched · newest first
+            {visibleAlerts.length} alert{visibleAlerts.length === 1 ? "" : "s"} · newest first
           </div>
         </div>
         <div className="flex items-center gap-2.5">
@@ -65,7 +65,9 @@ export function AlertsView({
                 <Inbox />
               </EmptyMedia>
               <EmptyTitle>No alerts yet</EmptyTitle>
-              <EmptyDescription>New listings show up here the moment the poller finds them.</EmptyDescription>
+              <EmptyDescription>
+                New listings and price drops show up here the moment the poller finds them.
+              </EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : (
@@ -73,6 +75,14 @@ export function AlertsView({
             {visibleAlerts.map((a, i) => {
               const day = dayLabel(a.createdAt);
               const header = i === 0 || dayLabel(visibleAlerts[i - 1].createdAt) !== day;
+              const priceDrop = a.kind === "price_drop";
+              const reduction =
+                priceDrop && a.price != null && a.previousPrice != null && a.previousPrice > a.price
+                  ? {
+                      amount: a.previousPrice - a.price,
+                      percent: Math.round(((a.previousPrice - a.price) / a.previousPrice) * 100),
+                    }
+                  : null;
               return (
                 <div key={a.id}>
                   {header && (
@@ -131,6 +141,21 @@ export function AlertsView({
                                 ? "Free ship"
                                 : `+ ${money(a.shippingCost, a.currency)} ship`}
                           </span>
+                          {reduction && (
+                            <span className="font-mono text-[12px] font-semibold text-[var(--eb-green)]">
+                              ▼ {money(reduction.amount, a.currency)} · {reduction.percent}% price drop
+                            </span>
+                          )}
+                          {priceDrop && a.previousPrice != null && (
+                            <span className="text-xs text-[var(--eb-faint)]">
+                              Was {money(a.previousPrice, a.currency)}
+                            </span>
+                          )}
+                          {priceDrop && (
+                            <Badge className="border-transparent bg-[color-mix(in_oklab,var(--eb-green)_16%,transparent)] font-mono text-[var(--eb-green)]">
+                              Price drop
+                            </Badge>
+                          )}
                           <Badge
                             className={
                               a.buyingOption === "FIXED_PRICE"
@@ -147,8 +172,11 @@ export function AlertsView({
                           )}
                         </div>
                         <div className="mt-[11px] flex items-center gap-[7px] border-t pt-[11px] text-xs text-muted-foreground">
-                          <span className="size-1.5 rounded-full bg-[var(--eb-accent)]" />
-                          matched <b className="font-semibold text-foreground">{a.searchQ}</b>
+                          <span
+                            className={`size-1.5 rounded-full ${priceDrop ? "bg-[var(--eb-green)]" : "bg-[var(--eb-accent)]"}`}
+                          />
+                          {priceDrop ? "price drop · matched" : "matched"}{" "}
+                          <b className="font-semibold text-foreground">{a.searchQ}</b>
                         </div>
                       </div>
                     </div>

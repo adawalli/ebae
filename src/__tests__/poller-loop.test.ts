@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { freshTestDb } from "./helpers/db";
 import { stubEbayLive } from "./helpers/ebay-stub";
 import { mkItem } from "./helpers/fixtures";
@@ -7,6 +7,7 @@ import { SINGLE_USER_EMAIL } from "@/lib/authmode";
 import { db } from "@/lib/db";
 import { alerts, apiUsage, searches, seenItems, trackedItems, users } from "@/lib/schema";
 import { userCtx } from "@/lib/poller/boot"; // not on the barrel: the reload seam is internal
+import { priceContext } from "@/lib/poller/market"; // same: it is the poller's DB fallback
 import { flushCalls } from "@/lib/poller/quota"; // ditto: persistence is the poller's own business
 import { BONUS_MIN_GAP_MS } from "@/lib/poller/track"; // ditto: the check schedule is internal
 import {
@@ -302,6 +303,45 @@ test("an alert under the age cutoff is delivered, not retired", async () => {
   expect(byId.get(done.id)!.deliveredAt!.toISOString()).toBe(alreadyDelivered.toISOString());
 });
 
+test("redelivery preserves the price-drop message", async () => {
+  const s = await createSearch(userId, input());
+  g.__ebaeState.users.get(userId)!.channels = ["https://discord.com/api/webhooks/1/test"];
+  await database.insert(alerts).values({
+    userId,
+    searchId: s.id,
+    searchQ: s.q,
+    itemId: "drop",
+    title: "Sonos Era 300",
+    price: 179.95,
+    shippingCost: 0,
+    kind: "price_drop",
+    previousPrice: 200,
+    itemUrl: "https://www.ebay.com/itm/drop",
+  });
+  const realFetch = globalThis.fetch;
+  let payload: unknown;
+  globalThis.fetch = ((_request: RequestInfo | URL, init?: RequestInit) => {
+    payload = JSON.parse(String(init?.body));
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }) as typeof fetch;
+
+  try {
+    await redeliverPending(db());
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  expect(payload).toMatchObject({
+    embeds: [
+      {
+        color: 0x23a55a,
+        description: "$179.95 · free shipping\n▼ $20.05 · 10% price drop",
+        footer: { text: 'ebae · price drop · matched "leica m6"' },
+      },
+    ],
+  });
+});
+
 // ---------- budget governor ----------
 // The pure factor math is covered in poller.test.ts. What matters here is the wiring: that a
 // poll which spent a call actually reschedules at the governed delay, and that the same factor
@@ -510,6 +550,370 @@ test("a search without the toggle follows nothing", async () => {
   expect(await trackedRows()).toHaveLength(0);
 });
 
+test("a re-sighted fixed-price listing records a price drop without another eBay check", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected({ price: 1000 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e); // original listing alert and its tracking row
+  const u = g.__ebaeState.users.get(userId)!;
+  const beforeCalls = u.calls.used;
+
+  item.price = 900;
+  await pollOnce(e);
+
+  const rows = await database.select().from(alerts);
+  expect(rows).toHaveLength(2);
+  expect(rows[1]).toMatchObject({ itemId: item.itemId, price: 900, kind: "price_drop", previousPrice: 1000 });
+  expect(u.calls.used - beforeCalls).toBe(1); // only the ordinary search poll
+  expect(e.hitTimes).toHaveLength(1); // a price drop is not a newly-listed hit
+  expect(status(userId).errors).toEqual([]); // recording the event must not abort the tick
+});
+
+test("a re-sighted price drop keeps the listing Typical context", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected({ price: 1000 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  await database.insert(alerts).values([
+    {
+      userId,
+      searchId: e.s.id,
+      searchQ: e.s.q,
+      itemId: "typical-1",
+      title: "typical 1",
+      price: 1100,
+      itemUrl: "https://www.ebay.com/itm/typical-1",
+    },
+    {
+      userId,
+      searchId: e.s.id,
+      searchQ: e.s.q,
+      itemId: "typical-2",
+      title: "typical 2",
+      price: 1200,
+      itemUrl: "https://www.ebay.com/itm/typical-2",
+    },
+  ]);
+  const u = g.__ebaeState.users.get(userId)!;
+  u.channels = ["https://discord.com/api/webhooks/1/test"];
+  let payload: { embeds: { fields: { name: string; value: string; inline: boolean }[] }[] } | undefined;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = ((_request: RequestInfo | URL, init?: RequestInit) => {
+    payload = JSON.parse(String(init?.body));
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }) as typeof fetch;
+
+  try {
+    item.price = 900;
+    await pollOnce(e);
+    expect(payload?.embeds[0].fields).toContainEqual({
+      name: "Typical",
+      value: "$1,100.00 · ▼ 18% under",
+      inline: true,
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+    u.channels = [];
+  }
+});
+
+test("a listing that becomes an auction does not emit a live-bid price drop", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected({ price: 1000 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  const t = e.tracked.get(item.itemId)!;
+
+  item.buyingOption = "AUCTION";
+  item.itemEndDate = new Date(Date.now() + 30 * 60_000).toISOString();
+  item.price = 900;
+  await pollOnce(e);
+
+  expect(await database.select().from(alerts)).toHaveLength(1);
+  expect(t.lastPrice).toBe(1000);
+});
+
+test("a scheduled check records a lower in-stock price from its existing response", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected({ price: 1000 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []); // only the already-scheduled check can observe the change
+  const u = g.__ebaeState.users.get(userId)!;
+  const t = e.tracked.get(item.itemId)!;
+  t.nextCheckAt = Date.now() - 1;
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const ebay = stubEbayLive(() =>
+    Response.json({
+      price: { value: "900", currency: "USD" },
+      buyingOptions: ["FIXED_PRICE"],
+      estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
+    }),
+  );
+  const beforeCalls = u.calls.used;
+
+  try {
+    await pollOnce(e);
+
+    const rows = await database.select().from(alerts);
+    expect(rows).toHaveLength(2);
+    expect(rows[1]).toMatchObject({ itemId: item.itemId, price: 900, kind: "price_drop", previousPrice: 1000 });
+    expect(t.lastPrice).toBe(900);
+    expect(ebay.calls).toBe(1);
+    expect(u.calls.used - beforeCalls).toBe(2); // one search and its one already-due item check
+  } finally {
+    ebay.restore();
+    u.ebay = null;
+  }
+});
+
+test("a scheduled check ignores a former fixed-price listing that is now an auction", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected({ price: 1000 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const u = g.__ebaeState.users.get(userId)!;
+  const t = e.tracked.get(item.itemId)!;
+  t.nextCheckAt = Date.now() - 1;
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const ebay = stubEbayLive(() =>
+    Response.json({
+      price: { value: "900", currency: "USD" },
+      buyingOptions: ["AUCTION"],
+      estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
+    }),
+  );
+
+  try {
+    await pollOnce(e);
+
+    expect(await database.select().from(alerts)).toHaveLength(1);
+    expect(t.lastPrice).toBe(1000);
+  } finally {
+    ebay.restore();
+    u.ebay = null;
+  }
+});
+
+test("a legacy tracked row without a price baseline recovers on its first fixed-price re-sighting", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected({ price: 1000 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  const t = e.tracked.get(item.itemId)!;
+  t.lastPrice = null;
+  t.notifiedPrice = null;
+  await database
+    .update(trackedItems)
+    .set({ lastPrice: null, notifiedPrice: null })
+    .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, item.itemId)));
+
+  await pollOnce(e);
+
+  expect(await database.select().from(alerts)).toHaveLength(1);
+  expect(t.notifiedPrice).toBe(1000);
+  const [row] = await database
+    .select({ notifiedPrice: trackedItems.notifiedPrice })
+    .from(trackedItems)
+    .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, item.itemId)));
+  expect(row.notifiedPrice).toBe(1000);
+
+  item.price = 900;
+  await pollOnce(e);
+
+  expect((await database.select().from(alerts))[1]).toMatchObject({
+    kind: "price_drop",
+    previousPrice: 1000,
+    price: 900,
+  });
+});
+
+test("a scheduled fixed-price check recovers a missing price baseline without alerting", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected({ price: 1000 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const t = e.tracked.get(item.itemId)!;
+  t.lastPrice = null;
+  t.notifiedPrice = null;
+  t.nextCheckAt = Date.now() - 1;
+  await database
+    .update(trackedItems)
+    .set({ lastPrice: null, notifiedPrice: null, nextCheckAt: new Date(t.nextCheckAt) })
+    .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, item.itemId)));
+  const u = g.__ebaeState.users.get(userId)!;
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const ebay = stubEbayLive(() =>
+    Response.json({
+      price: { value: "1000", currency: "USD" },
+      buyingOptions: ["FIXED_PRICE"],
+      estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
+    }),
+  );
+
+  try {
+    await pollOnce(e);
+    expect(await database.select().from(alerts)).toHaveLength(1);
+    expect(t.notifiedPrice).toBe(1000);
+    const [row] = await database
+      .select({ notifiedPrice: trackedItems.notifiedPrice })
+      .from(trackedItems)
+      .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, item.itemId)));
+    expect(row.notifiedPrice).toBe(1000);
+  } finally {
+    ebay.restore();
+    u.ebay = null;
+  }
+});
+
+test("a scheduled check catches a pre-rollout lower price even when lastPrice already has it", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected({ price: 1000 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const u = g.__ebaeState.users.get(userId)!;
+  const t = e.tracked.get(item.itemId)!;
+  t.lastPrice = 900; // an older re-sighting, before price-drop alerts existed
+  t.notifiedPrice = 1000; // migration's baseline from the original listing alert
+  t.nextCheckAt = Date.now() - 1;
+  await database
+    .update(trackedItems)
+    .set({ lastPrice: 900, notifiedPrice: 1000 })
+    .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, item.itemId)));
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const ebay = stubEbayLive(() =>
+    Response.json({
+      price: { value: "900", currency: "USD" },
+      buyingOptions: ["FIXED_PRICE"],
+      estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
+    }),
+  );
+
+  try {
+    await pollOnce(e);
+
+    expect(await database.select().from(alerts)).toHaveLength(2);
+  } finally {
+    ebay.restore();
+    u.ebay = null;
+  }
+});
+
+test("a re-sighting persists a recovered snapshot for later checks", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected({ price: 1000 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+  const t = e.tracked.get(item.itemId)!;
+  t.snapshot = null;
+  g.__ebaeMock.pools.set(e.s.id, [item]); // no auction-backlog read to open a connection for us
+  await database
+    .update(trackedItems)
+    .set({ snapshot: null })
+    .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, item.itemId)));
+  const [before] = await database
+    .select({ snapshot: trackedItems.snapshot })
+    .from(trackedItems)
+    .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, item.itemId)));
+  expect(before.snapshot).toBeNull();
+
+  await pollOnce(e);
+
+  const [row] = await database
+    .select({ snapshot: trackedItems.snapshot })
+    .from(trackedItems)
+    .where(and(eq(trackedItems.searchId, e.s.id), eq(trackedItems.itemId, item.itemId)));
+  expect(row.snapshot).toMatchObject({ itemId: item.itemId, price: item.price });
+});
+
+test("price-drop history does not change the recent listing-price baseline", async () => {
+  const e = await seededEntry();
+  await database.insert(alerts).values([
+    {
+      userId,
+      searchId: e.s.id,
+      searchQ: e.s.q,
+      itemId: "v1|original|0",
+      title: "original listing",
+      price: 1000,
+      itemUrl: "https://www.ebay.com/itm/original",
+    },
+    {
+      userId,
+      searchId: e.s.id,
+      searchQ: e.s.q,
+      itemId: "v1|drop|0",
+      title: "price drop",
+      price: 100,
+      kind: "price_drop",
+      previousPrice: 1000,
+      itemUrl: "https://www.ebay.com/itm/drop",
+    },
+  ]);
+
+  expect(await priceContext(database, e.s.id)).toEqual({ typical: 1000, count: 1 });
+});
+
+test("alert history keeps one listing and each distinct lower price", async () => {
+  const e = await seededEntry();
+  const base = {
+    userId,
+    searchId: e.s.id,
+    searchQ: e.s.q,
+    itemId: "v1|drop-index|0",
+    title: "listing",
+    itemUrl: "https://www.ebay.com/itm/drop-index",
+  };
+  const insert = (values: typeof alerts.$inferInsert) =>
+    database.insert(alerts).values(values).onConflictDoNothing().returning({ id: alerts.id });
+
+  expect(await insert({ ...base, price: 1000 })).toHaveLength(1);
+  expect(await insert({ ...base, price: 1000 })).toHaveLength(0);
+  expect(await insert({ ...base, price: 900, kind: "price_drop", previousPrice: 1000 })).toHaveLength(1);
+  expect(await insert({ ...base, price: 800, kind: "price_drop", previousPrice: 900 })).toHaveLength(1);
+  expect(await insert({ ...base, price: 900, kind: "price_drop", previousPrice: 1000 })).toHaveLength(0);
+});
+
+test("a reload does not count price drops as newly-listed hits", async () => {
+  const e = await seededEntry();
+  const listingAt = new Date(Date.now() - 10_000);
+  const dropAt = new Date(Date.now());
+  await database.insert(alerts).values([
+    {
+      userId,
+      searchId: e.s.id,
+      searchQ: e.s.q,
+      itemId: "v1|original|0",
+      title: "original listing",
+      price: 1000,
+      itemUrl: "https://www.ebay.com/itm/original",
+      createdAt: listingAt,
+    },
+    {
+      userId,
+      searchId: e.s.id,
+      searchQ: e.s.q,
+      itemId: "v1|drop|0",
+      title: "price drop",
+      price: 900,
+      kind: "price_drop",
+      previousPrice: 1000,
+      itemUrl: "https://www.ebay.com/itm/drop",
+      createdAt: dropAt,
+    },
+  ]);
+
+  g.__ebaeState.users.delete(userId);
+  await userCtx(userId);
+
+  const reloaded = g.__ebaeState.entries.get(e.s.id)!;
+  expect(reloaded.hitTimes).toHaveLength(1);
+  expect(reloaded.lastHitAt).toBe(listingAt.getTime());
+});
+
 // ---------- auctions as a sold-price signal on BIN-only searches ----------
 
 const auctionItem = (over: Partial<Item> = {}): Item =>
@@ -519,6 +923,28 @@ const auctionItem = (over: Partial<Item> = {}): Item =>
     itemEndDate: new Date(Date.now() + 30 * 60_000).toISOString(),
     ...over,
   });
+
+test("a price-drop row cannot seed the auction-tracking backlog", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const auction = auctionItem({ itemId: "v1|drop-backlog|0" });
+  e.seen.add(auction.itemId); // it is historical, not a newly-listed auction
+  await database.insert(alerts).values({
+    userId,
+    searchId: e.s.id,
+    searchQ: e.s.q,
+    itemId: auction.itemId,
+    title: auction.title,
+    price: 900,
+    kind: "price_drop",
+    previousPrice: 1000,
+    itemUrl: auction.itemUrl,
+  });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(auction);
+
+  await pollOnce(e);
+
+  expect(e.tracked.has(auction.itemId)).toBe(false);
+});
 
 // A BIN-only search that tracks sold prices widens its query to auctions (see browseFilters),
 // but an auction is never a Buy-It-Now result the user asked to be alerted on: it's followed
@@ -731,14 +1157,13 @@ test("a resolved auction is not re-followed if it reappears", async () => {
 
 // Regression: when the drain is the only DB write in a tick, it must still open `wrote` so the
 // piggyback flush rides its connection - otherwise a price the free-refresh loop harvested onto a
-// followed listing that same tick is stranded in memory until some later writing tick. Both
-// tracked items here are auctions ("bid"), so neither the due nor the bonus path checks or flushes
-// them; only the drain can persist the harvested price.
+// followed fixed-price listing that same tick is stranded in memory until some later writing tick.
+// The drain is the only DB write here, so it is what makes the free refresh durable.
 test("the backlog drain flushes prices harvested the same tick", async () => {
   const e = await seededEntry({ trackSold: true });
-  const followed = auctionItem({ itemId: "v1|auction-harvest|0", price: 300 });
+  const followed = injected({ itemId: "v1|fixed-harvest|0", price: 300 });
   g.__ebaeMock.pools.get(e.s.id)!.unshift(followed);
-  await pollOnce(e); // follow it as a fresh auction, DB lastPrice = 300
+  await pollOnce(e); // follow it as a fresh fixed-price listing, DB lastPrice = 300
   expect(e.tracked.get(followed.itemId)!.lastPrice).toBe(300);
 
   // A backlog auction (seen + alerted, never followed) is the only new write path this tick.
@@ -746,13 +1171,13 @@ test("the backlog drain flushes prices harvested the same tick", async () => {
   await database.insert(seenItems).values({ searchId: e.s.id, itemId: backlog.itemId }).onConflictDoNothing();
   await alertRow(e.s.id, backlog.itemId);
   e.seen.add(backlog.itemId);
-  // Re-sight the followed auction at a new price so harvest dirties it in memory.
-  g.__ebaeMock.pools.set(e.s.id, [auctionItem({ itemId: followed.itemId, price: 275 }), backlog]);
+  // Re-sight the followed listing at a higher price so harvest dirties it without a drop event.
+  g.__ebaeMock.pools.set(e.s.id, [injected({ itemId: followed.itemId, price: 325 }), backlog]);
 
   await pollOnce(e);
 
   const [row] = (await trackedRows()).filter((r) => r.itemId === followed.itemId);
-  expect(row.lastPrice).toBe(275); // harvested price reached the DB, not just memory
+  expect(row.lastPrice).toBe(325); // harvested price reached the DB, not just memory
 });
 
 // The whole point of the schedule: a due check resolves the listing, spends exactly one call,
@@ -839,6 +1264,8 @@ test("a reload rehydrates outstanding follows and realized prices", async () => 
 
   const reloaded = g.__ebaeState.entries.get(e.s.id)!;
   expect(reloaded.tracked.get(item.itemId)?.lastPrice).toBe(item.price);
+  expect(reloaded.tracked.get(item.itemId)?.notifiedPrice).toBe(item.price);
+  expect(reloaded.tracked.get(item.itemId)?.snapshot).toMatchObject({ itemId: item.itemId, price: item.price });
   expect(reloaded.soldPrices).toEqual([{ price: 450, atMs: expect.any(Number) }]);
 });
 

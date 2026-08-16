@@ -9,7 +9,7 @@ import { alerts, apiUsage, searches, seenItems, trackedItems, users } from "@/li
 import { userCtx } from "@/lib/poller/boot"; // not on the barrel: the reload seam is internal
 import { priceContext } from "@/lib/poller/market"; // same: it is the poller's DB fallback
 import { flushCalls } from "@/lib/poller/quota"; // ditto: persistence is the poller's own business
-import { BONUS_MIN_GAP_MS } from "@/lib/poller/track"; // ditto: the check schedule is internal
+import { BONUS_MIN_GAP_MS, runDueChecks } from "@/lib/poller/track"; // ditto: the check schedule is internal
 import {
   GOV_MAX_FACTOR,
   createSearch,
@@ -646,7 +646,6 @@ test("a scheduled check records a lower in-stock price from its existing respons
   const ebay = stubEbayLive(() =>
     Response.json({
       price: { value: "900", currency: "USD" },
-      buyingOptions: ["FIXED_PRICE"],
       estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
     }),
   );
@@ -661,6 +660,37 @@ test("a scheduled check records a lower in-stock price from its existing respons
     expect(t.lastPrice).toBe(900);
     expect(ebay.calls).toBe(1);
     expect(u.calls.used - beforeCalls).toBe(2); // one search and its one already-due item check
+  } finally {
+    ebay.restore();
+    u.ebay = null;
+  }
+});
+
+test("a price-drop delivery failure does not stop the remaining due checks", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const first = injected({ itemId: "v1|delivery-first|0", price: 1000 });
+  const second = injected({ itemId: "v1|delivery-second|0", price: 1000 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(first, second);
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const u = g.__ebaeState.users.get(userId)!;
+  for (const t of e.tracked.values()) t.nextCheckAt = Date.now() - 1;
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const ebay = stubEbayLive(() =>
+    Response.json({
+      price: { value: "900", currency: "USD" },
+      buyingOptions: ["FIXED_PRICE"],
+      estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
+    }),
+  );
+
+  try {
+    await runDueChecks(e, u, database, e.trackEpoch, async () => {
+      throw new Error("delivery unavailable");
+    });
+
+    expect(ebay.calls).toBe(2);
+    expect(e.tracked.get(second.itemId)?.lastPrice).toBe(900);
   } finally {
     ebay.restore();
     u.ebay = null;

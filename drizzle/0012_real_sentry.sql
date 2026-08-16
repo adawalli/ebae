@@ -11,7 +11,7 @@ WITH originals AS (
 )
 UPDATE "tracked_items" AS t
 SET
-  "notified_price" = COALESCE(o."price", t."last_price"),
+  "notified_price" = COALESCE(t."last_price", o."price"),
   "snapshot" = jsonb_build_object(
     'itemId', o."item_id",
     'title', o."title",

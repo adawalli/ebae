@@ -839,6 +839,39 @@ test("a scheduled check ignores a former fixed-price listing that is now an auct
   }
 });
 
+test("a scheduled check ignores a re-sighted auction when its compact response omits buying options", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const item = injected({ price: 1000 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+  await pollOnce(e);
+
+  item.buyingOption = "AUCTION";
+  item.itemEndDate = new Date(Date.now() + 30 * 60_000).toISOString();
+  item.price = 900;
+  await pollOnce(e);
+  g.__ebaeMock.pools.set(e.s.id, []);
+  const u = g.__ebaeState.users.get(userId)!;
+  const t = e.tracked.get(item.itemId)!;
+  t.nextCheckAt = Date.now() - 1;
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const ebay = stubEbayLive(() =>
+    Response.json({
+      price: { value: "800", currency: "USD" },
+      estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
+    }),
+  );
+
+  try {
+    await pollOnce(e);
+
+    expect(await database.select().from(alerts)).toHaveLength(1);
+    expect(t.lastPrice).toBe(1000);
+  } finally {
+    ebay.restore();
+    u.ebay = null;
+  }
+});
+
 test("a legacy tracked row without a price baseline recovers on its first fixed-price re-sighting", async () => {
   const e = await seededEntry({ trackSold: true });
   const item = injected({ price: 1000 });

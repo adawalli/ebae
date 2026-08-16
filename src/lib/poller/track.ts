@@ -512,6 +512,7 @@ async function runCheckBatch(
       if (
         res.ok &&
         t.priceKind !== "bid" &&
+        t.snapshot?.buyingOption !== "AUCTION" &&
         res.buyingOption !== "AUCTION" &&
         res.availability !== "OUT_OF_STOCK" &&
         res.price != null &&

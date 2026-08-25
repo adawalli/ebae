@@ -1,7 +1,7 @@
 "use client";
 
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useState } from "react";
-import { Check, Trash2 } from "lucide-react";
+import { Check, Pencil, Trash2 } from "lucide-react";
 import { MARKETPLACE_CURRENCY, type Channel, type SnoozeConfig, type StatusInfo } from "@/lib/types";
 import { ago, duration, fmt, shownSurplus, until } from "@/lib/format";
 import { submitJson } from "@/lib/http";
@@ -462,8 +462,13 @@ function PushSection() {
   );
 }
 
+export function channelDisplay(channel: Pick<Channel, "kind" | "name" | "webhookUrl">) {
+  return `${channel.name ?? channel.kind} · ${channel.webhookUrl}`;
+}
+
 function NotificationsCard() {
   const [channels, setChannels] = useState<Channel[]>([]);
+  const [name, setName] = useState("");
   const [webhookUrl, setWebhookUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -486,10 +491,14 @@ function NotificationsCard() {
   async function add() {
     setBusy(true);
     setError(null);
-    const r = await submitJson<{ channel: Channel }>("/api/channels", { method: "POST", body: { webhookUrl } });
+    const r = await submitJson<{ channel: Channel }>("/api/channels", {
+      method: "POST",
+      body: { webhookUrl, name: name || null },
+    });
     if (!r.ok) setError(r.error);
     else {
       setChannels((c) => [...c, r.data.channel]);
+      setName("");
       setWebhookUrl("");
     }
     setBusy(false);
@@ -499,6 +508,18 @@ function NotificationsCard() {
     setError(null);
     const r = await submitJson(`/api/channels/${c.id}`, { method: "DELETE" });
     if (r.ok) setChannels((list) => list.filter((x) => x.id !== c.id));
+    else setError(r.error);
+  }
+
+  async function rename(c: Channel) {
+    const next = prompt("Webhook name", c.name ?? "");
+    if (next == null) return;
+    setError(null);
+    const r = await submitJson<{ channel: Channel }>(`/api/channels/${c.id}`, {
+      method: "PATCH",
+      body: { name: next },
+    });
+    if (r.ok) setChannels((list) => list.map((item) => (item.id === c.id ? r.data.channel : item)));
     else setError(r.error);
   }
 
@@ -517,9 +538,16 @@ function NotificationsCard() {
           <div className="flex flex-col gap-2">
             {channels.map((c) => (
               <Item key={c.id} variant="muted" size="sm" className="items-center gap-3">
-                <ItemContent className="font-mono text-xs text-muted-foreground">
-                  {c.kind} · {c.webhookUrl}
-                </ItemContent>
+                <ItemContent className="font-mono text-xs text-muted-foreground">{channelDisplay(c)}</ItemContent>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => rename(c)}
+                  title="Rename webhook"
+                  aria-label="Rename webhook"
+                >
+                  <Pencil />
+                </Button>
                 <Button
                   variant="ghost"
                   size="icon-sm"
@@ -535,6 +563,18 @@ function NotificationsCard() {
         )}
 
         <div className="flex flex-wrap items-end gap-3">
+          <Field className="w-[200px]">
+            <FieldLabel htmlFor="webhook-name">
+              Name <span className="text-muted-foreground">(optional)</span>
+            </FieldLabel>
+            <Input
+              id="webhook-name"
+              value={name}
+              placeholder="e.g. Rare finds"
+              maxLength={100}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </Field>
           <Field className="min-w-[280px] flex-1">
             <FieldLabel htmlFor="webhook-url">Add a webhook</FieldLabel>
             <Input

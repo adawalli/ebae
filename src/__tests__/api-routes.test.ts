@@ -1,6 +1,8 @@
 import { beforeEach, expect, test } from "bun:test";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { DELETE as alertsDELETE, GET as alertsGET } from "@/app/api/alerts/route";
+import { DELETE as channelDELETE, PATCH as channelPATCH } from "@/app/api/channels/[id]/route";
+import { GET as channelsGET, POST as channelsPOST } from "@/app/api/channels/route";
 import { DELETE as searchDELETE, PATCH as searchPATCH } from "@/app/api/searches/[id]/route";
 import { GET as searchesGET, POST as searchesPOST } from "@/app/api/searches/route";
 import { GET as statusGET } from "@/app/api/status/route";
@@ -56,6 +58,125 @@ test("a created search enables sold tracking in the API and DB", async () => {
 
   const listed = await (await searchesGET(new Request("http://localhost/api/searches"))).json();
   expect(listed.searches.map((s: { id: number }) => s.id)).toEqual([search.id]);
+});
+
+test("a created search persists an owned Discord destination", async () => {
+  const channelRes = await channelsPOST(
+    new Request("http://localhost/api/channels", {
+      method: "POST",
+      body: JSON.stringify({ webhookUrl: "https://discord.com/api/webhooks/1/rare" }),
+    }),
+  );
+  const { channel } = await channelRes.json();
+
+  const res = await create({ q: "leica m6", channelId: channel.id });
+  expect(res.status).toBe(201);
+  expect((await res.json()).search).toMatchObject({ channelId: channel.id, channelLabel: "discord · …1/rare" });
+  expect((await database.select().from(searches))[0]).toMatchObject({ channelId: channel.id });
+  expect(st().entries.values().next().value!.s).toMatchObject({ channelId: channel.id });
+});
+
+test("renaming a webhook updates its masked API row and cached search label", async () => {
+  const webhookUrl = "https://discord.com/api/webhooks/1/rare-token";
+  const created = await channelsPOST(
+    new Request("http://localhost/api/channels", {
+      method: "POST",
+      body: JSON.stringify({ webhookUrl, name: "  Rare finds  " }),
+    }),
+  );
+  const { channel } = await created.json();
+  expect(channel).toEqual({ id: channel.id, kind: "discord", name: "Rare finds", webhookUrl: "…-token" });
+  await create({ q: "leica m6", channelId: channel.id });
+
+  const renamed = await channelPATCH(
+    new Request(`http://localhost/api/channels/${channel.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name: "High priority" }),
+    }),
+    { params: Promise.resolve({ id: String(channel.id) }) },
+  );
+  expect(renamed.status).toBe(200);
+  expect((await renamed.json()).channel).toEqual({
+    id: channel.id,
+    kind: "discord",
+    name: "High priority",
+    webhookUrl: "…-token",
+  });
+  expect((await (await channelsGET(new Request("http://localhost/api/channels"))).json()).channels[0].name).toBe(
+    "High priority",
+  );
+  expect(
+    (await (await searchesGET(new Request("http://localhost/api/searches"))).json()).searches[0].channelLabel,
+  ).toBe("High priority");
+});
+
+test("an assigned webhook cannot be deleted", async () => {
+  const { channel } = await (
+    await channelsPOST(
+      new Request("http://localhost/api/channels", {
+        method: "POST",
+        body: JSON.stringify({ webhookUrl: "https://discord.com/api/webhooks/1/assigned" }),
+      }),
+    )
+  ).json();
+  const { search } = await (await create({ q: "leica m6", channelId: channel.id })).json();
+
+  const res = await channelDELETE(new Request(`http://localhost/api/channels/${channel.id}`, { method: "DELETE" }), {
+    params: Promise.resolve({ id: String(channel.id) }),
+  });
+  expect(res.status).toBe(409);
+  expect(await res.json()).toEqual({ error: "webhook is assigned to 1 saved search; reassign it before deleting" });
+
+  expect((await patch(search.id, { channelId: null })).status).toBe(200);
+  const removed = await channelDELETE(
+    new Request(`http://localhost/api/channels/${channel.id}`, { method: "DELETE" }),
+    { params: Promise.resolve({ id: String(channel.id) }) },
+  );
+  expect(removed.status).toBe(200);
+});
+
+test("a webhook assigned during deletion still returns 409", async () => {
+  const { channel } = await (
+    await channelsPOST(
+      new Request("http://localhost/api/channels", {
+        method: "POST",
+        body: JSON.stringify({ webhookUrl: "https://discord.com/api/webhooks/1/raced" }),
+      }),
+    )
+  ).json();
+  await database.execute(
+    sql.raw(`
+    CREATE FUNCTION assign_channel_on_delete() RETURNS trigger AS $$
+    BEGIN
+      INSERT INTO searches (user_id, channel_id, q) VALUES (OLD.user_id, OLD.id, 'raced assignment');
+      RETURN OLD;
+    END;
+    $$ LANGUAGE plpgsql
+  `),
+  );
+  await database.execute(
+    sql.raw(`
+    CREATE TRIGGER assign_channel_on_delete
+    BEFORE DELETE ON channels
+    FOR EACH ROW EXECUTE FUNCTION assign_channel_on_delete()
+  `),
+  );
+
+  const res = await channelDELETE(new Request(`http://localhost/api/channels/${channel.id}`, { method: "DELETE" }), {
+    params: Promise.resolve({ id: String(channel.id) }),
+  });
+  expect(res.status).toBe(409);
+});
+
+test("renaming a webhook rejects a malformed id", async () => {
+  const res = await channelPATCH(
+    new Request("http://localhost/api/channels/not-an-id", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "Nope" }),
+    }),
+    { params: Promise.resolve({ id: "not-an-id" }) },
+  );
+  expect(res.status).toBe(404);
 });
 
 test("a custom search name is trimmed, persisted, and can be cleared", async () => {

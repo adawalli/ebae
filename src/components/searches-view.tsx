@@ -268,6 +268,11 @@ export function SearchesView({
                         −{exclusions.length} excluded
                       </Badge>
                     )}
+                    {s.channelLabel && (
+                      <Badge variant="secondary" className="font-mono">
+                        Discord: {s.channelLabel}
+                      </Badge>
+                    )}
                   </div>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs md:contents">
                     <span

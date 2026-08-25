@@ -3,6 +3,7 @@ export {
   addUserChannel,
   addUserPush,
   baselineInvalidated,
+  channelOwnedBy,
   createSearch,
   deleteSearch,
   evictPushElsewhere,
@@ -13,6 +14,7 @@ export {
   matchCriteriaChanged,
   removeUserChannel,
   removeUserPush,
+  renameUserChannel,
   setSnooze,
   setUserCreds,
   status,
@@ -37,4 +39,13 @@ export {
   usedToday,
 } from "./quota";
 export { activeFracElapsed, counterDayFrac, counterDayFracAt, inWindow, snoozeMinutes } from "./snooze";
-export { alertsTag, bumpAlerts, markStalePush, pushIsStale, type Entry, type UserCtx } from "./state";
+export {
+  alertsTag,
+  bumpAlerts,
+  discordWebhooks,
+  markStalePush,
+  pushIsStale,
+  type DiscordTarget,
+  type Entry,
+  type UserCtx,
+} from "./state";

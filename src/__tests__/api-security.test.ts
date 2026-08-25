@@ -2,7 +2,7 @@ import { afterAll, beforeEach, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { DELETE as alertsDELETE, GET as alertsGET } from "@/app/api/alerts/route";
-import { DELETE as channelDELETE } from "@/app/api/channels/[id]/route";
+import { DELETE as channelDELETE, PATCH as channelPATCH } from "@/app/api/channels/[id]/route";
 import { GET as channelsGET, POST as channelsPOST } from "@/app/api/channels/route";
 import { DELETE as credsDELETE } from "@/app/api/ebay-credentials/route";
 import { DELETE as pushDELETE, POST as pushPOST } from "@/app/api/push/route";
@@ -144,6 +144,17 @@ test("B cannot PATCH or DELETE A's search", async () => {
   expect(owner.status).toBe(200);
 });
 
+test("B cannot route a search to A's Discord webhook", async () => {
+  const res = await searchesPOST(
+    as(B, "http://localhost/api/searches", {
+      method: "POST",
+      body: { q: "stolen route", channelId: a.channelId },
+    }),
+  );
+  expect(res.status).toBe(400);
+  expect(await database.select().from(searches).where(eq(searches.userId, bId))).toEqual([]);
+});
+
 test("B's alert reads and clears never touch A's history", async () => {
   const listed = await json(await alertsGET(as(B, "http://localhost/api/alerts")));
   expect(listed.alerts).toEqual([]);
@@ -163,20 +174,22 @@ test("B's alert reads and clears never touch A's history", async () => {
   expect(ids(mine.alerts)).toEqual([a.alertId]);
 });
 
-test("B cannot read or delete A's channel", async () => {
+test("B cannot read, rename, or delete A's channel", async () => {
   const listed = await json(await channelsGET(as(B, "http://localhost/api/channels")));
   expect(listed.channels).toEqual([]);
 
   const url = `http://localhost/api/channels/${a.channelId}`;
+  const renamed = await channelPATCH(as(B, url, { method: "PATCH", body: { name: "Stolen" } }), params(a.channelId));
+  expect(renamed.status).toBe(404);
   const res = await channelDELETE(as(B, url, { method: "DELETE" }), params(a.channelId));
   expect(res.status).toBe(404);
-  expect((await database.select().from(channels)).map((r) => ({ id: r.id, userId: r.userId }))).toEqual([
-    { id: a.channelId, userId: a.userId },
+  expect((await database.select().from(channels)).map((r) => ({ id: r.id, userId: r.userId, name: r.name }))).toEqual([
+    { id: a.channelId, userId: a.userId, name: null },
   ]);
 
   const mine = await json(await channelsGET(as(A, "http://localhost/api/channels")));
   // Masked to its tail, so even the owner's own read never hands the webhook token back to a page.
-  expect(mine.channels).toEqual([{ id: a.channelId, kind: "discord", webhookUrl: "…-token" }]);
+  expect(mine.channels).toEqual([{ id: a.channelId, kind: "discord", name: null, webhookUrl: "…-token" }]);
 });
 
 test("B cannot delete A's push subscription", async () => {

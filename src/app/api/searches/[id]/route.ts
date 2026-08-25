@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
-import { deleteSearch, listSearches, updateSearch } from "@/lib/poller";
+import { channelOwnedBy, deleteSearch, listSearches, updateSearch } from "@/lib/poller";
 import { parseOr400, readJsonBody, routeError } from "@/lib/route";
 import { parseSearchBody } from "@/lib/validate";
 
@@ -14,18 +14,20 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (body instanceof NextResponse) return body;
   const parsed = parseOr400(body, (b) => parseSearchBody(b, true));
   if (parsed instanceof NextResponse) return parsed;
-  // A partial PATCH sees only the bound(s) in this body; validate can't cross-check the one it
-  // isn't touching. Merge with the stored search so a lone priceFloor can't invert an existing cap.
-  // Reading the user's own list keeps someone else's id from resolving here - updateSearch would
-  // 404 it anyway, but this must not read their bounds to get there.
-  if (parsed.priceFloor !== undefined || parsed.priceCap !== undefined) {
-    const cur = listSearches(user.id).find((s) => s.id === id);
-    const floor = parsed.priceFloor !== undefined ? (parsed.priceFloor as number | null) : (cur?.priceFloor ?? null);
-    const cap = parsed.priceCap !== undefined ? (parsed.priceCap as number | null) : (cur?.priceCap ?? null);
-    if (floor != null && cap != null && floor >= cap)
-      return NextResponse.json({ error: "priceFloor must be less than priceCap" }, { status: 400 });
-  }
   try {
+    if (parsed.channelId != null && !(await channelOwnedBy(user.id, parsed.channelId as number)))
+      return NextResponse.json({ error: "channelId must reference one of your Discord webhooks" }, { status: 400 });
+    // A partial PATCH sees only the bound(s) in this body; validate can't cross-check the one it
+    // isn't touching. Merge with the stored search so a lone priceFloor can't invert an existing cap.
+    // Reading the user's own list keeps someone else's id from resolving here - updateSearch would
+    // 404 it anyway, but this must not read their bounds to get there.
+    if (parsed.priceFloor !== undefined || parsed.priceCap !== undefined) {
+      const cur = listSearches(user.id).find((s) => s.id === id);
+      const floor = parsed.priceFloor !== undefined ? (parsed.priceFloor as number | null) : (cur?.priceFloor ?? null);
+      const cap = parsed.priceCap !== undefined ? (parsed.priceCap as number | null) : (cur?.priceCap ?? null);
+      if (floor != null && cap != null && floor >= cap)
+        return NextResponse.json({ error: "priceFloor must be less than priceCap" }, { status: 400 });
+    }
     const search = await updateSearch(user.id, id, parsed);
     if (!search) return NextResponse.json({ error: "not found" }, { status: 404 });
     return NextResponse.json({ search });

@@ -1,7 +1,7 @@
 "use client";
 
 import type { Dispatch, SetStateAction } from "react";
-import { CONDITION_KEYS, CONDITION_LABELS } from "@/lib/types";
+import { CONDITION_KEYS, CONDITION_LABELS, type Channel } from "@/lib/types";
 import { callsFor, fmt } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -25,9 +25,20 @@ export const emptyForm = {
   auctions: false,
   trackSold: true,
   interval: 2,
+  channelId: null as number | null,
 };
 
 export type SearchForm = typeof emptyForm;
+
+export function discordOptions(channels: Array<Pick<Channel, "id" | "name" | "webhookUrl">>) {
+  return [
+    { value: "", label: "All Discord webhooks" },
+    ...channels.map((channel) => ({
+      value: String(channel.id),
+      label: channel.name ? `${channel.name} · ${channel.webhookUrl}` : `discord · ${channel.webhookUrl}`,
+    })),
+  ];
+}
 
 export function SearchFormDialog({
   showForm,
@@ -41,6 +52,9 @@ export function SearchFormDialog({
   activeMin,
   marketSamples,
   pendingChecks,
+  channels,
+  channelsLoading,
+  channelsError,
 }: {
   showForm: boolean;
   setShowForm: (v: boolean) => void;
@@ -56,6 +70,9 @@ export function SearchFormDialog({
   // one, which is following nothing yet). Comes off the row rather than being modelled here: it
   // depends on what is currently being followed, which only the server knows.
   pendingChecks: number;
+  channels: Channel[];
+  channelsLoading: boolean;
+  channelsError: string | null;
 }) {
   return (
     <Dialog open={showForm} onOpenChange={setShowForm}>
@@ -85,6 +102,31 @@ export function SearchFormDialog({
               placeholder="e.g. Mac Studio Plan B"
               maxLength={100}
             />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="discord-channel">Discord destination</FieldLabel>
+            <NativeSelect
+              id="discord-channel"
+              className="w-full"
+              value={form.channelId == null ? "" : String(form.channelId)}
+              disabled={channelsLoading || !!channelsError}
+              onChange={(e) => setForm({ ...form, channelId: e.target.value ? Number(e.target.value) : null })}
+            >
+              {discordOptions(channels).map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </NativeSelect>
+            <FieldDescription>
+              {channelsLoading
+                ? "Loading webhooks…"
+                : channelsError
+                  ? channelsError
+                  : channels.length
+                    ? "Choose one webhook, or keep the current all-webhook fan-out."
+                    : "Add webhooks under Status & Settings; the environment webhook remains all-only."}
+            </FieldDescription>
           </Field>
           <div className="flex flex-col gap-3.5 md:flex-row">
             <Field className="md:flex-1">

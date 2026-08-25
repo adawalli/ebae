@@ -6,6 +6,8 @@ import type { SearchStats } from "@/lib/types";
 const search = {
   id: 1,
   userId: 1,
+  channelId: null,
+  channelLabel: null,
   q: "Mac Studio M2 Max 64gb",
   name: "Mac Studio Plan B",
   categoryId: null,
@@ -55,4 +57,26 @@ test("saved-search rows show a custom name above the raw query", () => {
   expect(html).toContain("Mac Studio Plan B");
   expect(html).toContain("Mac Studio M2 Max 64gb");
   expect(html.indexOf("Mac Studio Plan B")).toBeLessThan(html.indexOf("Mac Studio M2 Max 64gb"));
+});
+
+test("saved-search rows show a dedicated Discord destination", () => {
+  const html = renderToStaticMarkup(
+    <SearchesView
+      searches={[{ ...search, channelId: 7, channelLabel: "Rare finds" }]}
+      active={[{ ...search, channelId: 7, channelLabel: "Rare finds" }]}
+      projected={288}
+      ceiling={5000}
+      quotaPct={6}
+      running
+      mock
+      noCreds={false}
+      status={null}
+      openCreate={() => {}}
+      openEdit={() => {}}
+      togglePause={() => {}}
+      removeSearch={() => {}}
+    />,
+  );
+
+  expect(html).toContain("Discord: Rare finds");
 });

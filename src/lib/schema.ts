@@ -43,12 +43,24 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const channels = pgTable("channels", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull().default("discord"),
+  name: text("name"),
+  webhookUrl: text("webhook_url").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+});
+
 // user_id is nullable across searches/channels/alerts only because the boot-time claim
 // (claim.ts) backfills pre-multi-user rows; the app always writes it, and the poller
 // skips null-owner searches so unclaimed rows stay inert.
 export const searches = pgTable("searches", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
+  // null preserves the original fan-out to every Discord webhook; a concrete id routes only
+  // to that saved webhook. Restrict deletion so removing a target cannot silently widen alerts.
+  channelId: integer("channel_id").references(() => channels.id, { onDelete: "restrict" }),
   q: text("q").notNull(),
   name: text("name"),
   categoryId: text("category_id"),
@@ -132,14 +144,6 @@ export const trackedItems = pgTable(
   },
   (t) => [primaryKey({ columns: [t.searchId, t.itemId] })],
 );
-
-export const channels = pgTable("channels", {
-  id: serial("id").primaryKey(),
-  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
-  kind: text("kind").notNull().default("discord"),
-  webhookUrl: text("webhook_url").notNull(),
-  enabled: boolean("enabled").notNull().default(true),
-});
 
 // Web Push targets. A separate table rather than a `channels` row: webhook_url is NOT
 // NULL and a subscription carries three values, so overloading it would mean JSON in a

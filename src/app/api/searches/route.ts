@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
-import { createSearch, listSearches } from "@/lib/poller";
+import { channelOwnedBy, createSearch, listSearches } from "@/lib/poller";
 import { parseOr400, readJsonBody, routeError } from "@/lib/route";
 import { parseSearchBody } from "@/lib/validate";
 
@@ -20,6 +20,8 @@ export async function POST(req: Request) {
   const parsed = parseOr400(body, (b) => parseSearchBody(b, false));
   if (parsed instanceof NextResponse) return parsed;
   try {
+    if (parsed.channelId != null && !(await channelOwnedBy(user.id, parsed.channelId as number)))
+      return NextResponse.json({ error: "channelId must reference one of your Discord webhooks" }, { status: 400 });
     const search = await createSearch(user.id, parsed as Parameters<typeof createSearch>[1]);
     return NextResponse.json({ search }, { status: 201 });
   } catch (e) {

@@ -260,10 +260,13 @@ export async function pollOnce(e: Entry) {
     return;
   }
 
-  plog.debug({ searchId: e.s.id, q: e.s.q }, "polling");
+  const pollSearch = { ...e.s };
+  plog.debug({ searchId: pollSearch.id, q: pollSearch.q }, "polling");
   try {
     u.calls.used++;
-    const result = u.ebay ? await searchNewlyListed(u.ebay, e.s) : { items: mockSearch(e.s), truncated: false };
+    const result = u.ebay
+      ? await searchNewlyListed(u.ebay, pollSearch)
+      : { items: mockSearch(pollSearch), truncated: false };
     const { items, truncated } = result;
     if (truncated && !e.truncated)
       recordError(u.id, e.s, "eBay returned more than 200 matches - older listings may be missed; narrow this search");
@@ -470,8 +473,8 @@ export async function pollOnce(e: Entry) {
     // and the error backoff are already their own (longer) delays.
     schedule(e, governedDelayMs(e.s.intervalMin, governorFor(u, projected)));
   } catch (err) {
-    plog.error({ err, searchId: e.s.id, q: e.s.q }, "poll failed"); // stack goes to stdout; recordError keeps only the message for the UI
-    recordError(u.id, e.s, message(err));
+    plog.error({ err, searchId: pollSearch.id, q: pollSearch.q }, "poll failed"); // stack goes to stdout; recordError keeps only the message for the UI
+    recordError(u.id, pollSearch, message(err));
     const { delayMs, backoffMs } = retryDelayMs(err, e.s.intervalMin, e.backoffMs);
     e.backoffMs = backoffMs;
     schedule(e, delayMs);

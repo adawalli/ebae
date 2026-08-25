@@ -214,6 +214,27 @@ test("a failing poll backs off by doubling, capped at 30 minutes", async () => {
   expect(e.backoffMs).toBe(0);
 });
 
+test("a failed live poll keeps its captured identity through a concurrent rename", async () => {
+  const s = await createSearch(userId, input({ q: "original query", name: "Original name" }));
+  const e = g.__ebaeState.entries.get(s.id)!;
+  const u = g.__ebaeState.users.get(userId)!;
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    if (String(request).includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
+    await updateSearch(userId, e.s.id, { q: "renamed query", name: "Renamed name" });
+    return Response.json({ errors: [{ errorId: 2001 }] }, { status: 500 });
+  }) as typeof fetch;
+
+  try {
+    await pollOnce(e);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  expect(status(userId).errors).toMatchObject([{ searchQ: "original query", searchName: "Original name" }]);
+});
+
 test("a truncated Browse episode warns once and rearms after a complete result", async () => {
   const s = await createSearch(userId, input());
   const e = g.__ebaeState.entries.get(s.id)!;

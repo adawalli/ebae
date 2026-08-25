@@ -16,6 +16,7 @@ import {
   type TrackedItem,
   type UserCtx,
   bumpAlerts,
+  discordWebhooks,
   enabledSearchesFor,
   message,
   plog,
@@ -326,7 +327,7 @@ export async function pollOnce(e: Entry) {
       // Pin the owner's channel list for this batch: reload() swaps the UserCtx and its
       // channel list (never mutates), so a capture keeps the insert's deliveredAt seed and the
       // notify target consistent even if a reload lands mid-tick.
-      const webhooks = u.channels; // local copy; named to not shadow the `channels` schema table
+      const webhooks = discordWebhooks(e.s, u); // local copy; named to not shadow the schema table
       // Pinned for the same reason as `webhooks`, but narrowed as endpoints die: reapPush
       // reassigns u.push rather than mutating it, so this alias would otherwise keep handing
       // a reaped endpoint to every later item in the batch.
@@ -443,7 +444,7 @@ export async function pollOnce(e: Entry) {
       if (!drop || !t.snapshot || !priceInRange(price, e.s)) return;
       const item = { ...t.snapshot, price };
       if (suppressed(item, e.s)) return;
-      const webhooks = u.channels;
+      const webhooks = discordWebhooks(e.s, u);
       const subs = u.push;
       const targets = webhooks.length + subs.length;
       const alertSearch = { ...e.s };

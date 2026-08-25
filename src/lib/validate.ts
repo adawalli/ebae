@@ -69,6 +69,11 @@ export function parseSearchBody(b: any, partial: boolean): string | Record<strin
   }
   // Enabled by default on a create; omission from a patch leaves the current choice alone.
   if (!partial || b.trackSold !== undefined) out.trackSold = b.trackSold === undefined ? true : !!b.trackSold;
+  if (!partial || b.channelId !== undefined) {
+    if (b.channelId != null && (!Number.isInteger(b.channelId) || b.channelId < 1))
+      return "channelId must be a positive integer or null";
+    out.channelId = b.channelId ?? null;
+  }
   if (partial && b.enabled !== undefined) out.enabled = !!b.enabled;
   return out;
 }
@@ -118,11 +123,19 @@ export function parseEbayCredsBody(b: any): string | EbayCredsInput {
 // Validates a POST /api/channels body. Discord is the only kind, and the prefix is a real
 // constraint, not cosmetic: the poller POSTs to whatever is stored here, so an arbitrary URL
 // would make it a request forwarder aimed at anything the pod can reach.
-export function parseChannelBody(b: any): string | { webhookUrl: string } {
+export function parseChannelName(b: any): string | { name: string | null } {
+  if (b?.name != null && typeof b.name !== "string") return "name must be a string";
+  const name = typeof b?.name === "string" ? b.name.trim() : "";
+  if (name.length > 100) return "name must be at most 100 characters";
+  return { name: name || null };
+}
+
+export function parseChannelBody(b: any): string | { webhookUrl: string; name: string | null } {
   const webhookUrl = typeof b?.webhookUrl === "string" ? b.webhookUrl.trim() : "";
   if (!webhookUrl.startsWith("https://discord.com/api/webhooks/"))
     return "webhookUrl must start with https://discord.com/api/webhooks/";
-  return { webhookUrl };
+  const parsed = parseChannelName(b);
+  return typeof parsed === "string" ? parsed : { webhookUrl, name: parsed.name };
 }
 
 // endsWith(".host") and never includes() - includes() would happily accept

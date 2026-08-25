@@ -23,9 +23,9 @@ import {
   surplusToday,
   usedToday,
 } from "./poller";
-import { recordError } from "./poller/state";
+import { discordWebhooks, recordError } from "./poller/state";
 import { dealField } from "./discord";
-import { hhmmToMin, parseSearchBody, parseSnoozeBody } from "./validate";
+import { hhmmToMin, parseChannelBody, parseSearchBody, parseSnoozeBody } from "./validate";
 import { mkItem as baseItem } from "@/__tests__/helpers/fixtures";
 import type { Item } from "./types";
 
@@ -175,6 +175,41 @@ test("parseSearchBody: trackSold defaults on and is untouched by a partial patch
   expect((parseSearchBody({ trackSold: 1 }, true) as Record<string, unknown>).trackSold).toBe(true); // coerced
   expect((parseSearchBody({ trackSold: false }, true) as Record<string, unknown>).trackSold).toBe(false);
   expect((parseSearchBody({ q: "x" }, true) as Record<string, unknown>).trackSold).toBeUndefined();
+});
+
+test("parseSearchBody: channelId accepts all-or-one and rejects malformed ids", () => {
+  expect((parseSearchBody({ q: "x" }, false) as Record<string, unknown>).channelId).toBeNull();
+  expect((parseSearchBody({ channelId: null }, true) as Record<string, unknown>).channelId).toBeNull();
+  expect((parseSearchBody({ channelId: 7 }, true) as Record<string, unknown>).channelId).toBe(7);
+  expect((parseSearchBody({}, true) as Record<string, unknown>).channelId).toBeUndefined();
+  for (const channelId of [0, -1, 1.5, "7"]) {
+    expect(parseSearchBody({ channelId }, true)).toBe("channelId must be a positive integer or null");
+  }
+});
+
+test("parseChannelBody: trims an optional label and rejects malformed labels", () => {
+  const webhookUrl = "https://discord.com/api/webhooks/1/token";
+  expect(parseChannelBody({ webhookUrl, name: "  Rare finds  " })).toEqual({ webhookUrl, name: "Rare finds" });
+  expect(parseChannelBody({ webhookUrl })).toEqual({ webhookUrl, name: null });
+  expect(parseChannelBody({ webhookUrl, name: 7 })).toBe("name must be a string");
+  expect(parseChannelBody({ webhookUrl, name: "x".repeat(101) })).toBe("name must be at most 100 characters");
+});
+
+test("discordWebhooks resolves all-or-one and fails closed for a missing assignment", () => {
+  const u = {
+    channels: [
+      { id: 1, name: "Rare", webhookUrl: "https://discord.com/api/webhooks/1/rare" },
+      { id: 2, name: "Busy", webhookUrl: "https://discord.com/api/webhooks/2/busy" },
+      { id: null, name: null, webhookUrl: "https://discord.com/api/webhooks/env/default" },
+    ],
+  };
+  expect(discordWebhooks({ channelId: null }, u)).toEqual([
+    "https://discord.com/api/webhooks/1/rare",
+    "https://discord.com/api/webhooks/2/busy",
+    "https://discord.com/api/webhooks/env/default",
+  ]);
+  expect(discordWebhooks({ channelId: 2 }, u)).toEqual(["https://discord.com/api/webhooks/2/busy"]);
+  expect(discordWebhooks({ channelId: 99 }, u)).toEqual([]);
 });
 
 test("undefined current (boot window) treats any provided field as changed", () => {

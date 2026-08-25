@@ -20,6 +20,7 @@ import {
 import { SNOOZE_DEFAULT, activeMin, counterDayFrac, hhmm, snoozeMinutes, snoozeWindow, snoozing } from "./snooze";
 import { resetTracked, soldStats } from "./track";
 import {
+  type DiscordTarget,
   type SnoozeState,
   type UserCtx,
   bumpAlerts,
@@ -65,12 +66,21 @@ function effectiveIntervalMin(intervalMin: number, factor: number): number {
   return Math.round(intervalMin * factor * 10) / 10;
 }
 
+function channelLabelFor(s: Search): string | null {
+  if (s.channelId == null) return null;
+  const channel = state()
+    .users.get(s.userId)
+    ?.channels.find((c) => c.id === s.channelId);
+  return channel ? (channel.name ?? `discord · …${channel.webhookUrl.slice(-6)}`) : null;
+}
+
 // Stats for a search with no live entry to read from: brand new (createSearch) or dropped by a
 // concurrent reload (updateSearch's cache-miss). Everything runtime-derived reads as empty; the
 // next listSearches call returns the real figures.
 function stubStats(s: Search, userId: number): SearchStats {
   return {
     ...s,
+    channelLabel: channelLabelFor(s),
     seenCount: 0,
     hits24: 0,
     lastHitAt: null,
@@ -97,6 +107,7 @@ export function listSearches(userId: number): SearchStats[] {
       const sold = e.s.trackSold ? soldStats(e.soldPrices, now) : { typical: null, count: 0 };
       return {
         ...e.s,
+        channelLabel: channelLabelFor(e.s),
         seenCount: e.seen.size,
         hits24: e.hitTimes.length,
         lastHitAt: e.lastHitAt ? new Date(e.lastHitAt).toISOString() : null,
@@ -122,7 +133,12 @@ export type SearchInput = {
   excludeTerms: string | null;
   trackSold: boolean;
   intervalMin: number;
+  channelId: number | null;
 };
+
+export async function channelOwnedBy(userId: number, channelId: number): Promise<boolean> {
+  return !!(await userCtx(userId))?.channels.some((channel) => channel.id === channelId);
+}
 
 export async function createSearch(userId: number, input: SearchInput): Promise<SearchStats> {
   await userCtx(userId); // without a cached owner the search would idle until the next reload
@@ -130,6 +146,7 @@ export async function createSearch(userId: number, input: SearchInput): Promise<
     .insert(searches)
     .values({
       userId,
+      channelId: input.channelId,
       q: input.q,
       name: input.name,
       categoryId: input.categoryId,
@@ -185,6 +202,7 @@ export async function updateSearch(
   if (cur?.userId !== userId) return null;
   const row: Partial<typeof searches.$inferInsert> = {};
   if (patch.q !== undefined) row.q = patch.q;
+  if (patch.channelId !== undefined) row.channelId = patch.channelId;
   if (patch.name !== undefined) row.name = patch.name;
   if (patch.categoryId !== undefined) row.categoryId = patch.categoryId;
   if (patch.priceFloor !== undefined) row.priceFloor = patch.priceFloor;
@@ -321,17 +339,22 @@ export async function setUserCreds(userId: number, creds: EbayCreds | null): Pro
 // list, matching reload's swap discipline: a tick mid-flight keeps notifying the set it captured.
 // An incremental edit is also what keeps single mode's DISCORD_WEBHOOK_URL alive - it exists only
 // in this list, so rebuilding channels from the DB here would drop it until the next reload.
-export async function addUserChannel(userId: number, webhookUrl: string): Promise<void> {
+export async function addUserChannel(userId: number, channel: DiscordTarget): Promise<void> {
   const u = await userCtx(userId);
   // Skip one already there: a first-login user isn't cached yet, so userCtx reloads and picks
   // the row the route just inserted straight out of the DB. Appending blind would post every
   // alert to it twice until the next refresh.
-  if (u && !u.channels.includes(webhookUrl)) u.channels = [...u.channels, webhookUrl];
+  if (u && !u.channels.some((c) => c.id === channel.id)) u.channels = [...u.channels, channel];
 }
 
-export async function removeUserChannel(userId: number, webhookUrl: string): Promise<void> {
+export async function removeUserChannel(userId: number, channelId: number): Promise<void> {
   const u = await userCtx(userId);
-  if (u) u.channels = u.channels.filter((c) => c !== webhookUrl);
+  if (u) u.channels = u.channels.filter((c) => c.id !== channelId);
+}
+
+export async function renameUserChannel(userId: number, channelId: number, name: string | null): Promise<void> {
+  const u = await userCtx(userId);
+  if (u) u.channels = u.channels.map((c) => (c.id === channelId ? { ...c, name } : c));
 }
 
 // Replace, not append-if-absent like addUserChannel: the route upserts p256dh/auth, and a

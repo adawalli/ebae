@@ -1,7 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { searchLabel, type Alert, type SearchStats, type SnoozeConfig, type StatusInfo } from "@/lib/types";
+import {
+  searchLabel,
+  type Alert,
+  type Channel,
+  type SearchStats,
+  type SnoozeConfig,
+  type StatusInfo,
+} from "@/lib/types";
 import { submitJson } from "@/lib/http";
 import { refreshPush } from "@/lib/push-client";
 import { AppSidebar } from "@/components/app-sidebar";
@@ -34,6 +41,9 @@ export default function Home() {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [channelsLoading, setChannelsLoading] = useState(false);
+  const [channelsError, setChannelsError] = useState<string | null>(null);
   // Pause/delete/clear fire from rows and toolbars that have no error slot of their own, so a
   // failure surfaces up here beside the other banners. Without it the row just snaps back on the
   // next 10s refresh and the click reads as if it never registered.
@@ -183,11 +193,26 @@ export default function Home() {
     refresh();
   }
 
+  async function loadChannels() {
+    setChannelsLoading(true);
+    setChannelsError(null);
+    try {
+      const res = await fetch("/api/channels");
+      if (!res.ok) throw new Error();
+      setChannels((await res.json()).channels);
+    } catch {
+      setChannelsError("Could not load webhooks; the current destination is preserved.");
+    } finally {
+      setChannelsLoading(false);
+    }
+  }
+
   function openCreate() {
     setEditId(null);
     setForm(emptyForm);
     setFormError(null);
     setShowForm(true);
+    void loadChannels();
   }
 
   function openEdit(s: SearchStats) {
@@ -204,9 +229,11 @@ export default function Home() {
       auctions: s.includeAuctions,
       trackSold: s.trackSold,
       interval: s.intervalMin,
+      channelId: s.channelId,
     });
     setFormError(null);
     setShowForm(true);
+    void loadChannels();
   }
 
   // POST for new searches, PATCH for edits — same body either way (validate.ts
@@ -228,6 +255,7 @@ export default function Home() {
         includeAuctions: form.auctions,
         trackSold: form.trackSold,
         intervalMin: form.interval,
+        channelId: form.channelId,
       },
     });
     if (!r.ok) setFormError(r.error);
@@ -355,6 +383,9 @@ export default function Home() {
           activeMin={activeMin}
           marketSamples={status?.quota.marketSamplesPerDay ?? 1}
           pendingChecks={editId == null ? 0 : (searches.find((s) => s.id === editId)?.checksDue24h ?? 0)}
+          channels={channels}
+          channelsLoading={channelsLoading}
+          channelsError={channelsError}
         />
       )}
 

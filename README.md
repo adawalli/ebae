@@ -77,11 +77,11 @@ search's going rate.
 
 ## Notifications
 
-Alerts go to Discord webhooks, push notifications on your own devices, or both. Every target that accepts an alert gets it; an alert is retried after a restart only while no target has taken it.
+Alerts go to Discord webhooks, push notifications on your own devices, or both. Push stays enabled for every search. Discord defaults to all saved webhooks, or a search can route to one named webhook. An alert is retried after a restart only while no target has taken it.
 
 ### Discord
 
-Create a webhook in your Discord channel (channel settings → Integrations → Webhooks) and set `DISCORD_WEBHOOK_URL`. More targets can be added on the Status & Settings page.
+Create a webhook in your Discord channel (channel settings → Integrations → Webhooks) and set `DISCORD_WEBHOOK_URL`. More targets can be added and named on the Status & Settings page, then selected while creating or editing a search. The environment webhook remains part of the all-webhook route and cannot be selected alone.
 
 In a multi-user mode `DISCORD_WEBHOOK_URL` is ignored (it would fan everyone's alerts into one channel) - each user adds their own webhooks in the UI.
 

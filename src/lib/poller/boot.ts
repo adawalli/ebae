@@ -10,7 +10,7 @@ import { redeliverPending } from "./delivery";
 import { schedule } from "./loop";
 import { flushCalls, mergeCalls } from "./quota";
 import { flushTracked, hydrateTracked } from "./track";
-import { type UserCtx, message, newEntry, plog, recordError, rowToSearch, state } from "./state";
+import { type DiscordTarget, type UserCtx, message, newEntry, plog, recordError, rowToSearch, state } from "./state";
 
 const REFRESH_HOURS = Number(process.env.CACHE_REFRESH_HOURS ?? 12);
 const SEEN_RETENTION_DAYS = Number(process.env.SEEN_RETENTION_DAYS ?? 90);
@@ -164,7 +164,7 @@ type Snapshot = {
   trackedRows: (typeof trackedItems.$inferSelect)[];
   hitRows: { searchId: number | null; createdAt: Date }[];
   lastHitRows: { searchId: number | null; last: Date | null }[];
-  channelRows: { userId: number | null; webhookUrl: string }[];
+  channelRows: { id: number; userId: number | null; name: string | null; webhookUrl: string }[];
   pushRows: { userId: number; endpoint: string; p256dh: string; auth: string }[];
   userRows: (typeof users.$inferSelect)[];
 };
@@ -198,7 +198,7 @@ async function loadSnapshot(database: ReturnType<typeof db>): Promise<Snapshot> 
       .where(eq(alerts.kind, "listing"))
       .groupBy(alerts.searchId),
     database
-      .select({ userId: channels.userId, webhookUrl: channels.webhookUrl })
+      .select({ id: channels.id, userId: channels.userId, name: channels.name, webhookUrl: channels.webhookUrl })
       .from(channels)
       .where(eq(channels.enabled, true)),
     database
@@ -210,13 +210,14 @@ async function loadSnapshot(database: ReturnType<typeof db>): Promise<Snapshot> 
 }
 
 // Group the channel and push rows by user, so each UserCtx gets its targets in one shot.
-function channelsByUser(rows: Snapshot["channelRows"]): Map<number, string[]> {
-  const map = new Map<number, string[]>();
+function channelsByUser(rows: Snapshot["channelRows"]): Map<number, DiscordTarget[]> {
+  const map = new Map<number, DiscordTarget[]>();
   for (const r of rows) {
     if (r.userId == null) continue; // unclaimed, same as a null-owner search below
+    const target = { id: r.id, name: r.name, webhookUrl: r.webhookUrl };
     const list = map.get(r.userId);
-    if (list) list.push(r.webhookUrl);
-    else map.set(r.userId, [r.webhookUrl]);
+    if (list) list.push(target);
+    else map.set(r.userId, [target]);
   }
   return map;
 }
@@ -238,7 +239,7 @@ function pushByUserMap(rows: Snapshot["pushRows"]): Map<number, PushSub[]> {
 function buildUserMap(
   st: ReturnType<typeof state>,
   userRows: Snapshot["userRows"],
-  webhooksByUser: Map<number, string[]>,
+  webhooksByUser: Map<number, DiscordTarget[]>,
   pushByUser: Map<number, PushSub[]>,
   today: string,
 ): Map<number, UserCtx> {
@@ -273,7 +274,8 @@ function buildUserMap(
         u.ebay = envCreds(u.id);
         Object.assign(u, envPrefs());
       }
-      if (process.env.DISCORD_WEBHOOK_URL) u.channels.push(process.env.DISCORD_WEBHOOK_URL);
+      if (process.env.DISCORD_WEBHOOK_URL)
+        u.channels.push({ id: null, name: null, webhookUrl: process.env.DISCORD_WEBHOOK_URL });
     }
   }
   return nextUsers;

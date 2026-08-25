@@ -12,6 +12,8 @@ export const plog = log.child({ component: "poller" });
 // can push very old listings off page 1). start/end = minutes from midnight in `tz`.
 export type SnoozeState = { enabled: boolean; start: number; end: number; tz: string | null };
 
+export type DiscordTarget = { id: number | null; name: string | null; webhookUrl: string };
+
 // One listing a track_sold search is following, mirroring its tracked_items row. Only
 // unresolved listings live in memory: resolving one drops it from the map and (when it sold)
 // appends to the entry's soldPrices, so the map holds exactly the outstanding work. Times are
@@ -87,7 +89,7 @@ export type UserCtx = {
   // has them from .env even in mock, where there are no creds to read them from at all.
   env: EbayCreds["env"];
   marketplace: string;
-  channels: string[];
+  channels: DiscordTarget[];
   // A sibling of `channels` rather than a widening of it: every consumer of that list
   // assumes a URL string, and a push target is three values. Two lists, two senders.
   push: PushSub[];
@@ -147,6 +149,15 @@ export function state(): State {
     stalePush: new Set(),
     alertsRev: new Map(),
   });
+}
+
+// null keeps the original fan-out behavior (including the env webhook, whose id is null).
+// A concrete id can only match inside this owner's already-scoped list, so a corrupt or
+// cross-owner assignment fails closed instead of widening delivery.
+export function discordWebhooks(search: Pick<Search, "channelId">, user: Pick<UserCtx, "channels">): string[] {
+  return user.channels
+    .filter((channel) => search.channelId == null || channel.id === search.channelId)
+    .map((channel) => channel.webhookUrl);
 }
 
 // A fresh in-memory Entry for a search: tracking containers empty, scheduler fields at rest.
@@ -278,6 +289,7 @@ export function rowToSearch(r: typeof searches.$inferSelect, userId: number): Se
   return {
     id: r.id,
     userId,
+    channelId: r.channelId,
     q: r.q,
     name: r.name,
     categoryId: r.categoryId,

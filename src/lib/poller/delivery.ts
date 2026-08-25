@@ -4,7 +4,7 @@ import { notify } from "@/lib/discord";
 import { notifyPush } from "@/lib/push";
 import { alerts, pushSubs } from "@/lib/schema";
 import type { Item, PriceContext } from "@/lib/types";
-import { type UserCtx, markStalePush, plog, recordError, state } from "./state";
+import { type UserCtx, discordWebhooks, markStalePush, plog, recordError, state } from "./state";
 
 // An alert that couldn't be delivered is retried at the next boot, but deals are time-sensitive:
 // past this age, retire it unsent rather than spam stale listings when the process comes back.
@@ -93,7 +93,8 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
     // Age-independent, unlike the UPDATE above: a row with nowhere to go is retired at any age,
     // because there is no future boot at which it could be delivered.
     const u = st.users.get(s.userId);
-    if (!u || (!u.channels.length && !u.push.length)) {
+    const webhooks = u ? discordWebhooks(s, u) : [];
+    if (!u || (!webhooks.length && !u.push.length)) {
       done.push(row.id);
       continue;
     }
@@ -123,8 +124,8 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
       market != null && market > 0 ? { typical: market, count: 0, basis: "market" } : undefined;
     const alertSearch = { ...s, q: row.searchQ, name: row.searchName };
     const [d, p] = await Promise.all([
-      u.channels.length
-        ? notify(item, alertSearch, u.channels, ctx, { kind: row.kind, previousPrice: row.previousPrice })
+      webhooks.length
+        ? notify(item, alertSearch, webhooks, ctx, { kind: row.kind, previousPrice: row.previousPrice })
         : NOTHING_SENT,
       u.push.length
         ? notifyPush(item, alertSearch, u.push, { kind: row.kind, previousPrice: row.previousPrice })

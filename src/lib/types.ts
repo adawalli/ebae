@@ -50,6 +50,7 @@ export type AlertEvent = { kind: AlertKind; previousPrice: number | null };
 export type Search = {
   id: number;
   userId: number;
+  channelId: number | null; // null = every Discord webhook; id = one owned saved webhook
   q: string;
   name: string | null;
   categoryId: string | null;
@@ -74,6 +75,8 @@ export function searchLabel(s: Pick<Search, "name" | "q">): string {
 
 // Search + live poller stats, as served by GET /api/searches
 export type SearchStats = Search & {
+  // Friendly name (or masked-tail fallback) for a dedicated Discord target; null = all.
+  channelLabel: string | null;
   seenCount: number;
   hits24: number;
   lastHitAt: string | null;
@@ -147,7 +150,7 @@ export type PollError = {
 
 // A delivery target. webhookUrl is masked to its tail by the API - the full URL is a
 // secret and is never returned once saved.
-export type Channel = { id: number; kind: string; webhookUrl: string };
+export type Channel = { id: number; kind: string; name: string | null; webhookUrl: string };
 
 // A Web Push target, as the browser's PushSubscription.toJSON() gives it. endpoint is
 // bearer-equivalent (anyone holding it can push to the device), so no API returns it.

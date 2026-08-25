@@ -5,7 +5,7 @@ import { stubEbayLive } from "./helpers/ebay-stub";
 import { mkItem } from "./helpers/fixtures";
 import { SINGLE_USER_EMAIL } from "@/lib/authmode";
 import { db } from "@/lib/db";
-import { alerts, apiUsage, searches, seenItems, trackedItems, users } from "@/lib/schema";
+import { alerts, apiUsage, channels, searches, seenItems, trackedItems, users } from "@/lib/schema";
 import { userCtx } from "@/lib/poller/boot"; // not on the barrel: the reload seam is internal
 import { schedule } from "@/lib/poller/loop"; // ditto: scheduler state is internal
 import { priceContext } from "@/lib/poller/market"; // same: it is the poller's DB fallback
@@ -48,7 +48,14 @@ const input = (over: Partial<SearchInput> = {}): SearchInput => ({
   excludeTerms: null,
   trackSold: false,
   intervalMin: 5,
+  channelId: null,
   ...over,
+});
+
+const webhook = () => ({
+  id: 1,
+  name: null,
+  webhookUrl: "https://discord.com/api/webhooks/1/test",
 });
 
 const injected = (over: Partial<Item> = {}): Item =>
@@ -273,7 +280,7 @@ test("a truncated Browse episode warns once and rearms after a complete result",
 
 test("an over-age alert is retired without a delivery attempt", async () => {
   const s = await createSearch(userId, input());
-  g.__ebaeState.users.get(userId)!.channels = ["https://discord.com/api/webhooks/1/test"];
+  g.__ebaeState.users.get(userId)!.channels = [webhook()];
   await database.insert(alerts).values({
     userId,
     searchId: s.id,
@@ -307,7 +314,7 @@ test("an over-age alert is retired without a delivery attempt", async () => {
 test("an alert under the age cutoff is delivered, not retired", async () => {
   const alreadyDelivered = new Date("2026-01-01T00:00:00.000Z");
   const s = await createSearch(userId, input());
-  g.__ebaeState.users.get(userId)!.channels = ["https://discord.com/api/webhooks/1/test"];
+  g.__ebaeState.users.get(userId)!.channels = [webhook()];
   const base = { userId, searchId: s.id, searchQ: s.q, title: "leica m6", itemUrl: "https://www.ebay.com/itm/x" };
   const [fresh] = await database
     .insert(alerts)
@@ -340,9 +347,44 @@ test("an alert under the age cutoff is delivered, not retired", async () => {
   expect(byId.get(done.id)!.deliveredAt!.toISOString()).toBe(alreadyDelivered.toISOString());
 });
 
+test("redelivery follows the search's current Discord destination", async () => {
+  const s = await createSearch(userId, input());
+  const saved = await database
+    .insert(channels)
+    .values([
+      { userId, kind: "discord", webhookUrl: "https://discord.com/api/webhooks/1/one" },
+      { userId, kind: "discord", webhookUrl: "https://discord.com/api/webhooks/2/two" },
+    ])
+    .returning({ id: channels.id, webhookUrl: channels.webhookUrl });
+  g.__ebaeState.users.get(userId)!.channels = saved.map((channel) => ({ ...channel, name: null }));
+  await updateSearch(userId, s.id, { channelId: saved[1].id });
+  await database.insert(alerts).values({
+    userId,
+    searchId: s.id,
+    searchQ: s.q,
+    itemId: "routed",
+    title: "leica m6",
+    itemUrl: "https://www.ebay.com/itm/routed",
+  });
+  const realFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = ((request: RequestInfo | URL) => {
+    calls.push(String(request));
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }) as typeof fetch;
+
+  try {
+    await redeliverPending(db());
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  expect(calls).toEqual([saved[1].webhookUrl]);
+});
+
 test("a redelivery failure retains the alert's saved-search identity", async () => {
   const s = await createSearch(userId, input({ q: "current query", name: "Current name" }));
-  g.__ebaeState.users.get(userId)!.channels = ["https://discord.com/api/webhooks/1/test"];
+  g.__ebaeState.users.get(userId)!.channels = [webhook()];
   await database.insert(alerts).values({
     userId,
     searchId: s.id,
@@ -379,7 +421,7 @@ test("a redelivery failure retains the alert's saved-search identity", async () 
 
 test("redelivery preserves the price-drop message", async () => {
   const s = await createSearch(userId, input());
-  g.__ebaeState.users.get(userId)!.channels = ["https://discord.com/api/webhooks/1/test"];
+  g.__ebaeState.users.get(userId)!.channels = [webhook()];
   await database.insert(alerts).values({
     userId,
     searchId: s.id,
@@ -414,6 +456,35 @@ test("redelivery preserves the price-drop message", async () => {
       },
     ],
   });
+});
+
+test("a live alert targets only the search's selected Discord webhook", async () => {
+  const e = await seededEntry();
+  const saved = await database
+    .insert(channels)
+    .values([
+      { userId, kind: "discord", webhookUrl: "https://discord.com/api/webhooks/1/one" },
+      { userId, kind: "discord", webhookUrl: "https://discord.com/api/webhooks/2/two" },
+    ])
+    .returning({ id: channels.id, webhookUrl: channels.webhookUrl });
+  const u = g.__ebaeState.users.get(userId)!;
+  u.channels = saved.map((channel) => ({ ...channel, name: null }));
+  await updateSearch(userId, e.s.id, { channelId: saved[1].id });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(injected());
+  const realFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = ((request: RequestInfo | URL) => {
+    calls.push(String(request));
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }) as typeof fetch;
+
+  try {
+    await pollOnce(e);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  expect(calls).toEqual([saved[1].webhookUrl]);
 });
 
 // ---------- budget governor ----------
@@ -728,7 +799,7 @@ test("a re-sighted price drop keeps the listing Typical context", async () => {
     },
   ]);
   const u = g.__ebaeState.users.get(userId)!;
-  u.channels = ["https://discord.com/api/webhooks/1/test"];
+  u.channels = [webhook()];
   let payload: { embeds: { fields: { name: string; value: string; inline: boolean }[] }[] } | undefined;
   const realFetch = globalThis.fetch;
   globalThis.fetch = ((_request: RequestInfo | URL, init?: RequestInit) => {
@@ -1795,7 +1866,7 @@ test("editing what a search matches drops the realized prices with the baseline"
 test("an edit landing mid-delivery can't insert follows the edit just cleared", async () => {
   const e = await seededEntry({ trackSold: true });
   const u = g.__ebaeState.users.get(userId)!;
-  u.channels = ["https://discord.com/api/webhooks/1/test"];
+  u.channels = [webhook()];
   g.__ebaeMock.pools.get(e.s.id)!.unshift(injected());
   const realFetch = globalThis.fetch;
   // Delivery is the seam: the follow has been collected by now, but the batch insert that
@@ -1853,7 +1924,7 @@ test("a live alert keeps its captured identity through a concurrent rename", asy
   const e = await seededEntry({ q: "original query", name: "Original name" });
   const u = g.__ebaeState.users.get(userId)!;
   const item = injected();
-  u.channels = ["https://discord.com/api/webhooks/1/test"];
+  u.channels = [webhook()];
   g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
 
   const restoreDb = renameAfterAlertInsert(e, "Renamed");

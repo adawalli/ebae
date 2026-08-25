@@ -93,9 +93,9 @@ One Bun + Next.js app, one container image.
 | table        | purpose                                                                                                                                                                                                 |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `users`      | one row per person: email (identity anchor), `sub` from the IdP, their eBay keys (secret AES-GCM encrypted), snooze window                                                                              |
-| `searches`   | query terms, filters (BIN-only, price cap, category), poll interval, enabled flag, `user_id`                                                                                                            |
+| `searches`   | query terms, filters (BIN-only, price cap, category), poll interval, enabled flag, optional Discord `channel_id`, `user_id`                                                                             |
 | `seen_items` | `(search_id, item_id)` - the dedupe set; prunable after N days. Scoped via the search FK, no `user_id` of its own                                                                                       |
-| `channels`   | notification targets (MVP: Discord webhook URL, one or more), `user_id`                                                                                                                                 |
+| `channels`   | named notification targets (MVP: Discord webhook URL, one or more), `user_id`                                                                                                                           |
 | `alerts`     | listing and price-drop notifications (item snapshot, prior price for drops) - powers the UI history view, `user_id`                                                                                     |
 | `api_usage`  | daily eBay call counter, PK `(user_id, day)` - the quota is per user, since each user brings their own eBay app. `surplus` is the slice of `used` spent on bonus sold checks, kept for attribution only |
 
@@ -106,6 +106,8 @@ One Bun + Next.js app, one container image.
 ## 5. Notifications
 
 **MVP: Discord only**, via outbound webhook POST - no bot, no inbound connectivity, ~zero setup for the user (create webhook in a channel, paste URL).
+
+`searches.channel_id` is null for the original all-webhook fan-out, or references one of the owner's saved Discord webhooks. Push is independent and always fans out to the owner's devices. The environment webhook has no database id, so it participates only in the all-webhook route. Assigned webhooks cannot be deleted until their searches are reassigned; delivery also fails closed if a selected target is missing.
 
 Embed layout per new item:
 

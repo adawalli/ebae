@@ -22,11 +22,11 @@ export async function GET(req: Request) {
   if (user instanceof NextResponse) return user;
   try {
     const rows = await db()
-      .select({ id: channels.id, kind: channels.kind, webhookUrl: channels.webhookUrl })
+      .select({ id: channels.id, kind: channels.kind, name: channels.name, webhookUrl: channels.webhookUrl })
       .from(channels)
       .where(eq(channels.userId, user.id))
       .orderBy(channels.id);
-    const list: Channel[] = rows.map((r) => ({ id: r.id, kind: r.kind, webhookUrl: mask(r.webhookUrl) }));
+    const list: Channel[] = rows.map((r) => ({ ...r, webhookUrl: mask(r.webhookUrl) }));
     return NextResponse.json({ channels: list });
   } catch (e) {
     return routeError(e, { method: "GET", path: "/api/channels" }, { unavailable: true });
@@ -43,10 +43,10 @@ export async function POST(req: Request) {
   try {
     const [row] = await db()
       .insert(channels)
-      .values({ userId: user.id, webhookUrl: parsed.webhookUrl })
-      .returning({ id: channels.id, kind: channels.kind });
-    await addUserChannel(user.id, parsed.webhookUrl);
-    const channel: Channel = { id: row.id, kind: row.kind, webhookUrl: mask(parsed.webhookUrl) };
+      .values({ userId: user.id, name: parsed.name, webhookUrl: parsed.webhookUrl })
+      .returning({ id: channels.id, kind: channels.kind, name: channels.name });
+    await addUserChannel(user.id, { id: row.id, name: row.name, webhookUrl: parsed.webhookUrl });
+    const channel: Channel = { ...row, webhookUrl: mask(parsed.webhookUrl) };
     return NextResponse.json({ channel }, { status: 201 });
   } catch (e) {
     return routeError(e, { method: "POST", path: "/api/channels" });

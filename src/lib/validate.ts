@@ -15,6 +15,7 @@ export function parseSearchBody(b: any, partial: boolean): string | Record<strin
     out.q = q;
   }
   if (!partial || b.name !== undefined) {
+    if (b.name != null && typeof b.name !== "string") return "name must be a string";
     const name = typeof b.name === "string" ? b.name.trim() : "";
     if (name.length > 100) return "name must be at most 100 characters";
     out.name = name || null;

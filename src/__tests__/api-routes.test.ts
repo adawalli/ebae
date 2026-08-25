@@ -80,6 +80,17 @@ test("a custom search name is limited to 100 characters", async () => {
   expect(await database.select().from(searches)).toHaveLength(0);
 });
 
+test("a non-string custom name is rejected without clearing an existing name", async () => {
+  const { search } = await (await create({ q: "mac studio", name: "Plan B" })).json();
+
+  const res = await patch(search.id, { name: 12345 });
+  expect(res.status).toBe(400);
+  expect(await res.json()).toEqual({ error: "name must be a string" });
+
+  const [row] = await database.select().from(searches);
+  expect(row.name).toBe("Plan B");
+});
+
 test("renaming a search preserves its polling baseline", async () => {
   const { search } = await (await create({ q: "mac studio" })).json();
   const entry = st().entries.get(search.id)!;

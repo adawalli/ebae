@@ -7,7 +7,7 @@ import type { EbayCreds } from "@/lib/ebay";
 import { alerts, channels, pushSubs, searches, seenItems, trackedItems, users } from "@/lib/schema";
 import type { PushSub } from "@/lib/types";
 import { redeliverPending } from "./delivery";
-import { schedule } from "./loop";
+import { pollingEnabled, schedule } from "./loop";
 import { flushCalls, mergeCalls } from "./quota";
 import { flushTracked, hydrateTracked } from "./track";
 import { type DiscordTarget, type UserCtx, message, newEntry, plog, recordError, rowToSearch, state } from "./state";
@@ -85,7 +85,8 @@ async function tryBoot() {
     }
     st.ready = true;
     st.bootError = null;
-    plog.info({ searches: st.entries.size, users: st.users.size }, "poller ready");
+    if (pollingEnabled()) plog.info({ searches: st.entries.size, users: st.users.size }, "poller ready");
+    else plog.warn("development poller disabled - use bun run dev:poller with a scratch database");
     // Flush any alert left undelivered by a crash between its insert and its notify, or by a
     // webhook outage that spanned the restart. Must finish BEFORE the first tick is scheduled:
     // a tick firing mid-sweep could insert a fresh deliveredAt=null row that the sweep's SELECT
@@ -262,9 +263,9 @@ function buildUserMap(
   }
   // The env vars are single mode's whole eBay/Discord config, and an existing deployment must
   // upgrade to multi-user code without touching them. DB creds still win (the UI can save some
-  // even here); no creds at all leaves ebay null, which pollMode reads as mock - today's
-  // behaviour. Multi-user modes ignore both vars (warned about at boot): one global webhook
-  // would fan every user's alerts into one channel.
+  // even here); no creds leaves ebay null, which pollMode treats as mock only for this mode's
+  // implicit local user. Multi-user modes ignore both vars (warned about at boot): one global
+  // webhook would fan every user's alerts into one channel.
   if (authMode() === "single") {
     const u = [...nextUsers.values()].find((x) => x.email === SINGLE_USER_EMAIL);
     if (u) {

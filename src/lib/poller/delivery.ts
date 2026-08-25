@@ -40,6 +40,9 @@ export async function reapPush(database: ReturnType<typeof db>, u: UserCtx, dead
 }
 
 export async function redeliverPending(database: ReturnType<typeof db>) {
+  // Deliberately separate from pollingEnabled(): even `dev:poller` must not replay a shared
+  // database's real pending alerts. It is a scratch-DB pipeline tool, not a delivery recovery tool.
+  if (process.env.NODE_ENV === "development") return;
   const st = state();
   const now = new Date(); // one stamp for the whole sweep, so the DB shows they came from one boot
   await database

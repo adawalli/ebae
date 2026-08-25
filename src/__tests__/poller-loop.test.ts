@@ -7,13 +7,14 @@ import { SINGLE_USER_EMAIL } from "@/lib/authmode";
 import { db } from "@/lib/db";
 import { alerts, apiUsage, channels, searches, seenItems, trackedItems, users } from "@/lib/schema";
 import { userCtx } from "@/lib/poller/boot"; // not on the barrel: the reload seam is internal
-import { schedule } from "@/lib/poller/loop"; // ditto: scheduler state is internal
+import { pollMode, schedule } from "@/lib/poller/loop"; // ditto: scheduler state is internal
 import { priceContext } from "@/lib/poller/market"; // same: it is the poller's DB fallback
 import { flushCalls } from "@/lib/poller/quota"; // ditto: persistence is the poller's own business
 import { BONUS_MIN_GAP_MS, runDueChecks } from "@/lib/poller/track"; // ditto: the check schedule is internal
 import {
   GOV_MAX_FACTOR,
   createSearch,
+  health,
   listSearches,
   pollOnce,
   redeliverPending,
@@ -108,6 +109,91 @@ test("the first poll seeds the dedupe set without alerting", async () => {
   expect(row.seeded).toBe(true);
   expect(await database.select().from(seenItems)).toHaveLength(MOCK_POOL_SIZE);
   expect(await database.select().from(alerts)).toHaveLength(0);
+});
+
+test("development schedules polls only after an explicit opt-in", async () => {
+  const e = await seededEntry();
+  const nodeEnv = process.env.NODE_ENV;
+  const enabled = process.env.ENABLE_DEV_POLLER;
+  g.__ebaeState.ready = true;
+
+  try {
+    process.env.NODE_ENV = "development";
+    process.env.ENABLE_DEV_POLLER = "0";
+    schedule(e, 60_000);
+    expect(e.timer).toBeNull();
+    const poller = status(userId).poller;
+    expect(poller.running).toBe(false);
+    expect(poller.timers).toBe(0);
+    expect(poller.enabled).toBe(false);
+    expect(health()).toEqual({ ok: true, reason: "polling disabled" });
+
+    process.env.ENABLE_DEV_POLLER = "1";
+    schedule(e, 60_000);
+    expect(e.timer).not.toBeNull();
+  } finally {
+    if (e.timer) clearTimeout(e.timer);
+    e.timer = null;
+    if (nodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = nodeEnv;
+    if (enabled === undefined) delete process.env.ENABLE_DEV_POLLER;
+    else process.env.ENABLE_DEV_POLLER = enabled;
+  }
+});
+
+test("single mode never gives a real user mock listings", async () => {
+  await seededEntry();
+  const local = g.__ebaeState.users.get(userId)!;
+
+  expect(pollMode({ ...local, email: "adam@example.com", ebay: null })).toBe("no-creds");
+  expect(pollMode(local)).toBe("mock");
+});
+
+test("development guards a real user's saved credentials", async () => {
+  const e = await seededEntry();
+  const local = g.__ebaeState.users.get(userId)!;
+  const nodeEnv = process.env.NODE_ENV;
+  const auth = process.env.AUTH_MODE;
+  const enabled = process.env.ENABLE_DEV_POLLER;
+  const realFetch = globalThis.fetch;
+  const email = local.email;
+  const savedEbay = local.ebay;
+  let calls = 0;
+  process.env.NODE_ENV = "development";
+  process.env.ENABLE_DEV_POLLER = "1";
+
+  try {
+    const ebay = {
+      userId,
+      clientId: "client-id",
+      clientSecret: "client-secret",
+      env: "production" as const,
+      marketplace: "EBAY_US",
+    };
+    process.env.AUTH_MODE = "proxy";
+    local.email = "adam@example.com";
+    local.ebay = ebay;
+    globalThis.fetch = (() => {
+      calls++;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }) as unknown as typeof fetch;
+
+    expect(pollMode(local)).toBe("guarded");
+    await pollOnce(e);
+    expect(calls).toBe(0);
+  } finally {
+    if (e.timer) clearTimeout(e.timer);
+    e.timer = null;
+    local.email = email;
+    local.ebay = savedEbay;
+    globalThis.fetch = realFetch;
+    if (nodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = nodeEnv;
+    if (auth === undefined) delete process.env.AUTH_MODE;
+    else process.env.AUTH_MODE = auth;
+    if (enabled === undefined) delete process.env.ENABLE_DEV_POLLER;
+    else process.env.ENABLE_DEV_POLLER = enabled;
+  }
 });
 
 test("a new listing after seeding writes exactly one alert", async () => {
@@ -309,6 +395,44 @@ test("an over-age alert is retired without a delivery attempt", async () => {
   expect(calls).toBe(0);
   const [row] = await database.select({ deliveredAt: alerts.deliveredAt }).from(alerts);
   expect(row.deliveredAt).not.toBeNull();
+});
+
+test("development never redelivers pending alerts, even with dev polling enabled", async () => {
+  const s = await createSearch(userId, input());
+  g.__ebaeState.users.get(userId)!.channels = [webhook()];
+  await database.insert(alerts).values({
+    userId,
+    searchId: s.id,
+    searchQ: s.q,
+    title: "leica m6",
+    itemId: "pending-in-production",
+    itemUrl: "https://www.ebay.com/itm/pending-in-production",
+  });
+
+  const nodeEnv = process.env.NODE_ENV;
+  const enabled = process.env.ENABLE_DEV_POLLER;
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  process.env.NODE_ENV = "development";
+  process.env.ENABLE_DEV_POLLER = "1";
+  globalThis.fetch = (() => {
+    calls++;
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }) as unknown as typeof fetch;
+
+  try {
+    await redeliverPending(db());
+  } finally {
+    globalThis.fetch = realFetch;
+    if (nodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = nodeEnv;
+    if (enabled === undefined) delete process.env.ENABLE_DEV_POLLER;
+    else process.env.ENABLE_DEV_POLLER = enabled;
+  }
+
+  expect(calls).toBe(0);
+  const [row] = await database.select({ deliveredAt: alerts.deliveredAt }).from(alerts);
+  expect(row.deliveredAt).toBeNull();
 });
 
 test("an alert under the age cutoff is delivered, not retired", async () => {

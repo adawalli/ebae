@@ -83,7 +83,7 @@ export type Entry = {
 export type UserCtx = {
   id: number;
   email: string;
-  ebay: EbayCreds | null; // null = mock (single mode) or paused (multi-user); see pollMode
+  ebay: EbayCreds | null; // null = mock for the implicit local user, otherwise paused; see pollMode
   // Kept beside `ebay` rather than read off it, because they outlive the keys: removing creds
   // deliberately leaves both columns behind as the defaults if keys return, and single mode
   // has them from .env even in mock, where there are no creds to read them from at all.

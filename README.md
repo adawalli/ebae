@@ -13,12 +13,12 @@ See [DESIGN.md](DESIGN.md) for architecture and roadmap.
 ```sh
 cp .env.example .env.local   # set DATABASE_URL (Neon works great)
 bun install
-bun run dev
+bun run dev                 # UI/API only; no polling or notification delivery
 ```
 
-Open http://localhost:3000. Without eBay credentials the app runs in **mock mode**: the poller generates fake listings so you can try the whole flow (seeding, alerts, quota) before registering an eBay app.
+Open http://localhost:3000. Local development leaves the poller off so an accidental production `DATABASE_URL` cannot start timers or redeliver pending alerts. The scripts force `NODE_ENV=development`, even if the parent shell exported `NODE_ENV=production`. To try the complete pipeline against a scratch database, run `bun run dev:poller` instead. Without eBay credentials that explicit command runs in **mock mode**, generating fake listings for seeding, alerts and quota testing.
 
-That is the default and it needs **no new env vars**: one implicit user, no login, `DATABASE_URL` and the `EBAY_*`/`DISCORD_WEBHOOK_URL` vars are the whole config. Sharing the deployment with other people is opt-in - see [Multi-user](#multi-user).
+Neither command needs a new env var: one implicit user, no login, `DATABASE_URL` and the `EBAY_*`/`DISCORD_WEBHOOK_URL` vars are the whole config. `ENABLE_DEV_POLLER` is internal script plumbing: `bun run dev` sets it to `0`; `bun run dev:poller` sets it to `1`; do not set it in `.env.local`. A search created under normal `bun run dev` remains unseeded until you run the scratch database with `dev:poller`. Sharing the deployment with other people is opt-in - see [Multi-user](#multi-user).
 
 ## eBay credentials
 
@@ -152,11 +152,11 @@ Generic trusted-header SSO for Authelia, authentik, oauth2-proxy, Tailscale serv
 
 ### Local development against a shared database
 
-`AUTH_MODE=single` still runs fine against a database a multi-user mode created, but **you will see an empty account**: single mode signs you in as the implicit `local@localhost` user, while every existing row belongs to the SSO identity that created it. Nothing is lost and nothing is taken - the boot-time claim only adopts rows that have no owner - your data is simply someone else's.
+`AUTH_MODE=single` still runs against a database a multi-user mode created, but **you will see an empty account**: single mode signs you in as the implicit `local@localhost` user, while every existing row belongs to the SSO identity that created it. Nothing is lost and nothing is taken - the boot-time claim only adopts rows that have no owner - your data is simply someone else's.
 
-Worth knowing before you point `bun run dev` at a live database: the poller is not scoped to whoever is logged in. It loads **every** user and polls **their** searches with **their** credentials, delivering to **their** webhooks. So a second poller against a shared database doubles the eBay quota spend and can double-post an alert, because the seen-item cache is per process. If the local box can't decrypt those credentials (no `ENCRYPTION_KEY`), single mode falls back to mock and posts _fake_ listings to those real webhooks.
+`bun run dev` loads the cache for the UI but schedules no polls and performs no pending-alert redelivery. `bun run dev:poller` is the deliberate opt-in for a scratch database. Even then development polls only the implicit `local@localhost` user, never a real identity loaded from a shared database, and development never replays pending alerts. The UI labels a real identity as **Guarded** rather than asking you to re-enter credentials.
 
-Use a scratch `DATABASE_URL` - that's what the quick start describes, and mock mode means it needs no eBay keys at all.
+The safety boundary is background polling and delivery, not database access. Migrations, cache maintenance and any UI/API action still use the configured database. Use a scratch `DATABASE_URL` for normal work, or a read-only production role when inspection is unavoidable.
 
 If you genuinely need your real rows locally, be yourself instead of being `local@localhost`:
 
@@ -166,7 +166,7 @@ AUTH_TRUSTED_HEADER=X-Email
 curl -H 'X-Email: you@example.com' localhost:3000/api/searches
 ```
 
-For the browser you need something to inject that header on every request. Prefer a local reverse proxy over a browser extension, and re-read the warning above about what the poller will be doing while you click around.
+For the browser you need something to inject that header on every request. Prefer a local reverse proxy over a browser extension. Development still refuses to poll that real identity; this setup is for inspecting or editing its rows through the UI/API.
 
 ### `ENCRYPTION_KEY`
 

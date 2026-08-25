@@ -5,7 +5,7 @@ import { currencyFor, invalidateToken, tokenExpiresAt, type EbayCreds } from "@/
 import { searches, users } from "@/lib/schema";
 import type { PushSub, Search, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
 import { userCtx } from "./boot";
-import { MAX_BACKOFF_MS, QUOTA_SKIP_MS, kick, pollMode, schedule } from "./loop";
+import { MAX_BACKOFF_MS, QUOTA_SKIP_MS, kick, pollMode, pollingEnabled, schedule } from "./loop";
 import { MARKET_SAMPLES_PER_DAY } from "./market";
 import { callsPerDayFor, callsPerDayForEntry, checksDue24h, projectedCalls } from "./projection";
 import {
@@ -427,6 +427,7 @@ function quotaInfo(u: UserCtx | undefined, userId: number, sn: SnoozeState, toda
 export function status(userId: number): StatusInfo {
   const st = state();
   const u = st.users.get(userId);
+  const polling = pollingEnabled();
   const today = new Date().toDateString();
   const sn = u?.snooze ?? SNOOZE_DEFAULT;
   // clientId/env/marketplace ride on status because the credentials route has no GET (the
@@ -444,9 +445,10 @@ export function status(userId: number): StatusInfo {
     ready: st.ready,
     bootError: st.bootError,
     poller: {
-      running: st.ready,
+      enabled: polling,
+      running: st.ready && polling,
       bootedAt: st.bootedAt ? new Date(st.bootedAt).toISOString() : null,
-      timers: enabledSearchesFor(userId).length,
+      timers: polling ? enabledSearchesFor(userId).length : 0,
     },
     ebay: {
       mode: u ? pollMode(u) : "no-creds",
@@ -484,6 +486,7 @@ export function health(): { ok: boolean; reason: string | null } {
   // it only scrubs known secret shapes - a migration error naming the host, user, and database
   // outside a postgres:// URI survives it. The full string stays on /api/status, behind requireUser.
   if (!st.ready) return { ok: false, reason: st.bootError ? "boot failed" : "booting" };
+  if (!pollingEnabled()) return { ok: true, reason: "polling disabled" };
   const enabled = [...st.entries.values()].filter((e) => e.s.enabled);
   if (!enabled.length) return { ok: true, reason: null };
   const window = healthWindowMs(enabled.map((e) => e.s.intervalMin));

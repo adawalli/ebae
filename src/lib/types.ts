@@ -171,14 +171,17 @@ export type EbayCredsInput = {
 // minutes-from-midnight internally.
 export type SnoozeConfig = { enabled: boolean; start: string; end: string; tz: string | null };
 
+export type EbayMode = "live" | "mock" | "no-creds" | "guarded";
+
 export type StatusInfo = {
   ready: boolean;
   bootError: string | null;
-  poller: { running: boolean; bootedAt: string | null; timers: number };
-  // "no-creds" = polling paused until the user saves eBay keys. clientId/env ride here
-  // because there is no GET on /api/ebay-credentials; the secret never leaves the server.
+  poller: { enabled: boolean; running: boolean; bootedAt: string | null; timers: number };
+  // "no-creds" = polling paused until the user saves eBay keys. "guarded" = development
+  // refuses a real identity. clientId/env ride here because there is no GET on
+  // /api/ebay-credentials; the secret never leaves the server.
   ebay: {
-    mode: "live" | "mock" | "no-creds";
+    mode: EbayMode;
     clientId: string | null;
     env: string;
     marketplace: string;

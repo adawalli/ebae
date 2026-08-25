@@ -1,11 +1,11 @@
 import { and, eq, inArray, notExists } from "drizzle-orm";
-import { authMode } from "@/lib/authmode";
+import { SINGLE_USER_EMAIL, authMode } from "@/lib/authmode";
 import { db } from "@/lib/db";
 import { notify } from "@/lib/discord";
 import { RateLimitError, mockSearch, priceInRange, searchNewlyListed } from "@/lib/ebay";
 import { notifyPush } from "@/lib/push";
 import { alerts, searches, seenItems, trackedItems } from "@/lib/schema";
-import type { AlertEvent, Item, PriceContext, PushSub, Search } from "@/lib/types";
+import type { AlertEvent, EbayMode, Item, PriceContext, PushSub, Search } from "@/lib/types";
 import { NOTHING_PUSHED, NOTHING_SENT, reapPush } from "./delivery";
 import { maybeSampleMarket, priceContext, suppressed } from "./market";
 import { projectedCalls } from "./projection";
@@ -40,6 +40,12 @@ export const MAX_BACKOFF_MS = 30 * 60_000;
 // the floor of the freshness window, so raising it here widens that window too.
 export const QUOTA_SKIP_MS = 15 * 60_000;
 
+// Local Next development is a UI/API process unless the operator deliberately asks for
+// polling. Production and tests keep their existing behavior.
+export function pollingEnabled(): boolean {
+  return process.env.NODE_ENV !== "development" || process.env.ENABLE_DEV_POLLER === "1";
+}
+
 // The reschedule delay after a failed poll. A RateLimitError carries eBay's own wait hint: honor
 // it, but never poll faster than the user's interval and never park so long the /api/health
 // heartbeat goes stale. The freshness window is at least intervalMs*GOV_MAX_FACTOR (see
@@ -65,7 +71,7 @@ export function schedule(e: Entry, delayMs: number) {
   if (state().entries.get(e.s.id) !== e) return; // entry deleted/replaced while a tick was in flight
   if (e.timer) clearTimeout(e.timer);
   e.timer = null;
-  if (!e.s.enabled || !state().ready) return;
+  if (!e.s.enabled || !state().ready || !pollingEnabled()) return;
   // Heartbeat: stamp only once a live timer is actually set. A disabled or deleted entry's
   // final schedule() must not bump it, or that stale bump would mask a wedged enabled search.
   // Snooze/quota/backoff paths keep the entry enabled+ready, so intentional idle still stamps.
@@ -93,13 +99,14 @@ async function tick(e: Entry) {
   }
 }
 
-// What a user's next poll will actually do. Live needs their own keys; mock is single mode's
-// credential-less path (the zero-config quick start), which multi-user modes deliberately don't
-// have - fake listings in a shared deployment would look real to the friend seeing them. Shared
-// with status() so the UI's "polling paused" banner can't disagree with the poll loop.
-export function pollMode(u: UserCtx): "live" | "mock" | "no-creds" {
+// What a user's next poll will actually do. Development never operates on a real identity, even
+// with decryptable keys. Mock belongs only to single mode's implicit local user; otherwise a
+// guarded or credential-less user pauses. Shared with status() so the UI and poll loop cannot disagree.
+export function pollMode(u: UserCtx): EbayMode {
+  const implicitSingleUser = authMode() === "single" && u.email === SINGLE_USER_EMAIL;
+  if (process.env.NODE_ENV === "development" && !implicitSingleUser) return "guarded";
   if (u.ebay) return "live";
-  return authMode() === "single" ? "mock" : "no-creds";
+  return implicitSingleUser ? "mock" : "no-creds";
 }
 
 // Mark an item seen without alerting - one insert site shared by the two seen-but-not-alerted
@@ -252,11 +259,15 @@ export async function pollOnce(e: Entry) {
     schedule(e, QUOTA_SKIP_MS);
     return;
   }
-  // No keys and no mock to fall back on: there is nothing to poll with. Stay idle - no eBay
-  // call, no quota spent, no error every tick - until the user saves creds, which re-kicks
-  // this search (setUserCreds). The UI shows the paused banner off the same mode.
-  if (pollMode(u) === "no-creds") {
-    plog.debug({ searchId: e.s.id, q: e.s.q, userId: u.id }, "no credentials - polling paused");
+  // No keys or a development identity guard: stay idle - no eBay call, no quota spent, no
+  // error every tick. The UI reads the same mode, so a guarded user is never told to re-enter
+  // credentials that development deliberately refuses to use.
+  const mode = pollMode(u);
+  if (mode === "no-creds" || mode === "guarded") {
+    plog.debug(
+      { searchId: e.s.id, q: e.s.q, userId: u.id },
+      mode === "guarded" ? "development identity guard - polling paused" : "no credentials - polling paused",
+    );
     schedule(e, e.s.intervalMin * 60_000);
     return;
   }

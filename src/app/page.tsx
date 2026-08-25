@@ -281,9 +281,11 @@ export default function Home() {
   const ceiling = status?.quota.ceiling ?? 5000;
   const quotaPct = Math.min(100, Math.round((projected / ceiling) * 100));
   const running = status?.poller.running ?? false;
+  const pollingEnabled = status?.poller.enabled ?? true;
   const snoozed = status?.snooze.active ?? false;
   const mock = status?.ebay.mode === "mock";
   const noCreds = status?.ebay.mode === "no-creds";
+  const guarded = status?.ebay.mode === "guarded";
 
   const navItems = [
     { key: "searches" as const, label: "Searches", badge: null },
@@ -298,7 +300,18 @@ export default function Home() {
         <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4 md:hidden">
           <SidebarTrigger className="-ml-1" />
           <span className="text-[15px] font-bold tracking-tight">ebae</span>
-          <StatusDot active={running} title={running ? "poller running" : "poller down"} />
+          <StatusDot
+            active={running && !guarded}
+            title={
+              !pollingEnabled
+                ? "poller disabled"
+                : guarded
+                  ? "poller guarded"
+                  : running
+                    ? "poller running"
+                    : "poller down"
+            }
+          />
         </header>
         {expired && (
           <div className="border-b bg-[color-mix(in_oklab,var(--eb-amber)_14%,transparent)] px-4 py-2 text-[12.5px] text-[var(--eb-amber)] md:px-[30px]">
@@ -315,7 +328,15 @@ export default function Home() {
             {actionError}
           </div>
         )}
-        {noCreds && view !== "status" && (
+        {guarded && view !== "status" && (
+          <button
+            onClick={() => setView("status")}
+            className="border-b bg-[color-mix(in_oklab,var(--eb-amber)_14%,transparent)] px-4 py-2 text-left text-[12.5px] text-[var(--eb-amber)] hover:underline md:px-[30px]"
+          >
+            polling paused — development protects this shared identity
+          </button>
+        )}
+        {noCreds && !guarded && view !== "status" && (
           <button
             onClick={() => setView("status")}
             className="border-b bg-[color-mix(in_oklab,var(--eb-amber)_14%,transparent)] px-4 py-2 text-left text-[12.5px] text-[var(--eb-amber)] hover:underline md:px-[30px]"

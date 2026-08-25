@@ -43,6 +43,8 @@ export function StatusView({
   refresh: () => void;
 }) {
   const noCreds = status?.ebay.mode === "no-creds";
+  const guarded = status?.ebay.mode === "guarded";
+  const pollingEnabled = status?.poller.enabled ?? true;
   const surplus = shownSurplus(status?.quota.surplus ?? 0, ceiling);
   const configured = (status?.quota.used ?? 0) - surplus; // what the saved searches themselves spent
   const expected = status?.quota.expected ?? 0;
@@ -59,15 +61,27 @@ export function StatusView({
             <CardContent className="flex flex-col">
               <div className="mb-2.5 text-[12.5px] text-muted-foreground">Poller</div>
               <div className="flex items-center gap-[9px]">
-                <StatusDot active={running && !snoozed} size="md" />
+                <StatusDot active={running && !snoozed && !guarded} size="md" />
                 <span className="text-[19px] font-bold">
-                  {running ? (snoozed ? "Snoozing" : "Running") : "Stopped"}
+                  {!pollingEnabled
+                    ? "Disabled"
+                    : guarded
+                      ? "Guarded"
+                      : running
+                        ? snoozed
+                          ? "Snoozing"
+                          : "Running"
+                        : "Stopped"}
                 </span>
               </div>
               <div className="mt-2 font-mono text-xs text-[var(--eb-faint)]">
-                {running && status?.poller.bootedAt
-                  ? `uptime ${duration(status.poller.bootedAt)} · ${status.poller.timers} timer${status.poller.timers === 1 ? "" : "s"}${status.snooze.window ? ` · ${snoozed ? "snoozing" : "snooze"} ${status.snooze.window}` : ""}`
-                  : (status?.bootError ?? "not started")}
+                {!pollingEnabled
+                  ? "development mode"
+                  : guarded
+                    ? "real identities are not polled in development"
+                    : running && status?.poller.bootedAt
+                      ? `uptime ${duration(status.poller.bootedAt)} · ${status.poller.timers} timer${status.poller.timers === 1 ? "" : "s"}${status.snooze.window ? ` · ${snoozed ? "snoozing" : "snooze"} ${status.snooze.window}` : ""}`
+                      : (status?.bootError ?? "not started")}
               </div>
             </CardContent>
           </Card>
@@ -77,20 +91,30 @@ export function StatusView({
               <div className="flex items-center gap-[9px]">
                 <span
                   className="size-[9px] rounded-full"
-                  style={{ background: mock || noCreds ? "var(--eb-amber)" : "var(--eb-green)" }}
+                  style={{ background: mock || noCreds || guarded ? "var(--eb-amber)" : "var(--eb-green)" }}
                 />
                 <span className="text-[19px] font-bold">
-                  {noCreds ? "No keys" : mock ? "Mock mode" : status?.ebay.tokenExpiresAt ? "Valid" : "Not fetched"}
+                  {guarded
+                    ? "Guarded"
+                    : noCreds
+                      ? "No keys"
+                      : mock
+                        ? "Mock mode"
+                        : status?.ebay.tokenExpiresAt
+                          ? "Valid"
+                          : "Not fetched"}
                 </span>
               </div>
               <div className="mt-2 font-mono text-xs text-[var(--eb-faint)]">
-                {noCreds
-                  ? `polling paused · ${status?.ebay.marketplace ?? "EBAY_US"}`
-                  : mock
-                    ? `set EBAY_CLIENT_ID to go live · ${status?.ebay.marketplace ?? "EBAY_US"}`
-                    : status?.ebay.tokenExpiresAt
-                      ? `refreshes in ${until(status.ebay.tokenExpiresAt)} · ${status.ebay.marketplace}`
-                      : `fetched on first poll · ${status?.ebay.marketplace ?? "EBAY_US"}`}
+                {guarded
+                  ? "real identities are not polled in development"
+                  : noCreds
+                    ? `polling paused · ${status?.ebay.marketplace ?? "EBAY_US"}`
+                    : mock
+                      ? `set EBAY_CLIENT_ID to go live · ${status?.ebay.marketplace ?? "EBAY_US"}`
+                      : status?.ebay.tokenExpiresAt
+                        ? `refreshes in ${until(status.ebay.tokenExpiresAt)} · ${status.ebay.marketplace}`
+                        : `fetched on first poll · ${status?.ebay.marketplace ?? "EBAY_US"}`}
               </div>
             </CardContent>
           </Card>
@@ -562,7 +586,7 @@ function NotificationsCard() {
           </div>
         )}
 
-        <div className="flex flex-wrap items-end gap-3">
+        <div className="grid gap-3 md:grid-cols-[200px_minmax(0,1fr)]">
           <Field className="w-[200px]">
             <FieldLabel htmlFor="webhook-name">
               Name <span className="text-muted-foreground">(optional)</span>
@@ -575,8 +599,8 @@ function NotificationsCard() {
               onChange={(e) => setName(e.target.value)}
             />
           </Field>
-          <Field className="min-w-[280px] flex-1">
-            <FieldLabel htmlFor="webhook-url">Add a webhook</FieldLabel>
+          <Field className="min-w-0">
+            <FieldLabel htmlFor="webhook-url">Webhook URL</FieldLabel>
             <Input
               id="webhook-url"
               value={webhookUrl}
@@ -585,10 +609,10 @@ function NotificationsCard() {
             />
             <FieldDescription>Discord → Channel settings → Integrations → Webhooks.</FieldDescription>
           </Field>
-          <Button onClick={add} disabled={busy || !webhookUrl} className="mb-6">
-            {busy ? "Adding…" : "Add"}
-          </Button>
         </div>
+        <Button onClick={add} disabled={busy || !webhookUrl} className="self-start">
+          {busy ? "Adding…" : "Add"}
+        </Button>
         {error && (
           <span className="font-mono text-[12.5px] text-[var(--eb-amber)] [overflow-wrap:anywhere]">{error}</span>
         )}

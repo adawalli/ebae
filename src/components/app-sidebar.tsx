@@ -37,6 +37,7 @@ export function AppSidebar({
   status: StatusInfo | null;
 }) {
   const { setOpenMobile, isMobile } = useSidebar();
+  const guarded = status?.ebay.mode === "guarded";
   const pick = (k: NavItem["key"]) => {
     setView(k);
     if (isMobile) setOpenMobile(false);
@@ -83,10 +84,14 @@ export function AppSidebar({
           </div>
         )}
         <div className="flex items-center gap-2 px-1 font-mono text-[10.5px] text-muted-foreground">
-          <StatusDot active={running} />
-          {running && status?.poller.bootedAt
-            ? `poller up ${duration(status.poller.bootedAt)} · v${status.version}`
-            : `poller down${status ? ` · v${status.version}` : ""}`}
+          <StatusDot active={running && !guarded} />
+          {status?.poller.enabled === false
+            ? `poller disabled · v${status.version}`
+            : guarded
+              ? `poller guarded · v${status?.version}`
+              : running && status?.poller.bootedAt
+                ? `poller up ${duration(status.poller.bootedAt)} · v${status.version}`
+                : `poller down${status ? ` · v${status.version}` : ""}`}
         </div>
       </SidebarFooter>
     </Sidebar>

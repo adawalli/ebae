@@ -53,6 +53,7 @@ export function SearchesView({
   removeSearch: (s: SearchStats) => void;
 }) {
   const quota = status?.quota;
+  const guarded = status?.ebay.mode === "guarded";
   const forecast = quota?.configuredForecast ?? projected;
   const forecastPct = Math.min(100, Math.round((forecast / ceiling) * 100));
   const spentPct = quota ? Math.min(100, (quota.used / ceiling) * 100) : 0;
@@ -79,15 +80,19 @@ export function SearchesView({
         <div>
           <h2 className="text-[21px] font-bold tracking-[-0.01em]">Saved searches</h2>
           <div className="mt-1 flex items-center gap-2 text-[13px] text-muted-foreground">
-            <StatusDot active={running && !noCreds} />
+            <StatusDot active={running && !noCreds && !guarded} />
             {searches.length} searches · {active.length} active ·{" "}
-            {!running
-              ? "poller down"
-              : noCreds
-                ? "paused — no eBay keys"
-                : mock
-                  ? "polling (mock mode)"
-                  : "polling live"}
+            {status?.poller.enabled === false
+              ? "polling disabled"
+              : !running
+                ? "poller down"
+                : guarded
+                  ? "development identity guard"
+                  : noCreds
+                    ? "paused — no eBay keys"
+                    : mock
+                      ? "polling (mock mode)"
+                      : "polling live"}
           </div>
         </div>
         <Button onClick={openCreate} className="justify-center md:justify-start">

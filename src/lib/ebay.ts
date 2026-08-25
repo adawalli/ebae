@@ -203,7 +203,7 @@ async function browseSearch(
     // instead of compounding its backoff. Shared by search and the market sample (both go through
     // here); the market sample's own try/catch just logs it, which is the right no-op there.
     if (res.status === 429) throw new RateLimitError(retryAfterMs(res) ?? RATE_LIMIT_DEFAULT_MS);
-    throw new Error(`eBay search failed (${s.q}): ${res.status} ${await res.text()}`);
+    throw new Error(`eBay search failed: ${res.status} ${await res.text()}`);
   }
   const data = (await res.json()) as { itemSummaries?: EbaySummary[]; total?: number };
   return {

@@ -56,6 +56,8 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
     .select({
       id: alerts.id,
       searchId: alerts.searchId,
+      searchQ: alerts.searchQ,
+      searchName: alerts.searchName,
       itemId: alerts.itemId,
       title: alerts.title,
       price: alerts.price,
@@ -119,19 +121,20 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
     const market = s.marketMedian;
     const ctx: PriceContext | undefined =
       market != null && market > 0 ? { typical: market, count: 0, basis: "market" } : undefined;
+    const alertSearch = { ...s, q: row.searchQ, name: row.searchName };
     const [d, p] = await Promise.all([
       u.channels.length
-        ? notify(item, s, u.channels, ctx, { kind: row.kind, previousPrice: row.previousPrice })
+        ? notify(item, alertSearch, u.channels, ctx, { kind: row.kind, previousPrice: row.previousPrice })
         : NOTHING_SENT,
       u.push.length
-        ? notifyPush(item, s, u.push, { kind: row.kind, previousPrice: row.previousPrice })
+        ? notifyPush(item, alertSearch, u.push, { kind: row.kind, previousPrice: row.previousPrice })
         : NOTHING_PUSHED,
     ]);
     // Log any failure even on partial success (matches the main-path notify, which records the
     // error independently of anyDelivered); confirm the row if a target took it, else leave it
     // null to retry next boot.
-    if (d.error) recordError(u.id, s.q, `redeliver: ${d.error}`, "error");
-    if (p.error) recordError(u.id, s.q, `redeliver: ${p.error}`, "error");
+    if (d.error) recordError(u.id, alertSearch, `redeliver: ${d.error}`, "error");
+    if (p.error) recordError(u.id, alertSearch, `redeliver: ${p.error}`, "error");
     if (p.dead.length) await reapPush(database, u, p.dead);
     if (d.anyDelivered || p.anyDelivered) done.push(row.id);
   }

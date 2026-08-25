@@ -1,4 +1,5 @@
 import { beforeEach, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { DELETE as alertsDELETE, GET as alertsGET } from "@/app/api/alerts/route";
 import { DELETE as searchDELETE, PATCH as searchPATCH } from "@/app/api/searches/[id]/route";
 import { GET as searchesGET, POST as searchesPOST } from "@/app/api/searches/route";
@@ -55,6 +56,41 @@ test("a created search enables sold tracking in the API and DB", async () => {
 
   const listed = await (await searchesGET(new Request("http://localhost/api/searches"))).json();
   expect(listed.searches.map((s: { id: number }) => s.id)).toEqual([search.id]);
+});
+
+test("a custom search name is trimmed, persisted, and can be cleared", async () => {
+  const { search } = await (await create({ q: "mac studio m2 max 64gb", name: "  Mac Studio Plan B  " })).json();
+  expect(search).toMatchObject({ q: "mac studio m2 max 64gb", name: "Mac Studio Plan B" });
+
+  let [row] = await database.select().from(searches);
+  expect(row).toMatchObject({ name: "Mac Studio Plan B" });
+
+  const cleared = await patch(search.id, { name: "   " });
+  expect(cleared.status).toBe(200);
+  expect((await cleared.json()).search).toMatchObject({ name: null });
+
+  [row] = await database.select().from(searches);
+  expect(row).toMatchObject({ name: null });
+});
+
+test("a custom search name is limited to 100 characters", async () => {
+  const res = await create({ q: "mac studio", name: "x".repeat(101) });
+  expect(res.status).toBe(400);
+  expect(await res.json()).toEqual({ error: "name must be at most 100 characters" });
+  expect(await database.select().from(searches)).toHaveLength(0);
+});
+
+test("renaming a search preserves its polling baseline", async () => {
+  const { search } = await (await create({ q: "mac studio" })).json();
+  const entry = st().entries.get(search.id)!;
+  entry.s.seeded = true;
+  entry.s.marketMedian = 1800;
+  await database.update(searches).set({ marketMedian: 1800 }).where(eq(searches.id, search.id));
+
+  const res = await patch(search.id, { name: "Plan B" });
+  expect(res.status).toBe(200);
+  expect((await res.json()).search).toMatchObject({ name: "Plan B", seeded: true, marketMedian: 1800 });
+  expect(st().entries.get(search.id)!.s).toMatchObject({ name: "Plan B", seeded: true, marketMedian: 1800 });
 });
 
 test("GET surfaces incomplete sold-price progress", async () => {
@@ -173,6 +209,23 @@ test("GET exposes price-drop alert metadata", async () => {
   expect((await res.json()).alerts).toMatchObject([
     { itemId: "v1|333|0", kind: "price_drop", price: 1800, previousPrice: 2000 },
   ]);
+});
+
+test("GET preserves the custom name captured with an alert", async () => {
+  const { search } = await (await create({ q: "mac studio", name: "Plan B" })).json();
+  await database.insert(alertsTable).values({
+    userId: search.userId,
+    searchId: search.id,
+    searchQ: search.q,
+    searchName: search.name,
+    itemId: "v1|444|0",
+    title: "Mac Studio",
+    itemUrl: "https://ebay.test/444",
+  } as never);
+
+  const res = await alertsGET(new Request("http://localhost/api/alerts"));
+  expect(res.status).toBe(200);
+  expect((await res.json()).alerts).toMatchObject([{ searchQ: "mac studio", searchName: "Plan B" }]);
 });
 
 test("status reports quota, mock mode and the snooze window", async () => {

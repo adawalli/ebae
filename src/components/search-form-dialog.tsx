@@ -15,6 +15,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 export const emptyForm = {
   q: "",
+  name: "",
   priceFloor: "",
   priceCap: "",
   categoryId: "",
@@ -71,6 +72,18 @@ export function SearchFormDialog({
               onChange={(e) => setForm({ ...form, q: e.target.value })}
               placeholder="e.g. Leica M6 body"
               autoFocus
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="search-name">
+              Name <span className="text-muted-foreground">(optional)</span>
+            </FieldLabel>
+            <Input
+              id="search-name"
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              placeholder="e.g. Mac Studio Plan B"
+              maxLength={100}
             />
           </Field>
           <div className="flex flex-col gap-3.5 md:flex-row">

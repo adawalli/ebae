@@ -96,6 +96,6 @@ export async function maybeSampleMarket(e: Entry, u: UserCtx, database: ReturnTy
     await flushCalls(database, u.id, u.calls); // piggyback the +1 eBay call we just spent
     plog.info({ searchId: s.id, q: s.q, sample: prices.length, marketMedian: m }, "market sampled");
   } catch (err) {
-    recordError(u.id, s.q, `market sample: ${message(err)}`); // warn only; the main poll keeps its cadence
+    recordError(u.id, s, `market sample: ${message(err)}`); // warn only; the main poll keeps its cadence
   }
 }

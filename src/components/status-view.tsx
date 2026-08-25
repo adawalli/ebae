@@ -217,7 +217,11 @@ export function StatusView({
               {status.errors.map((err, i) => (
                 <Item key={i} variant="muted" size="sm" className="items-baseline gap-3 font-mono text-xs">
                   <span className="whitespace-nowrap text-[var(--eb-faint)]">{ago(err.time, true)}</span>
-                  {err.searchQ && <span className="whitespace-nowrap text-[var(--eb-accent-text)]">{err.searchQ}</span>}
+                  {(err.searchName ?? err.searchQ) && (
+                    <span className="whitespace-nowrap text-[var(--eb-accent-text)]">
+                      {err.searchName ?? err.searchQ}
+                    </span>
+                  )}
                   <ItemContent className="text-muted-foreground [overflow-wrap:anywhere]">{err.message}</ItemContent>
                 </Item>
               ))}

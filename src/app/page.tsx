@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Alert, SearchStats, SnoozeConfig, StatusInfo } from "@/lib/types";
+import { searchLabel, type Alert, type SearchStats, type SnoozeConfig, type StatusInfo } from "@/lib/types";
 import { submitJson } from "@/lib/http";
 import { refreshPush } from "@/lib/push-client";
 import { AppSidebar } from "@/components/app-sidebar";
@@ -158,7 +158,7 @@ export default function Home() {
   }
 
   async function removeSearch(s: SearchStats) {
-    if (!confirm(`Delete saved search "${s.q}"?`)) return;
+    if (!confirm(`Delete saved search "${searchLabel(s)}"?`)) return;
     setActionError(null);
     const r = await submitJson(`/api/searches/${s.id}`, { method: "DELETE" });
     if (!r.ok) setActionError(r.error);
@@ -169,10 +169,11 @@ export default function Home() {
   }
 
   async function clearAlerts() {
+    const filteredSearch = searches.find((s) => s.id === alertFilter);
     const scope =
       alertFilter === "all"
         ? "all alerts"
-        : `alerts for "${searches.find((s) => s.id === alertFilter)?.q ?? "this search"}"`;
+        : `alerts for "${filteredSearch ? searchLabel(filteredSearch) : "this search"}"`;
     // clears the display log only — won't re-alert on those listings (seen_items is kept)
     if (!confirm(`Clear ${scope}? This only clears the history shown here.`)) return;
     const url = alertFilter === "all" ? "/api/alerts" : `/api/alerts?searchId=${alertFilter}`;
@@ -193,6 +194,7 @@ export default function Home() {
     setEditId(s.id);
     setForm({
       q: s.q,
+      name: s.name ?? "",
       priceFloor: s.priceFloor == null ? "" : String(s.priceFloor),
       priceCap: s.priceCap == null ? "" : String(s.priceCap),
       categoryId: s.categoryId ?? "",
@@ -216,6 +218,7 @@ export default function Home() {
       method: editId == null ? "POST" : "PATCH",
       body: {
         q: form.q,
+        name: form.name || null,
         priceFloor: form.priceFloor || null,
         priceCap: form.priceCap || null,
         categoryId: form.categoryId || null,

@@ -51,6 +51,7 @@ export type Search = {
   id: number;
   userId: number;
   q: string;
+  name: string | null;
   categoryId: string | null;
   priceFloor: number | null;
   priceCap: number | null;
@@ -66,6 +67,10 @@ export type Search = {
   seeded: boolean;
   createdAt: string;
 };
+
+export function searchLabel(s: Pick<Search, "name" | "q">): string {
+  return s.name ?? s.q;
+}
 
 // Search + live poller stats, as served by GET /api/searches
 export type SearchStats = Search & {
@@ -124,6 +129,7 @@ export type Alert = Omit<Item, "conditionId" | "itemEndDate" | "bestOffer"> & {
   id: number;
   searchId: number | null;
   searchQ: string;
+  searchName: string | null;
   kind: AlertKind;
   previousPrice: number | null;
   createdAt: string;
@@ -131,7 +137,13 @@ export type Alert = Omit<Item, "conditionId" | "itemEndDate" | "bestOffer"> & {
 
 // userId is null for errors raised before an owner is known (e.g. a cred decrypt failure
 // during reload), so status() can still surface them.
-export type PollError = { time: string; searchQ: string | null; message: string; userId: number | null };
+export type PollError = {
+  time: string;
+  searchQ: string | null;
+  searchName: string | null;
+  message: string;
+  userId: number | null;
+};
 
 // A delivery target. webhookUrl is masked to its tail by the API - the full URL is a
 // secret and is never returned once saved.

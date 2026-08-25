@@ -1,7 +1,7 @@
 import type { EbayCreds } from "@/lib/ebay";
 import { log, redact } from "@/lib/log";
 import type { searches } from "@/lib/schema";
-import type { Item, PollError, PriceKind, PushSub, Search } from "@/lib/types";
+import { searchLabel, type Item, type PollError, type PriceKind, type PushSub, type Search } from "@/lib/types";
 
 export const plog = log.child({ component: "poller" });
 
@@ -258,16 +258,19 @@ const MAX_ERRORS_PER_USER = 50;
 // which everyone sees.
 export function recordError(
   userId: number | null,
-  searchQ: string | null,
+  search: Pick<Search, "name" | "q"> | string | null,
   msg: string,
   level: "warn" | "error" = "warn",
 ) {
+  const identity = typeof search === "string" ? { q: search, name: null } : search;
+  const searchQ = identity?.q ?? null;
+  const searchName = identity?.name ?? null;
   const st = state();
   let list = st.errors.get(userId);
   if (!list) st.errors.set(userId, (list = []));
-  list.push({ time: new Date().toISOString(), searchQ, message: msg, userId });
+  list.push({ time: new Date().toISOString(), searchQ, searchName, message: msg, userId });
   if (list.length > MAX_ERRORS_PER_USER) list.shift();
-  plog[level]({ userId, searchQ }, msg);
+  plog[level]({ userId, searchQ, search: identity ? searchLabel(identity) : null }, msg);
 }
 
 // userId is a parameter because the column is nullable in the DB (claim.ts backfills it) while
@@ -277,6 +280,7 @@ export function rowToSearch(r: typeof searches.$inferSelect, userId: number): Se
     id: r.id,
     userId,
     q: r.q,
+    name: r.name,
     categoryId: r.categoryId,
     priceFloor: r.priceFloor, // numeric mode:"number" -> already number | null
     priceCap: r.priceCap,

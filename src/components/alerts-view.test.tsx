@@ -39,3 +39,19 @@ test("price-drop history card highlights the reduction", () => {
   expect(html).toContain("▼ $20.00 · 10% price drop");
   expect(html).toContain("Was $200.00");
 });
+
+test("alert history prefers the name captured with an alert", () => {
+  const html = renderToStaticMarkup(
+    <AlertsView
+      visibleAlerts={[{ ...priceDrop, searchName: "Sonos Plan B" } as Alert]}
+      searches={[]}
+      alertFilter="all"
+      setAlertFilter={() => {}}
+      failedImg={new Set()}
+      setFailedImg={() => {}}
+      clearAlerts={() => {}}
+    />,
+  );
+
+  expect(html).toContain("Sonos Plan B");
+});

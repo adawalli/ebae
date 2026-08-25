@@ -1,7 +1,7 @@
 "use client";
 
 import { ExternalLink, Pencil, Plus, Search, Trash2 } from "lucide-react";
-import { CONDITION_BADGE, type ConditionKey, type SearchStats, type StatusInfo } from "@/lib/types";
+import { CONDITION_BADGE, searchLabel, type ConditionKey, type SearchStats, type StatusInfo } from "@/lib/types";
 import { splitExcludeTerms } from "@/lib/exclude-terms";
 import { ebayWebUrl } from "@/lib/utils";
 import { ago, fmt, money, priceSummary, shownSurplus, soldProgressTooltip } from "@/lib/format";
@@ -225,9 +225,12 @@ export function SearchesView({
                         title="View live matches on eBay"
                         className="hv-link group flex min-w-0 items-center gap-1.5 text-[15px] font-semibold text-foreground no-underline md:text-[14.5px]"
                       >
-                        <span className="truncate">{s.q}</span>
+                        <span className="truncate">{searchLabel(s)}</span>
                         <ExternalLink className="size-3.5 shrink-0 text-[var(--eb-faint)] transition-colors group-hover:text-[var(--eb-accent-text)]" />
                       </a>
+                      {s.name && (
+                        <div className="mt-0.5 truncate font-mono text-[11.5px] text-[var(--eb-faint)]">{s.q}</div>
+                      )}
                       <div className="mt-0.5 flex min-w-0 items-center gap-1 font-mono text-[11.5px] text-[var(--eb-faint)]">
                         <span className="truncate">{searchSub(s)}</span>
                         {progressHelp && <InfoTip content={progressHelp} label="Explain sold price progress" />}

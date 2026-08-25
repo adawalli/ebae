@@ -1,6 +1,6 @@
 import { buyingOptionLabel, money } from "./format";
 import { log } from "./log";
-import type { AlertEvent, Item, PriceContext, Search } from "./types";
+import { searchLabel, type AlertEvent, type Item, type PriceContext, type Search } from "./types";
 
 const dlog = log.child({ component: "discord" });
 
@@ -63,7 +63,7 @@ function embed(item: Item, search: Search, ctx?: PriceContext, event?: AlertEven
               { name: "Condition", value: item.condition ?? "—", inline: true },
               ...(deal ? [deal] : []),
             ],
-        footer: { text: `ebae ·${priceDrop ? " price drop ·" : ""} matched "${search.q}"` },
+        footer: { text: `ebae ·${priceDrop ? " price drop ·" : ""} matched "${searchLabel(search)}"` },
         timestamp: new Date().toISOString(),
       },
     ],

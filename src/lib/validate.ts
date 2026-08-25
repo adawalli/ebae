@@ -14,6 +14,11 @@ export function parseSearchBody(b: any, partial: boolean): string | Record<strin
     if (!q) return "q is required";
     out.q = q;
   }
+  if (!partial || b.name !== undefined) {
+    const name = typeof b.name === "string" ? b.name.trim() : "";
+    if (name.length > 100) return "name must be at most 100 characters";
+    out.name = name || null;
+  }
   if (!partial || b.intervalMin !== undefined) {
     const intervalMin = Number(b.intervalMin ?? DEFAULT_INTERVAL);
     if (!Number.isInteger(intervalMin) || intervalMin < 1 || intervalMin > 60) return "intervalMin must be 1-60";

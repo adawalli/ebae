@@ -245,6 +245,17 @@ test("searchNewlyListed: mixed searches filter normalized prices locally and rep
   expect(new URL(asked).searchParams.get("filter")).toBe("buyingOptions:{FIXED_PRICE|AUCTION}");
 });
 
+test("searchNewlyListed: an HTTP failure leaves search identity to the caller", async () => {
+  const restore = stubEbay(() => new Response("upstream failed", { status: 503 }));
+  try {
+    await expect(searchNewlyListed(creds(941), { ...base, q: "Mac Studio M2 Max 64gb" })).rejects.toThrow(
+      "eBay search failed: 503 upstream failed",
+    );
+  } finally {
+    restore();
+  }
+});
+
 test("checkItem: a sold listing reads back its availability, sold quantity and price", async () => {
   let asked = "";
   const restore = stubEbay((url) => {

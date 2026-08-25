@@ -339,6 +339,7 @@ export async function recordPriceDrop(
           userId: e.s.userId,
           searchId: e.s.id,
           searchQ: e.s.q,
+          searchName: e.s.name,
           itemId: item.itemId,
           title: item.title,
           price: drop.price,
@@ -533,7 +534,7 @@ async function runCheckBatch(
           try {
             await opts.onPriceObserved?.(t, res.price, previousPrice);
           } catch (err) {
-            recordError(u.id, e.s.q, `${opts.label} price drop: ${message(err)}`);
+            recordError(u.id, e.s, `${opts.label} price drop: ${message(err)}`);
           }
       }
       const out = inferOutcome(t, res, Date.now());
@@ -547,7 +548,7 @@ async function runCheckBatch(
     await flushTracked(database, e);
     await flushCalls(database, u.id, u.calls); // piggyback the calls this side-task just spent
   } catch (err) {
-    recordError(u.id, e.s.q, `${opts.label}: ${message(err)}`); // warn only; the poll keeps its cadence
+    recordError(u.id, e.s, `${opts.label}: ${message(err)}`); // warn only; the poll keeps its cadence
   }
 }
 
@@ -591,7 +592,7 @@ export async function runDueChecks(
         t.nextCheckAt = Date.now() + AUCTION_RETRY_MS;
         e.trackDirty.add(t.itemId);
       }
-      recordError(u.id, e.s.q, `sold check: ${message(err)}`);
+      recordError(u.id, e.s, `sold check: ${message(err)}`);
     },
     countCheck: (t) => t.checksUsed++,
     onDefer: (t, nextCheckAt) => {
@@ -645,7 +646,7 @@ export async function runBonusChecks(
     // the reason we called, so there is nothing to move, and counting the attempt would spend a
     // real check the schedule still owes it.
     onThrow: async (t, err) => {
-      recordError(u.id, e.s.q, `surplus sold check: ${message(err)}`);
+      recordError(u.id, e.s, `surplus sold check: ${message(err)}`);
     },
     countCheck: () => {},
     // Normally the same boundary it already had, so this writes nothing. It differs only when

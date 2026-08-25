@@ -93,6 +93,23 @@ test("notify: a price drop uses the approved delta-first Discord embed", async (
   ]);
 });
 
+test("notify: the matched-search footer prefers a custom name", async () => {
+  let payload: { embeds: Array<Record<string, unknown>> } | undefined;
+  const s = stubFetch((_url, _call, init) => {
+    payload = JSON.parse(String(init?.body));
+    return new Response("", { status: 204 });
+  });
+  try {
+    await notify(item, { id: 1, q: "Mac Studio M2 Max 64gb", name: "Mac Studio Plan B" } as Search, [
+      "https://discord.com/api/webhooks/a",
+    ]);
+  } finally {
+    s.restore();
+  }
+
+  expect(payload?.embeds[0]).toMatchObject({ footer: { text: 'ebae · matched "Mac Studio Plan B"' } });
+});
+
 test("notify: retries a failing webhook up to 3 times, then reports the last error", async () => {
   const s = stubFetch(() => new Response("boom", { status: 500 }));
   const timers = fastTimers();

@@ -85,7 +85,7 @@ async function tick(e: Entry) {
     // pollOnce catches its own poll failures; reaching here means a throw before its try
     // (e.g. an invalid snooze tz in Intl). Reschedule so one entry can't silently kill its
     // timer - which the heartbeat would otherwise read as a wedge and 503.
-    recordError(e.s.userId, e.s.q, `tick: ${message(err)}`);
+    recordError(e.s.userId, e.s, `tick: ${message(err)}`);
     schedule(e, MAX_BACKOFF_MS);
   } finally {
     e.running = false;
@@ -207,8 +207,8 @@ async function notifyItem(
   // Recorded separately, never `d.error ?? p.error`: this list is the only place a self-hoster
   // sees an outage, so collapsing the two would hide a dead webhook behind a push failure (and
   // vice versa).
-  if (d.error) recordError(u.id, e.s.q, d.error, "error");
-  if (p.error) recordError(u.id, e.s.q, p.error, "error");
+  if (d.error) recordError(u.id, e.s, d.error, "error");
+  if (p.error) recordError(u.id, e.s, p.error, "error");
   let next: PushSub[] = subs;
   if (p.dead.length) {
     await reapPush(database, u, p.dead);
@@ -232,7 +232,7 @@ export async function pollOnce(e: Entry) {
     // Owner isn't cached (a row created since the last reload). Nothing to bill or notify
     // against, so idle at the normal cadence rather than let the timer die - a dead timer
     // reads as a wedge to the heartbeat.
-    recordError(e.s.userId, e.s.q, "search owner is not loaded - poll skipped");
+    recordError(e.s.userId, e.s, "search owner is not loaded - poll skipped");
     schedule(e, e.s.intervalMin * 60_000);
     return;
   }
@@ -247,7 +247,7 @@ export async function pollOnce(e: Entry) {
   const today = new Date().toDateString();
   if (u.calls.date !== today) u.calls = { date: today, used: 0, surplus: 0 };
   if (u.calls.used >= QUOTA_CEILING) {
-    recordError(u.id, e.s.q, "daily API budget exhausted - poll skipped");
+    recordError(u.id, e.s, "daily API budget exhausted - poll skipped");
     schedule(e, QUOTA_SKIP_MS);
     return;
   }
@@ -266,11 +266,7 @@ export async function pollOnce(e: Entry) {
     const result = u.ebay ? await searchNewlyListed(u.ebay, e.s) : { items: mockSearch(e.s), truncated: false };
     const { items, truncated } = result;
     if (truncated && !e.truncated)
-      recordError(
-        u.id,
-        e.s.q,
-        "eBay returned more than 200 matches - older listings may be missed; narrow this search",
-      );
+      recordError(u.id, e.s, "eBay returned more than 200 matches - older listings may be missed; narrow this search");
     e.truncated = truncated;
     e.lastPolledAt = Date.now();
     plog.info({ q: e.s.q, count: items.length, quotaUsed: u.calls.used }, "eBay poll");
@@ -338,7 +334,7 @@ export async function pollOnce(e: Entry) {
         try {
           alertId = await recordPriceDrop(database, e, drop.t, drop.item, drop, targets > 0, epoch);
         } catch (err) {
-          recordError(u.id, e.s.q, `price drop: ${message(err)}`);
+          recordError(u.id, e.s, `price drop: ${message(err)}`);
           continue;
         }
         if (alertId == null) continue;
@@ -393,6 +389,7 @@ export async function pollOnce(e: Entry) {
               userId: e.s.userId,
               searchId: e.s.id,
               searchQ: e.s.q,
+              searchName: e.s.name,
               itemId: item.itemId,
               title: item.title,
               price: item.price,
@@ -471,7 +468,7 @@ export async function pollOnce(e: Entry) {
     schedule(e, governedDelayMs(e.s.intervalMin, governorFor(u, projected)));
   } catch (err) {
     plog.error({ err, searchId: e.s.id, q: e.s.q }, "poll failed"); // stack goes to stdout; recordError keeps only the message for the UI
-    recordError(u.id, e.s.q, message(err));
+    recordError(u.id, e.s, message(err));
     const { delayMs, backoffMs } = retryDelayMs(err, e.s.intervalMin, e.backoffMs);
     e.backoffMs = backoffMs;
     schedule(e, delayMs);

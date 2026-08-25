@@ -112,6 +112,7 @@ export function listSearches(userId: number): SearchStats[] {
 
 export type SearchInput = {
   q: string;
+  name: string | null;
   categoryId: string | null;
   priceFloor: number | null;
   priceCap: number | null;
@@ -130,6 +131,7 @@ export async function createSearch(userId: number, input: SearchInput): Promise<
     .values({
       userId,
       q: input.q,
+      name: input.name,
       categoryId: input.categoryId,
       priceFloor: input.priceFloor,
       priceCap: input.priceCap,
@@ -183,6 +185,7 @@ export async function updateSearch(
   if (cur?.userId !== userId) return null;
   const row: Partial<typeof searches.$inferInsert> = {};
   if (patch.q !== undefined) row.q = patch.q;
+  if (patch.name !== undefined) row.name = patch.name;
   if (patch.categoryId !== undefined) row.categoryId = patch.categoryId;
   if (patch.priceFloor !== undefined) row.priceFloor = patch.priceFloor;
   if (patch.priceCap !== undefined) row.priceCap = patch.priceCap;
@@ -200,6 +203,11 @@ export async function updateSearch(
   // seeded search would alert on all at once. Re-seed so that backlog stays silent -
   // the same guarantee the first poll gives a brand-new search (DESIGN.md §3).
   const criteriaChanged = matchCriteriaChanged(cur, row);
+  const pollingChanged =
+    criteriaChanged ||
+    (["excludeTerms", "trackSold", "intervalMin", "enabled"] as const).some(
+      (k) => row[k] !== undefined && row[k] !== cur[k],
+    );
   if (criteriaChanged) row.seeded = false;
   const invalidated = baselineInvalidated(cur, row);
   // Clear the market baseline when the criteria or the exclude terms change (see
@@ -234,11 +242,13 @@ export async function updateSearch(
   }
   const e = state().entries.get(id);
   if (!e) return null;
-  e.backoffMs = 0;
-  if (e.s.enabled) schedule(e, 1000);
-  else if (e.timer) {
-    clearTimeout(e.timer);
-    e.timer = null;
+  if (pollingChanged) {
+    e.backoffMs = 0;
+    if (e.s.enabled) schedule(e, 1000);
+    else if (e.timer) {
+      clearTimeout(e.timer);
+      e.timer = null;
+    }
   }
   plog.info({ searchId: id, enabled: e.s.enabled }, "search updated");
   return listSearches(userId).find((s) => s.id === id) ?? null;

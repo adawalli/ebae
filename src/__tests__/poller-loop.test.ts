@@ -7,6 +7,7 @@ import { SINGLE_USER_EMAIL } from "@/lib/authmode";
 import { db } from "@/lib/db";
 import { alerts, apiUsage, searches, seenItems, trackedItems, users } from "@/lib/schema";
 import { userCtx } from "@/lib/poller/boot"; // not on the barrel: the reload seam is internal
+import { schedule } from "@/lib/poller/loop"; // ditto: scheduler state is internal
 import { priceContext } from "@/lib/poller/market"; // same: it is the poller's DB fallback
 import { flushCalls } from "@/lib/poller/quota"; // ditto: persistence is the poller's own business
 import { BONUS_MIN_GAP_MS, runDueChecks } from "@/lib/poller/track"; // ditto: the check schedule is internal
@@ -37,6 +38,7 @@ const MOCK_POOL_SIZE = 8; // mockSearch seeds this many on a search's first poll
 
 const input = (over: Partial<SearchInput> = {}): SearchInput => ({
   q: "leica m6",
+  name: null,
   categoryId: null,
   priceFloor: null,
   priceCap: null,
@@ -133,6 +135,20 @@ test("turning on sold tracking persists without re-seeding", async () => {
     .from(searches)
     .where(eq(searches.id, e.s.id));
   expect(row).toEqual({ trackSold: true, seeded: true });
+});
+
+test("renaming a search keeps its current poll schedule", async () => {
+  const e = await seededEntry();
+  g.__ebaeState.ready = true;
+  e.backoffMs = 30_000;
+  schedule(e, 60_000);
+  const timer = e.timer;
+
+  const updated = await updateSearch(userId, e.s.id, { name: "Leica Plan B" });
+
+  expect(updated?.name).toBe("Leica Plan B");
+  expect(e.backoffMs).toBe(30_000);
+  expect(e.timer).toBe(timer);
 });
 
 test("an exclude-terms hit is marked seen but never alerts", async () => {
@@ -301,6 +317,43 @@ test("an alert under the age cutoff is delivered, not retired", async () => {
   );
   expect(byId.get(fresh.id)!.deliveredAt).not.toBeNull();
   expect(byId.get(done.id)!.deliveredAt!.toISOString()).toBe(alreadyDelivered.toISOString());
+});
+
+test("a redelivery failure retains the alert's saved-search identity", async () => {
+  const s = await createSearch(userId, input({ q: "current query", name: "Current name" }));
+  g.__ebaeState.users.get(userId)!.channels = ["https://discord.com/api/webhooks/1/test"];
+  await database.insert(alerts).values({
+    userId,
+    searchId: s.id,
+    searchQ: "original query",
+    searchName: "Original name",
+    itemId: "pending",
+    title: "Leica M6",
+    itemUrl: "https://www.ebay.com/itm/pending",
+  });
+
+  const realFetch = globalThis.fetch;
+  const realSetTimeout = globalThis.setTimeout;
+  let payload: { embeds: Array<Record<string, unknown>> } | undefined;
+  globalThis.fetch = ((_request: RequestInfo | URL, init?: RequestInit) => {
+    payload = JSON.parse(String(init?.body));
+    return Promise.resolve(new Response("nope", { status: 500 }));
+  }) as typeof fetch;
+  globalThis.setTimeout = ((fn: () => void) => {
+    fn();
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+  try {
+    await redeliverPending(db());
+  } finally {
+    globalThis.fetch = realFetch;
+    globalThis.setTimeout = realSetTimeout;
+  }
+
+  expect(status(userId).errors).toMatchObject([
+    { searchQ: "original query", searchName: "Original name", message: "redeliver: Discord webhook 500" },
+  ]);
+  expect(payload?.embeds[0]).toMatchObject({ footer: { text: 'ebae · matched "Original name"' } });
 });
 
 test("redelivery preserves the price-drop message", async () => {

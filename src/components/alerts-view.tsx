@@ -2,7 +2,7 @@
 
 import type { Dispatch, SetStateAction } from "react";
 import { Inbox } from "lucide-react";
-import type { Alert, SearchStats } from "@/lib/types";
+import { searchLabel, type Alert, type SearchStats } from "@/lib/types";
 import { ago, buyingOptionLabel, dayLabel, money } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -51,7 +51,7 @@ export function AlertsView({
             <option value="all">All searches</option>
             {searches.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.q}
+                {searchLabel(s)}
               </option>
             ))}
           </NativeSelect>
@@ -176,7 +176,7 @@ export function AlertsView({
                             className={`size-1.5 rounded-full ${priceDrop ? "bg-[var(--eb-green)]" : "bg-[var(--eb-accent)]"}`}
                           />
                           {priceDrop ? "price drop · matched" : "matched"}{" "}
-                          <b className="font-semibold text-foreground">{a.searchQ}</b>
+                          <b className="font-semibold text-foreground">{a.searchName ?? a.searchQ}</b>
                         </div>
                       </div>
                     </div>

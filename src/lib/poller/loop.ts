@@ -5,7 +5,7 @@ import { notify } from "@/lib/discord";
 import { RateLimitError, mockSearch, priceInRange, searchNewlyListed } from "@/lib/ebay";
 import { notifyPush } from "@/lib/push";
 import { alerts, searches, seenItems, trackedItems } from "@/lib/schema";
-import type { AlertEvent, Item, PriceContext, PushSub } from "@/lib/types";
+import type { AlertEvent, Item, PriceContext, PushSub, Search } from "@/lib/types";
 import { NOTHING_PUSHED, NOTHING_SENT, reapPush } from "./delivery";
 import { maybeSampleMarket, priceContext, suppressed } from "./market";
 import { projectedCalls } from "./projection";
@@ -192,7 +192,7 @@ async function drainAuctionBacklog(
 async function notifyItem(
   database: ReturnType<typeof db>,
   item: Item,
-  e: Entry,
+  search: Search,
   u: UserCtx,
   webhooks: string[],
   subs: PushSub[],
@@ -201,14 +201,14 @@ async function notifyItem(
   event?: AlertEvent,
 ): Promise<PushSub[]> {
   const [d, p] = await Promise.all([
-    webhooks.length ? notify(item, e.s, webhooks, ctx, event) : NOTHING_SENT,
-    subs.length ? notifyPush(item, e.s, subs, event) : NOTHING_PUSHED,
+    webhooks.length ? notify(item, search, webhooks, ctx, event) : NOTHING_SENT,
+    subs.length ? notifyPush(item, search, subs, event) : NOTHING_PUSHED,
   ]);
   // Recorded separately, never `d.error ?? p.error`: this list is the only place a self-hoster
   // sees an outage, so collapsing the two would hide a dead webhook behind a push failure (and
   // vice versa).
-  if (d.error) recordError(u.id, e.s, d.error, "error");
-  if (p.error) recordError(u.id, e.s, p.error, "error");
+  if (d.error) recordError(u.id, search, d.error, "error");
+  if (p.error) recordError(u.id, search, p.error, "error");
   let next: PushSub[] = subs;
   if (p.dead.length) {
     await reapPush(database, u, p.dead);
@@ -330,9 +330,10 @@ export async function pollOnce(e: Entry) {
       let subs = u.push;
       for (const drop of drops) {
         const targets = webhooks.length + subs.length;
+        const alertSearch = { ...e.s };
         let alertId: number | null;
         try {
-          alertId = await recordPriceDrop(database, e, drop.t, drop.item, drop, targets > 0, epoch);
+          alertId = await recordPriceDrop(database, e, drop.t, drop.item, drop, targets > 0, epoch, alertSearch);
         } catch (err) {
           recordError(u.id, e.s, `price drop: ${message(err)}`);
           continue;
@@ -341,7 +342,7 @@ export async function pollOnce(e: Entry) {
         wrote = true;
         plog.info({ searchId: e.s.id, itemId: drop.item.itemId, price: drop.price }, "price drop alert sent");
         if (targets) {
-          subs = await notifyItem(database, drop.item, e, u, webhooks, subs, ctx, alertId, {
+          subs = await notifyItem(database, drop.item, alertSearch, u, webhooks, subs, ctx, alertId, {
             kind: "price_drop",
             previousPrice: drop.previousPrice,
           });
@@ -380,16 +381,17 @@ export async function pollOnce(e: Entry) {
         // re-processes an item hits the unique index and inserts nothing, so alertId
         // comes back null and we skip the notify. deliveredAt is stamped now only when
         // there's nothing to deliver to; otherwise it stays null until notify succeeds.
+        const alertSearch = { ...e.s };
         let alertId: number | null = null;
         await database.transaction(async (tx) => {
           await tx.insert(seenItems).values({ searchId: e.s.id, itemId: item.itemId }).onConflictDoNothing();
           const [inserted] = await tx
             .insert(alerts)
             .values({
-              userId: e.s.userId,
-              searchId: e.s.id,
-              searchQ: e.s.q,
-              searchName: e.s.name,
+              userId: alertSearch.userId,
+              searchId: alertSearch.id,
+              searchQ: alertSearch.q,
+              searchName: alertSearch.name,
               itemId: item.itemId,
               title: item.title,
               price: item.price,
@@ -414,7 +416,7 @@ export async function pollOnce(e: Entry) {
         e.hitTimes.push(now);
         e.lastHitAt = now;
         plog.info({ searchId: e.s.id, itemId: item.itemId, price: item.price }, "alert sent");
-        if (targets) subs = await notifyItem(database, item, e, u, webhooks, subs, ctx, alertId);
+        if (targets) subs = await notifyItem(database, item, alertSearch, u, webhooks, subs, ctx, alertId);
       }
       // One insert for the batch, on the connection the alerts above already opened.
       await insertTracked(database, e, follow, epoch);
@@ -441,12 +443,13 @@ export async function pollOnce(e: Entry) {
       const webhooks = u.channels;
       const subs = u.push;
       const targets = webhooks.length + subs.length;
-      const alertId = await recordPriceDrop(database, e, t, item, drop, targets > 0, epoch);
+      const alertSearch = { ...e.s };
+      const alertId = await recordPriceDrop(database, e, t, item, drop, targets > 0, epoch, alertSearch);
       if (alertId == null) return;
       plog.info({ searchId: e.s.id, itemId: item.itemId, price }, "price drop alert sent");
       if (targets) {
         const ctx = await buildPriceContext(database, e, [item]);
-        await notifyItem(database, item, e, u, webhooks, subs, ctx, alertId, {
+        await notifyItem(database, item, alertSearch, u, webhooks, subs, ctx, alertId, {
           kind: "price_drop",
           previousPrice: drop.previousPrice,
         });

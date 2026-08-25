@@ -1794,6 +1794,81 @@ test("an edit landing mid-delivery can't insert follows the edit just cleared", 
   }
 });
 
+function renameAfterAlertInsert(e: Entry, name: string): () => void {
+  const real = g.__ebaeDb as Record<
+    string,
+    (fn: (tx: Record<string, unknown>) => Promise<unknown>) => Promise<unknown>
+  >;
+  const searchId = e.s.id;
+  g.__ebaeDb = new Proxy(real, {
+    get(t, p, r) {
+      if (p !== "transaction") return Reflect.get(t as object, p, r);
+      return async (fn: (tx: Record<string, unknown>) => Promise<unknown>) => {
+        let insertedAlert = false;
+        const result = await t.transaction(async (tx) =>
+          fn(
+            new Proxy(tx, {
+              get(txTarget, txProp, txReceiver) {
+                if (txProp !== "insert") return Reflect.get(txTarget, txProp, txReceiver);
+                return (table: unknown) => {
+                  if (table === alerts) insertedAlert = true;
+                  return (txTarget.insert as (table: unknown) => unknown)(table);
+                };
+              },
+            }),
+          ),
+        );
+        if (insertedAlert) await updateSearch(userId, searchId, { name });
+        return result;
+      };
+    },
+  });
+  return () => {
+    g.__ebaeDb = real;
+  };
+}
+
+test("a live alert keeps its captured identity through a concurrent rename", async () => {
+  const e = await seededEntry({ q: "original query", name: "Original name" });
+  const u = g.__ebaeState.users.get(userId)!;
+  const item = injected();
+  u.channels = ["https://discord.com/api/webhooks/1/test"];
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(item);
+
+  const restoreDb = renameAfterAlertInsert(e, "Renamed");
+  const realFetch = globalThis.fetch;
+  const realSetTimeout = globalThis.setTimeout;
+  let payload: { embeds: Array<Record<string, unknown>> } | undefined;
+  globalThis.fetch = ((_request: RequestInfo | URL, init?: RequestInit) => {
+    payload = JSON.parse(String(init?.body));
+    return Promise.resolve(new Response("nope", { status: 500 }));
+  }) as typeof fetch;
+  globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+    if (ms === 2000 || ms === 4000) {
+      fn();
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }
+    return realSetTimeout(fn, ms);
+  }) as typeof setTimeout;
+
+  try {
+    await pollOnce(e);
+  } finally {
+    restoreDb();
+    globalThis.fetch = realFetch;
+    globalThis.setTimeout = realSetTimeout;
+    u.channels = [];
+  }
+
+  const [alert] = await database.select({ searchQ: alerts.searchQ, searchName: alerts.searchName }).from(alerts);
+  expect(alert).toEqual({ searchQ: "original query", searchName: "Original name" });
+  expect(e.s.name).toBe("Renamed");
+  expect(payload?.embeds[0]).toMatchObject({ footer: { text: 'ebae · matched "Original name"' } });
+  expect(status(userId).errors).toMatchObject([
+    { searchQ: "original query", searchName: "Original name", message: "Discord webhook 500" },
+  ]);
+});
+
 test("an edit landing mid-check can't book a sale against the cleared criteria", async () => {
   const e = await seededEntry({ trackSold: true });
   const item = injected();

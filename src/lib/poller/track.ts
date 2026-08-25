@@ -2,7 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import type { db } from "@/lib/db";
 import { type CheckResult, checkItem, mockCheckItem } from "@/lib/ebay";
 import { alerts, trackedItems } from "@/lib/schema";
-import { SOLD_MIN_COUNT, type Item, type PriceKind } from "@/lib/types";
+import { SOLD_MIN_COUNT, type Item, type PriceKind, type Search } from "@/lib/types";
 import { median } from "./market";
 import { QUOTA_CEILING, bonusBudget, flushCalls, usedToday } from "./quota";
 import { counterDayFrac } from "./snooze";
@@ -327,6 +327,7 @@ export async function recordPriceDrop(
   drop: { previousPrice: number; price: number },
   hasTargets: boolean,
   epoch: number,
+  search: Search,
 ): Promise<number | null> {
   return serialize(e, async () => {
     if (stale(e, epoch)) return null;
@@ -336,10 +337,10 @@ export async function recordPriceDrop(
       const [inserted] = await tx
         .insert(alerts)
         .values({
-          userId: e.s.userId,
-          searchId: e.s.id,
-          searchQ: e.s.q,
-          searchName: e.s.name,
+          userId: search.userId,
+          searchId: search.id,
+          searchQ: search.q,
+          searchName: search.name,
           itemId: item.itemId,
           title: item.title,
           price: drop.price,
@@ -365,7 +366,7 @@ export async function recordPriceDrop(
       alertId = inserted?.id ?? null;
     });
     if (lowered) t.notifiedPrice = drop.price;
-    if (alertId != null) bumpAlerts(e.s.userId);
+    if (alertId != null) bumpAlerts(search.userId);
     return alertId;
   });
 }

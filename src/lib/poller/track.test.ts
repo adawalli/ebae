@@ -152,7 +152,7 @@ test("recordPriceDrop: keeps the in-memory baseline when the transaction fails",
   };
 
   await expect(
-    recordPriceDrop(database as never, e, t, item(), { previousPrice: 1000, price: 900 }, false, 0),
+    recordPriceDrop(database as never, e, t, item(), { previousPrice: 1000, price: 900 }, false, 0, e.s),
   ).rejects.toThrow("commit failed");
   expect(t.notifiedPrice).toBe(1000);
 });

@@ -7,6 +7,7 @@ const priceDrop: Alert = {
   id: 1,
   searchId: 1,
   searchQ: "Sonos Era 300",
+  searchName: null,
   kind: "price_drop",
   previousPrice: 200,
   itemId: "v1|123|0",

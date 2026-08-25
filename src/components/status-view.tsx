@@ -214,17 +214,16 @@ export function StatusView({
               <CardTitle className="text-sm font-semibold text-muted-foreground">Recent errors</CardTitle>
             </CardHeader>
             <CardContent className="flex flex-col gap-2 py-3">
-              {status.errors.map((err, i) => (
-                <Item key={i} variant="muted" size="sm" className="items-baseline gap-3 font-mono text-xs">
-                  <span className="whitespace-nowrap text-[var(--eb-faint)]">{ago(err.time, true)}</span>
-                  {(err.searchName ?? err.searchQ) && (
-                    <span className="whitespace-nowrap text-[var(--eb-accent-text)]">
-                      {err.searchName ?? err.searchQ}
-                    </span>
-                  )}
-                  <ItemContent className="text-muted-foreground [overflow-wrap:anywhere]">{err.message}</ItemContent>
-                </Item>
-              ))}
+              {status.errors.map((err, i) => {
+                const label = err.searchName ?? err.searchQ;
+                return (
+                  <Item key={i} variant="muted" size="sm" className="items-baseline gap-3 font-mono text-xs">
+                    <span className="whitespace-nowrap text-[var(--eb-faint)]">{ago(err.time, true)}</span>
+                    {label && <span className="whitespace-nowrap text-[var(--eb-accent-text)]">{label}</span>}
+                    <ItemContent className="text-muted-foreground [overflow-wrap:anywhere]">{err.message}</ItemContent>
+                  </Item>
+                );
+              })}
             </CardContent>
           </Card>
         ) : (

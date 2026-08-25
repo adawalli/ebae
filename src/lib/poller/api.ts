@@ -203,13 +203,11 @@ export async function updateSearch(
   // seeded search would alert on all at once. Re-seed so that backlog stays silent -
   // the same guarantee the first poll gives a brand-new search (DESIGN.md §3).
   const criteriaChanged = matchCriteriaChanged(cur, row);
-  const pollingChanged =
-    criteriaChanged ||
-    (["excludeTerms", "trackSold", "intervalMin", "enabled"] as const).some(
-      (k) => row[k] !== undefined && row[k] !== cur[k],
-    );
-  if (criteriaChanged) row.seeded = false;
   const invalidated = baselineInvalidated(cur, row);
+  const pollingChanged =
+    invalidated ||
+    (["trackSold", "intervalMin", "enabled"] as const).some((k) => row[k] !== undefined && row[k] !== cur[k]);
+  if (criteriaChanged) row.seeded = false;
   // Clear the market baseline when the criteria or the exclude terms change (see
   // baselineInvalidated) so the next poll re-samples instead of comparing against a stale
   // market. An excludeTerms-only edit resets the baseline without re-seeding - the seen set

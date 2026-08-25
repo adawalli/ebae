@@ -258,19 +258,18 @@ const MAX_ERRORS_PER_USER = 50;
 // which everyone sees.
 export function recordError(
   userId: number | null,
-  search: Pick<Search, "name" | "q"> | string | null,
+  search: Pick<Search, "name" | "q"> | null,
   msg: string,
   level: "warn" | "error" = "warn",
 ) {
-  const identity = typeof search === "string" ? { q: search, name: null } : search;
-  const searchQ = identity?.q ?? null;
-  const searchName = identity?.name ?? null;
+  const searchQ = search?.q ?? null;
+  const searchName = search?.name ?? null;
   const st = state();
   let list = st.errors.get(userId);
   if (!list) st.errors.set(userId, (list = []));
   list.push({ time: new Date().toISOString(), searchQ, searchName, message: msg, userId });
   if (list.length > MAX_ERRORS_PER_USER) list.shift();
-  plog[level]({ userId, searchQ, search: identity ? searchLabel(identity) : null }, msg);
+  plog[level]({ userId, searchQ, search: search ? searchLabel(search) : null }, msg);
 }
 
 // userId is a parameter because the column is nullable in the DB (claim.ts backfills it) while

@@ -176,7 +176,9 @@ export function AlertsView({
                             className={`size-1.5 rounded-full ${priceDrop ? "bg-[var(--eb-green)]" : "bg-[var(--eb-accent)]"}`}
                           />
                           {priceDrop ? "price drop · matched" : "matched"}{" "}
-                          <b className="font-semibold text-foreground">{a.searchName ?? a.searchQ}</b>
+                          <b className="font-semibold text-foreground">
+                            {searchLabel({ q: a.searchQ, name: a.searchName })}
+                          </b>
                         </div>
                       </div>
                     </div>

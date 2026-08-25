@@ -515,8 +515,8 @@ test("parseSnoozeBody: rejects bad times, equal window, bad tz", () => {
 // The error buffer is per-owner: one noisy user must not evict everyone else's diagnostics,
 // which a single global list did the moment two accounts shared a process.
 test("recordError buffers per user, and ownerless entries reach everyone", () => {
-  recordError(1, "leica m6", "user 1 only");
-  for (let i = 0; i < 60; i++) recordError(2, "nikon f3", `user 2 #${i}`);
+  recordError(1, { q: "leica m6", name: null }, "user 1 only");
+  for (let i = 0; i < 60; i++) recordError(2, { q: "nikon f3", name: null }, `user 2 #${i}`);
   recordError(null, null, "boot failed, retrying");
 
   const one = status(1).errors.map((e) => e.message);

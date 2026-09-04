@@ -1,11 +1,11 @@
 # deps: bun honors bun.lock and installs fast
-FROM oven/bun:1 AS deps
+FROM oven/bun:1@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
 # build: next build runs on node
-FROM node:24-alpine AS build
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
@@ -13,7 +13,7 @@ COPY . .
 RUN node_modules/.bin/next build
 
 # run: standalone output, non-root
-FROM node:24-alpine
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf
 WORKDIR /app
 # NEXT_MANUAL_SIG_HANDLE: let poller/boot.ts own SIGTERM/SIGINT so its shutdown flush
 # completes; otherwise Next's own handler process.exit()s and cuts the DB write off.

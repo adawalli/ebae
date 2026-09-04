@@ -9,7 +9,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: read # no secrets needed; dependabot PRs run fine on the read-only token
+  contents: read # no secrets needed; dependency-update PRs run on the read-only token
 
 # A new push supersedes the run it interrupted.
 concurrency:

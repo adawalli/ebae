@@ -1,0 +1,31 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices"],
+  "timezone": "America/New_York",
+  "schedule": ["* 0-5 * * 1"],
+  "prConcurrentLimit": 5,
+  "kubernetes": {
+    "managerFilePatterns": ["/^deploy\\/k8s\\.yaml$/"]
+  },
+  "packageRules": [
+    {
+      "description": "Group non-major Bun dependency updates",
+      "matchManagers": ["bun"],
+      "matchUpdateTypes": ["pin", "minor", "patch"],
+      "groupName": "Bun non-major dependencies"
+    },
+    {
+      "description": "Group non-major GitHub Actions updates",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["pin", "pinDigest", "digest", "minor", "patch"],
+      "groupName": "GitHub Actions non-major dependencies"
+    },
+    {
+      "description": "Keep the Argo CD-managed application image mutable",
+      "matchManagers": ["kubernetes"],
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["/^(?:docker\\.io\\/)?adawalli\\/ebae$/"],
+      "pinDigests": false
+    }
+  ]
+}

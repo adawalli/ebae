@@ -32,6 +32,7 @@
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.4",
     "@tailwindcss/postcss": "^4.3.2",
+    "@types/bun": "1.4.2",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "NODE_ENV=development NEXT_MANUAL_SIG_HANDLE=true ENABLE_DEV_POLLER=0 next dev",
     "dev:poller": "NODE_ENV=development NEXT_MANUAL_SIG_HANDLE=true ENABLE_DEV_POLLER=1 next dev",
-    "build": "next build",
+    "build": "next typegen && tsc --noEmit && next build",
     "start": "NEXT_MANUAL_SIG_HANDLE=true next start",
     "lint": "eslint",
     "db:generate": "drizzle-kit generate",
@@ -37,6 +37,7 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@types/web-push": "3.6.4",
+    "@typescript/native": "npm:typescript@7.0.2",
     "drizzle-kit": "0.31.11",
     "eslint": "9.39.5",
     "eslint-config-next": "16.3.6",
@@ -46,7 +47,7 @@
     "shadcn": "4.21.0",
     "tailwindcss": "4.3.3",
     "tw-animate-css": "1.4.0",
-    "typescript": "5.9.3"
+    "typescript": "npm:@typescript/typescript6@6.0.2"
   },
   "trustedDependencies": [
     "sharp",

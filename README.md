@@ -8,6 +8,13 @@ Self-hosted eBay alerting. Polls your saved searches every 1-15 minutes via the 
 
 See [DESIGN.md](DESIGN.md) for architecture and roadmap.
 
+`bun run build` generates Next.js route types, checks the project with TypeScript 7,
+then runs the Next.js production build. Docker uses the same build script.
+The `typescript` dependency aliases the official TypeScript 6 compatibility package
+for ESLint and Next.js; Next.js retains its own TypeScript 6 check. The
+`@typescript/native` alias provides TypeScript 7's `tsc` executable, following the
+[official side-by-side setup](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/).
+
 ## Quick start (dev)
 
 ```sh

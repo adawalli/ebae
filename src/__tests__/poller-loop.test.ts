@@ -963,7 +963,7 @@ test("a failed oldest alert advances the cursor so later alerts are not starved"
   expect(rows.find((r) => r.itemId === "later")?.deliveredAt).not.toBeNull();
 });
 
-test("the production redelivery drain schedules its next page after the first page finishes", async () => {
+test("the production redelivery drain retries a failed page without replaying completed pages", async () => {
   const s = await createSearch(userId, input());
   g.__ebaeState.users.get(userId)!.channels = [webhook()];
   const base = { userId, searchId: s.id, searchQ: s.q, title: "leica m6", itemUrl: "https://www.ebay.com/itm/x" };
@@ -972,6 +972,16 @@ test("the production redelivery drain schedules its next page after the first pa
     { ...base, itemId: "later", createdAt: new Date(Date.now() - 1000) },
   ]);
   const cutoff = await capturePendingAlertCutoff(db());
+  let failSelect = false;
+  const retryDb = new Proxy(db(), {
+    get(target, key, receiver) {
+      if (key === "select" && failSelect) {
+        failSelect = false;
+        throw new Error("temporary recovery query failure");
+      }
+      return Reflect.get(target, key, receiver);
+    },
+  });
   const realFetch = globalThis.fetch;
   const realSetTimeout = globalThis.setTimeout;
   const sweepStart = Date.now();
@@ -996,7 +1006,7 @@ test("the production redelivery drain schedules its next page after the first pa
 
   try {
     captureFirstDrainTimer = true;
-    startRedeliveryDrain(db(), cutoff);
+    startRedeliveryDrain(retryDb, cutoff);
     expect(scheduled).toHaveLength(1);
     expect(scheduled[0].delay).toBe(15_000);
     await scheduled.shift()!.run();
@@ -1008,6 +1018,10 @@ test("the production redelivery drain schedules its next page after the first pa
     ]);
 
     setSystemTime(new Date(sweepStart));
+    failSelect = true;
+    await scheduled.shift()!.run();
+    expect(calls).toBe(1);
+    expect(scheduled).toHaveLength(1);
     await scheduled.shift()!.run();
     expect(calls).toBe(2);
     expect(scheduled).toHaveLength(0);

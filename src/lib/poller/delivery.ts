@@ -47,7 +47,7 @@ export function startRedeliveryDrain(database: ReturnType<typeof db>, cutoffId: 
       if (progress.complete) return;
     } catch (err) {
       recordError(null, null, `redeliver on boot: ${message(err)}`);
-      return;
+      // Keep the previous cursor until the page and its delivery flush succeed.
     }
     const timer = setTimeout(run, REDELIVER_PAGE_DELAY_MS);
     timer.unref?.();

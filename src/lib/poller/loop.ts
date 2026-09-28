@@ -255,7 +255,8 @@ export async function pollOnce(e: Entry) {
   }
   const today = new Date().toDateString();
   if (u.calls.date !== today) u.calls = { date: today, used: 0, surplus: 0 };
-  if (u.calls.used >= QUOTA_CEILING) {
+  const continuing = e.pendingItems.length > 0 || e.pendingDrops.length > 0;
+  if (!continuing && u.calls.used >= QUOTA_CEILING) {
     recordError(u.id, e.s, "daily API budget exhausted - poll skipped");
     schedule(e, QUOTA_SKIP_MS);
     return;
@@ -275,28 +276,42 @@ export async function pollOnce(e: Entry) {
 
   const pollSearch = { ...e.s };
   plog.debug({ searchId: pollSearch.id, q: pollSearch.q }, "polling");
+  const notifyDeadline = Date.now() + NOTIFY_DEADLINE_MS;
   try {
-    u.calls.used++;
-    const result = u.ebay
-      ? await searchNewlyListed(u.ebay, pollSearch)
-      : { items: mockSearch(pollSearch), truncated: false };
-    const { items, truncated } = result;
-    if (truncated && !e.truncated)
-      recordError(u.id, e.s, "eBay returned more than 200 matches - older listings may be missed; narrow this search");
-    e.truncated = truncated;
-    e.lastPolledAt = Date.now();
-    plog.info({ q: e.s.q, count: items.length, quotaUsed: u.calls.used }, "eBay poll");
+    let items = e.pendingItems;
+    if (!continuing) {
+      u.calls.used++;
+      const result = u.ebay
+        ? await searchNewlyListed(u.ebay, pollSearch)
+        : { items: mockSearch(pollSearch), truncated: false };
+      const { truncated } = result;
+      items = result.items;
+      if (truncated && !e.truncated)
+        recordError(
+          u.id,
+          e.s,
+          "eBay returned more than 200 matches - older listings may be missed; narrow this search",
+        );
+      e.truncated = truncated;
+      e.lastPolledAt = Date.now();
+      plog.info({ q: e.s.q, count: items.length, quotaUsed: u.calls.used }, "eBay poll");
+      if (e.trackEpoch !== epoch) {
+        schedule(e, e.s.intervalMin * 60_000);
+        return;
+      }
+      e.pendingItems = items.filter((i) => !e.seen.has(i.itemId));
+    }
     const database = db();
     const fresh = items.filter((i) => !e.seen.has(i.itemId));
     plog.debug({ searchId: e.s.id, fresh: fresh.length, of: items.length }, "dedup");
     let wrote = false; // did this tick open a connection? gates the piggyback flush below
-    const drops: { t: TrackedItem; item: Item; previousPrice: number; price: number }[] = [];
+    const drops = e.pendingDrops;
 
     // A followed fixed-price listing that turns up again is a free check: it is demonstrably
     // still for sale, so its price refreshes and any due step is skipped rather than spent.
     // Auction bids stay untouched until their final check. Runs against the full result set, not
     // `fresh` - a followed listing is by definition already in the seen set.
-    if (e.tracked.size) {
+    if (!continuing && e.tracked.size) {
       const at = Date.now();
       for (const item of items) {
         const t = e.tracked.get(item.itemId);
@@ -344,16 +359,21 @@ export async function pollOnce(e: Entry) {
       // reassigns u.push rather than mutating it, so this alias would otherwise keep handing
       // a reaped endpoint to every later item in the batch.
       let subs = u.push;
-      for (const drop of drops) {
+      for (const drop of [...drops]) {
+        if (Date.now() >= notifyDeadline || e.trackEpoch !== epoch || !e.s.trackSold) break;
+        // Reload can replace the tracked map between ticks. A completed check may have
+        // removed its follow, in which case the snapshot still names its existing DB row.
+        const tracked = e.tracked.get(drop.item.itemId) ?? drop.t;
         const targets = webhooks.length + subs.length;
         const alertSearch = { ...e.s };
         let alertId: number | null;
         try {
-          alertId = await recordPriceDrop(database, e, drop.t, drop.item, drop, targets > 0, epoch, alertSearch);
+          alertId = await recordPriceDrop(database, e, tracked, drop.item, drop, targets > 0, epoch, alertSearch);
         } catch (err) {
           recordError(u.id, e.s, `price drop: ${message(err)}`);
-          continue;
+          break; // retain this observation for the next tick
         }
+        drops.shift();
         if (alertId == null) continue;
         wrote = true;
         plog.info({ searchId: e.s.id, itemId: drop.item.itemId, price: drop.price }, "price drop alert sent");
@@ -366,14 +386,9 @@ export async function pollOnce(e: Entry) {
       }
       // Oldest-first: fresh is newest-first from eBay, reversed here for chronological notify
       // order.
-      const notifyStart = Date.now();
       for (const item of [...fresh].reverse()) {
-        // Wall-clock deadline, not a count: a slow or rate-limited target (or several - see
-        // NOTIFY_DEADLINE_MS) can otherwise wedge this tick past the health window. Checked
-        // before touching the item, so anything past the deadline is left completely untouched
-        // - not added to e.seen, not written to seen_items - and the next poll picks it up
-        // unchanged.
-        if (Date.now() - notifyStart >= NOTIFY_DEADLINE_MS) break;
+        // Leave the remainder in pendingItems; continuation ticks do not fetch another page.
+        if (Date.now() >= notifyDeadline || e.trackEpoch !== epoch) break;
         // Recomputed per item, not once per batch: reaping the last subscription has to be
         // able to take this to zero, or the rows below would seed deliveredAt=null for a
         // target that no longer exists and never be delivered by anyone.
@@ -447,6 +462,8 @@ export async function pollOnce(e: Entry) {
       await insertTracked(database, e, follow, epoch);
     }
 
+    if (e.trackEpoch === epoch) e.pendingItems = e.pendingItems.filter((i) => !e.seen.has(i.itemId));
+
     // Piggyback the daily-call-count persist on the connection these writes already
     // opened. Empty polls (seeded, nothing new) skip it and stay DB-free, so a
     // reboot loses at most the calls counted since the last write - by design.
@@ -457,14 +474,19 @@ export async function pollOnce(e: Entry) {
     // Refresh the market baseline at most once/day per band-limited search. Self-throttled
     // and isolated: it opens a connection only when actually due, so steady-state empty
     // polls stay DB-free, and its own try/catch keeps a sample failure off the main poll.
-    await maybeSampleMarket(e, u, database);
+    if (!continuing) await maybeSampleMarket(e, u, database);
     // Check in on followed listings that have come due. Same shape as the sample above:
     // self-limiting, quota-guarded, isolated, and a no-op for a search that isn't tracking.
     const onCheckedPrice = async (t: TrackedItem, price: number, previousPrice: number | null) => {
+      if (!e.s.trackSold || e.trackEpoch !== epoch) return;
       const drop = priceDrop(t, price, previousPrice);
       if (!drop || !t.snapshot || !priceInRange(price, e.s)) return;
       const item = { ...t.snapshot, price };
       if (suppressed(item, e.s)) return;
+      if (Date.now() >= notifyDeadline) {
+        if (e.trackEpoch === epoch) e.pendingDrops.push({ t, item, ...drop });
+        return;
+      }
       const webhooks = discordWebhooks(e.s, u);
       const subs = u.push;
       const targets = webhooks.length + subs.length;
@@ -480,20 +502,21 @@ export async function pollOnce(e: Entry) {
         });
       }
     };
-    await runDueChecks(e, u, database, epoch, onCheckedPrice);
+    if (!continuing) await runDueChecks(e, u, database, epoch, onCheckedPrice);
     const active = enabledSearchesFor(u.id);
     const projected = projectedCalls(active, activeMin(u.snooze));
     // Last, so the budget it reads has this tick's poll, sample and due checks already in it.
     // Deliberately absent from `projected`: these calls are the surplus that projection leaves
     // over, and budgeting for them would engage the governor against the very thing it makes
     // affordable. Resolving a listing early only ever shrinks the projection (checksDue24h).
-    await runBonusChecks(e, u, database, epoch, projected, onCheckedPrice);
+    if (!continuing) await runBonusChecks(e, u, database, epoch, projected, onCheckedPrice);
     e.backoffMs = 0;
     // Governed only here, on the path that actually spent a call. The snooze, no-creds and
     // owner-not-cached reschedules above cost no quota, so stretching them would delay noticing
     // that the window ended or the keys arrived while saving nothing. The quota-exhausted retry
     // and the error backoff are already their own (longer) delays.
-    schedule(e, governedDelayMs(e.s.intervalMin, governorFor(u, projected)));
+    const delay = continuing ? e.s.intervalMin * 60_000 : governedDelayMs(e.s.intervalMin, governorFor(u, projected));
+    schedule(e, e.pendingItems.length || e.pendingDrops.length ? 1000 : delay);
   } catch (err) {
     plog.error({ err, searchId: pollSearch.id, q: pollSearch.q }, "poll failed"); // stack goes to stdout; recordError keeps only the message for the UI
     recordError(u.id, pollSearch, message(err));

@@ -249,7 +249,13 @@ export async function updateSearch(
       // captioning the edited search's alerts with the old search's going rate long after the
       // baseline it beat was cleared. Drops the outstanding follows with it - they are listings
       // this search no longer matches, still costing checks.
-      if (invalidated) await resetTracked(db(), e);
+      if (criteriaChanged) e.pendingItems = [];
+      if (invalidated) {
+        e.pendingDrops = [];
+        await resetTracked(db(), e);
+      } else if (patch.trackSold === false) {
+        e.pendingDrops = [];
+      }
     } else {
       // dropped from the cache by a concurrent reload: DB was updated, return stub stats. The
       // next list call reads the real figures once reload rebuilds the entry.

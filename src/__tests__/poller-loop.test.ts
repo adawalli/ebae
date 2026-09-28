@@ -9,17 +9,18 @@ import { alerts, apiUsage, channels, searches, seenItems, trackedItems, users } 
 import { userCtx } from "@/lib/poller/boot"; // not on the barrel: the reload seam is internal
 import { pollMode, schedule } from "@/lib/poller/loop"; // ditto: scheduler state is internal
 import { priceContext } from "@/lib/poller/market"; // same: it is the poller's DB fallback
-import { flushCalls } from "@/lib/poller/quota"; // ditto: persistence is the poller's own business
+import { QUOTA_CEILING, flushCalls } from "@/lib/poller/quota"; // ditto: persistence is the poller's own business
 import { BONUS_MIN_GAP_MS, runDueChecks } from "@/lib/poller/track"; // ditto: the check schedule is internal
 import {
-  BOOT_REDELIVER_DEADLINE_MS,
   GOV_MAX_FACTOR,
   NOTIFY_DEADLINE_MS,
+  capturePendingAlertCutoff,
   createSearch,
   health,
   listSearches,
   pollOnce,
   redeliverPending,
+  startRedeliveryDrain,
   setSnooze,
   status,
   updateSearch,
@@ -215,9 +216,11 @@ test("a new listing after seeding writes exactly one alert", async () => {
   expect(await database.select().from(seenItems)).toHaveLength(MOCK_POOL_SIZE + 1);
 });
 
-test("a fresh batch that runs past the wall-clock deadline notifies partially, rest lands next tick", async () => {
-  const e = await seededEntry();
-  g.__ebaeState.users.get(userId)!.channels = ["https://discord.com/api/webhooks/1/test"];
+test("fresh overflow drains its saved page even after replacement and quota exhaustion", async () => {
+  const e = await seededEntry({ intervalMin: 60 });
+  const u = g.__ebaeState.users.get(userId)!;
+  u.channels = [webhook()];
+  u.calls.used = QUOTA_CEILING - 1;
   const pool = g.__ebaeMock.pools.get(e.s.id)!;
   const total = 3;
   // unshift oldest-first so the front of the pool (newest) is slow-(total-1) - matches
@@ -237,7 +240,7 @@ test("a fresh batch that runs past the wall-clock deadline notifies partially, r
     return Promise.resolve(new Response(null, { status: 204 }));
   }) as unknown as typeof fetch;
   try {
-    await pollOnce(e);
+    expect(await delayAfterPoll(e)).toBe(1000); // long polling cadence must not delay the saved page
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -248,6 +251,8 @@ test("a fresh batch that runs past the wall-clock deadline notifies partially, r
   // drop them instead of retrying them.
   expect(await database.select().from(seenItems)).toHaveLength(MOCK_POOL_SIZE + 1);
 
+  g.__ebaeMock.pools.set(e.s.id, []); // the next page no longer contains the overflow
+  expect(u.calls.used).toBe(QUOTA_CEILING);
   setSystemTime(new Date(tickStart)); // a fresh tick, clock not already past its own deadline
   globalThis.fetch = (() => Promise.resolve(new Response(null, { status: 204 }))) as unknown as typeof fetch;
   try {
@@ -256,8 +261,131 @@ test("a fresh batch that runs past the wall-clock deadline notifies partially, r
     globalThis.fetch = realFetch;
   }
 
-  expect(await database.select().from(alerts)).toHaveLength(total);
+  const rows = await database.select().from(alerts).orderBy(alerts.id);
+  expect(rows.map((row) => row.itemId)).toEqual(["slow-0", "slow-1", "slow-2"]);
+  expect(u.calls.used).toBe(QUOTA_CEILING); // continuation made no further eBay calls
   expect(await database.select().from(seenItems)).toHaveLength(MOCK_POOL_SIZE + total);
+});
+
+test.each([
+  ["query", { q: "summicron" }, ["before"]],
+  ["exclusion", { excludeTerms: "broken" }, ["before", "good"]],
+] as const)("a %s edit handles the retained page with the new criteria", async (_label, patch, expected) => {
+  const e = await seededEntry();
+  g.__ebaeState.users.get(userId)!.channels = [webhook()];
+  const pool = g.__ebaeMock.pools.get(e.s.id)!;
+  for (const item of [
+    injected({ itemId: "before" }),
+    injected({ itemId: "broken", title: "leica m6 broken" }),
+    injected({ itemId: "good" }),
+  ])
+    pool.unshift(item);
+  const realFetch = globalThis.fetch;
+  const start = Date.now();
+  globalThis.fetch = (() => {
+    setSystemTime(start + NOTIFY_DEADLINE_MS + 1000);
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }) as typeof fetch;
+  try {
+    await pollOnce(e);
+    g.__ebaeMock.pools.set(e.s.id, []);
+    setSystemTime(start);
+    await updateSearch(userId, e.s.id, patch);
+    globalThis.fetch = (() => Promise.resolve(new Response(null, { status: 204 }))) as typeof fetch;
+    await pollOnce(e);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  const rows = await database.select().from(alerts).orderBy(alerts.id);
+  expect(rows.map((row) => row.itemId)).toEqual([...expected]);
+});
+
+test("price drops and fresh listings share one deadline and retain both remainders", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const first = injected({ itemId: "drop-first", price: 1000 });
+  const second = injected({ itemId: "drop-second", price: 1000 });
+  const pool = g.__ebaeMock.pools.get(e.s.id)!;
+  pool.unshift(first, second);
+  await pollOnce(e);
+  first.price = 900;
+  second.price = 800;
+  pool.unshift(injected({ itemId: "fresh-after-drops" }));
+  const u = g.__ebaeState.users.get(userId)!;
+  u.channels = [webhook()];
+  const realFetch = globalThis.fetch;
+  const start = Date.now();
+  let calls = 0;
+  globalThis.fetch = (() => {
+    calls++;
+    setSystemTime(start + NOTIFY_DEADLINE_MS + 1000);
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }) as typeof fetch;
+  try {
+    await pollOnce(e);
+    expect(calls).toBe(1);
+    expect(await database.select().from(alerts)).toHaveLength(3);
+    const billed = u.calls.used;
+    g.__ebaeMock.pools.set(e.s.id, []);
+    setSystemTime(start);
+    globalThis.fetch = (() => Promise.resolve(new Response(null, { status: 204 }))) as typeof fetch;
+    await pollOnce(e);
+    expect(u.calls.used).toBe(billed);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  const rows = await database.select().from(alerts).orderBy(alerts.id);
+  expect(rows.slice(2).map((row) => [row.itemId, row.kind])).toEqual([
+    ["drop-first", "price_drop"],
+    ["drop-second", "price_drop"],
+    ["fresh-after-drops", "listing"],
+  ]);
+});
+
+test("checked-price callbacks defer sends after the same tick deadline", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const first = injected({ itemId: "v1|checked-first|0", price: 1000 });
+  const second = injected({ itemId: "v1|checked-second|0", price: 1000 });
+  g.__ebaeMock.pools.get(e.s.id)!.unshift(first, second);
+  await pollOnce(e);
+  for (const t of e.tracked.values()) t.nextCheckAt = Date.now() - 1;
+  const u = g.__ebaeState.users.get(userId)!;
+  u.channels = [webhook()];
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const realFetch = globalThis.fetch;
+  const start = Date.now();
+  let sends = 0;
+  let checks = 0;
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    const url = String(request);
+    if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
+    if (url.includes("/buy/browse/v1/item/")) {
+      checks++;
+      return Response.json({
+        price: { value: "900", currency: "USD" },
+        estimatedAvailabilities: [{ estimatedAvailabilityStatus: "IN_STOCK", estimatedSoldQuantity: 0 }],
+      });
+    }
+    if (url.includes("discord.com")) {
+      sends++;
+      setSystemTime(start + NOTIFY_DEADLINE_MS + 1000);
+      return new Response(null, { status: 204 });
+    }
+    return Response.json({ itemSummaries: [] });
+  }) as typeof fetch;
+  try {
+    await pollOnce(e);
+    expect(checks).toBe(2);
+    expect(sends).toBe(1);
+    expect(await database.select().from(alerts)).toHaveLength(3);
+    setSystemTime(start);
+    globalThis.fetch = (() => Promise.resolve(new Response(null, { status: 204 }))) as typeof fetch;
+    await pollOnce(e);
+  } finally {
+    globalThis.fetch = realFetch;
+    u.ebay = null;
+  }
+  const drops = await database.select().from(alerts).where(eq(alerts.kind, "price_drop"));
+  expect(drops.map((row) => row.itemId).sort()).toEqual([first.itemId, second.itemId].sort());
 });
 
 test("turning on sold tracking persists without re-seeding", async () => {
@@ -432,7 +560,7 @@ test("an over-age alert is retired without a delivery attempt", async () => {
   }) as unknown as typeof fetch;
 
   try {
-    await redeliverPending(db());
+    await redeliverPending(db(), await capturePendingAlertCutoff(db()));
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -468,7 +596,7 @@ test("development never redelivers pending alerts, even with dev polling enabled
   }) as unknown as typeof fetch;
 
   try {
-    await redeliverPending(db());
+    await redeliverPending(db(), await capturePendingAlertCutoff(db()));
   } finally {
     globalThis.fetch = realFetch;
     if (nodeEnv === undefined) delete process.env.NODE_ENV;
@@ -505,7 +633,7 @@ test("an alert under the age cutoff is delivered, not retired", async () => {
   }) as unknown as typeof fetch;
 
   try {
-    await redeliverPending(db());
+    await redeliverPending(db(), await capturePendingAlertCutoff(db()));
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -545,7 +673,7 @@ test("redelivery follows the search's current Discord destination", async () => 
   }) as typeof fetch;
 
   try {
-    await redeliverPending(db());
+    await redeliverPending(db(), await capturePendingAlertCutoff(db()));
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -578,7 +706,7 @@ test("a redelivery failure retains the alert's saved-search identity", async () 
     return 0 as unknown as ReturnType<typeof setTimeout>;
   }) as typeof setTimeout;
   try {
-    await redeliverPending(db());
+    await redeliverPending(db(), await capturePendingAlertCutoff(db()));
   } finally {
     globalThis.fetch = realFetch;
     globalThis.setTimeout = realSetTimeout;
@@ -613,7 +741,7 @@ test("redelivery preserves the price-drop message", async () => {
   }) as typeof fetch;
 
   try {
-    await redeliverPending(db());
+    await redeliverPending(db(), await capturePendingAlertCutoff(db()));
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -658,49 +786,164 @@ test("a live alert targets only the search's selected Discord webhook", async ()
   expect(calls).toEqual([saved[1].webhookUrl]);
 });
 
-test("redeliverPending stops at the wall-clock deadline, oldest-first, and the remainder is picked up next sweep", async () => {
+test("redelivery drains its captured backlog after a slow boot and excludes later alert IDs", async () => {
   const s = await createSearch(userId, input());
   g.__ebaeState.users.get(userId)!.channels = [webhook()];
   const base = { userId, searchId: s.id, searchQ: s.q, title: "leica m6", itemUrl: "https://www.ebay.com/itm/x" };
-  // Ascending createdAt (pending-0 oldest), but inserted NEWEST-first: an unordered scan often
-  // returns rows in insertion order, which here would be the wrong (newest-first) order. Only a
-  // real ORDER BY makes the sweep actually deliver pending-0 first.
-  const rows = Array.from({ length: 3 }, (_, i) => ({
+  const backlog = [
+    { ...base, itemId: "oldest", createdAt: new Date(Date.now() - 5 * 60_000) },
+    { ...base, itemId: "newer", createdAt: new Date(Date.now() - 4 * 60_000) },
+  ];
+  await database.insert(alerts).values([...backlog].reverse());
+  const cutoff = await capturePendingAlertCutoff(db());
+  await database.insert(alerts).values({
     ...base,
-    itemId: `pending-${i}`,
-    createdAt: new Date(Date.now() - (3 - i) * 1000),
-  }));
-  await database.insert(alerts).values([...rows].reverse());
+    itemId: "after-cutoff",
+    createdAt: new Date(Date.now() - 90 * 60_000),
+  });
 
   const realFetch = globalThis.fetch;
-  let calls = 0;
+  const realUptime = process.uptime;
   const sweepStart = Date.now();
-  // Every send "takes" past the deadline - simulates a slow/rate-limited target without a real
-  // sleep, so the sweep's second row must see the deadline already blown and stop there.
+  let calls = 0;
+  process.uptime = () => 300; // the old boot budget skipped this sweep after 235 seconds
   globalThis.fetch = (() => {
     calls++;
-    setSystemTime(new Date(sweepStart + BOOT_REDELIVER_DEADLINE_MS + 1000));
+    setSystemTime(new Date(sweepStart + NOTIFY_DEADLINE_MS + 1000));
     return Promise.resolve(new Response(null, { status: 204 }));
-  }) as unknown as typeof fetch;
+  }) as typeof fetch;
+  let firstPage;
   try {
-    await redeliverPending(db()); // first sweep: stops after the deadline trips
+    firstPage = await redeliverPending(db(), cutoff);
   } finally {
+    process.uptime = realUptime;
     globalThis.fetch = realFetch;
   }
 
   expect(calls).toBe(1);
-  const delivered = await database.select().from(alerts).where(isNotNull(alerts.deliveredAt));
-  const pending = await database.select().from(alerts).where(isNull(alerts.deliveredAt));
-  expect(delivered).toHaveLength(1);
-  expect(delivered[0].itemId).toBe("pending-0"); // oldest-first, proves the ORDER BY is doing work
-  expect(pending).toHaveLength(2);
+  expect(firstPage.complete).toBe(false);
+  expect(firstPage.cursor).not.toBeNull();
+  expect((await database.select().from(alerts).where(isNotNull(alerts.deliveredAt))).map((r) => r.itemId)).toEqual([
+    "oldest",
+  ]);
 
-  setSystemTime(new Date(sweepStart)); // a fresh boot, clock not already past its own deadline
-  globalThis.fetch = (() => Promise.resolve(new Response(null, { status: 204 }))) as unknown as typeof fetch;
+  setSystemTime(new Date(sweepStart));
+  globalThis.fetch = (() => Promise.resolve(new Response(null, { status: 204 }))) as typeof fetch;
+  let secondPage;
   try {
-    await redeliverPending(db()); // second sweep: the leftovers are not starved, they go now
+    secondPage = await redeliverPending(db(), cutoff, firstPage.cursor);
   } finally {
     globalThis.fetch = realFetch;
+  }
+
+  expect(secondPage.complete).toBe(true);
+  expect((await database.select().from(alerts).where(isNull(alerts.deliveredAt))).map((r) => r.itemId)).toEqual([
+    "after-cutoff",
+  ]);
+});
+
+test("a failed oldest alert advances the cursor so later alerts are not starved", async () => {
+  const s = await createSearch(userId, input());
+  g.__ebaeState.users.get(userId)!.channels = [webhook()];
+  const base = { userId, searchId: s.id, searchQ: s.q, title: "leica m6", itemUrl: "https://www.ebay.com/itm/x" };
+  await database.insert(alerts).values([
+    { ...base, itemId: "failed", createdAt: new Date(Date.now() - 2000) },
+    { ...base, itemId: "later", createdAt: new Date(Date.now() - 1000) },
+  ]);
+  const cutoff = await capturePendingAlertCutoff(db());
+
+  const realFetch = globalThis.fetch;
+  const realSetTimeout = globalThis.setTimeout;
+  const sweepStart = Date.now();
+  globalThis.fetch = (() => {
+    setSystemTime(new Date(sweepStart + NOTIFY_DEADLINE_MS + 1000));
+    return Promise.resolve(new Response("nope", { status: 500 }));
+  }) as typeof fetch;
+  globalThis.setTimeout = ((fn: () => void) => {
+    fn();
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+  let firstPage;
+  try {
+    firstPage = await redeliverPending(db(), cutoff);
+  } finally {
+    globalThis.fetch = realFetch;
+    globalThis.setTimeout = realSetTimeout;
+  }
+
+  expect(firstPage.complete).toBe(false);
+  expect(firstPage.cursor).not.toBeNull();
+  setSystemTime(new Date(sweepStart));
+  const calls: string[] = [];
+  globalThis.fetch = ((request: RequestInfo | URL) => {
+    calls.push(String(request));
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }) as typeof fetch;
+  let secondPage;
+  try {
+    secondPage = await redeliverPending(db(), cutoff, firstPage.cursor);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  expect(secondPage.complete).toBe(true);
+  expect(calls).toEqual([webhook().webhookUrl]);
+  const rows = await database.select({ itemId: alerts.itemId, deliveredAt: alerts.deliveredAt }).from(alerts);
+  expect(rows.find((r) => r.itemId === "failed")?.deliveredAt).toBeNull();
+  expect(rows.find((r) => r.itemId === "later")?.deliveredAt).not.toBeNull();
+});
+
+test("the production redelivery drain schedules its next page after the first page finishes", async () => {
+  const s = await createSearch(userId, input());
+  g.__ebaeState.users.get(userId)!.channels = [webhook()];
+  const base = { userId, searchId: s.id, searchQ: s.q, title: "leica m6", itemUrl: "https://www.ebay.com/itm/x" };
+  await database.insert(alerts).values([
+    { ...base, itemId: "oldest", createdAt: new Date(Date.now() - 2000) },
+    { ...base, itemId: "later", createdAt: new Date(Date.now() - 1000) },
+  ]);
+  const cutoff = await capturePendingAlertCutoff(db());
+  const realFetch = globalThis.fetch;
+  const realSetTimeout = globalThis.setTimeout;
+  const sweepStart = Date.now();
+  const scheduled: Array<{ run: () => Promise<void>; delay: number | undefined }> = [];
+  let drainCallback: (() => void) | undefined;
+  let captureFirstDrainTimer = false;
+  let calls = 0;
+  globalThis.setTimeout = ((fn: () => void, delay?: number) => {
+    if (captureFirstDrainTimer || fn === drainCallback) {
+      drainCallback ??= fn;
+      captureFirstDrainTimer = false;
+      scheduled.push({ run: fn as () => Promise<void>, delay });
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }
+    return realSetTimeout(fn, delay);
+  }) as typeof setTimeout;
+  globalThis.fetch = (() => {
+    calls++;
+    if (calls === 1) setSystemTime(new Date(sweepStart + NOTIFY_DEADLINE_MS + 1000));
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }) as typeof fetch;
+
+  try {
+    captureFirstDrainTimer = true;
+    startRedeliveryDrain(db(), cutoff);
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].delay).toBe(15_000);
+    await scheduled.shift()!.run();
+    expect(calls).toBe(1);
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].delay).toBe(15_000);
+    expect((await database.select().from(alerts).where(isNotNull(alerts.deliveredAt))).map((r) => r.itemId)).toEqual([
+      "oldest",
+    ]);
+
+    setSystemTime(new Date(sweepStart));
+    await scheduled.shift()!.run();
+    expect(calls).toBe(2);
+    expect(scheduled).toHaveLength(0);
+  } finally {
+    globalThis.fetch = realFetch;
+    globalThis.setTimeout = realSetTimeout;
   }
 
   expect(await database.select().from(alerts).where(isNull(alerts.deliveredAt))).toHaveLength(0);

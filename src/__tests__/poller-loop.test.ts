@@ -301,46 +301,61 @@ test.each([
   expect(rows.map((row) => row.itemId)).toEqual([...expected]);
 });
 
-test("price drops and fresh listings share one deadline and retain both remainders", async () => {
-  const e = await seededEntry({ trackSold: true });
-  const first = injected({ itemId: "drop-first", price: 1000 });
-  const second = injected({ itemId: "drop-second", price: 1000 });
-  const pool = g.__ebaeMock.pools.get(e.s.id)!;
-  pool.unshift(first, second);
-  await pollOnce(e);
-  first.price = 900;
-  second.price = 800;
-  pool.unshift(injected({ itemId: "fresh-after-drops" }));
-  const u = g.__ebaeState.users.get(userId)!;
-  u.channels = [webhook()];
-  const realFetch = globalThis.fetch;
-  const start = Date.now();
-  let calls = 0;
-  globalThis.fetch = (() => {
-    calls++;
-    setSystemTime(start + NOTIFY_DEADLINE_MS + 1000);
-    return Promise.resolve(new Response(null, { status: 204 }));
-  }) as typeof fetch;
-  try {
+test.each([false, true])(
+  "listing and drop remainders share a deadline and respect disable (pause=%s)",
+  async (pause) => {
+    const e = await seededEntry({ trackSold: true });
+    const first = injected({ itemId: "drop-first", price: 1000 });
+    const second = injected({ itemId: "drop-second", price: 1000 });
+    const pool = g.__ebaeMock.pools.get(e.s.id)!;
+    pool.unshift(first, second);
     await pollOnce(e);
-    expect(calls).toBe(1);
-    expect(await database.select().from(alerts)).toHaveLength(3);
-    const billed = u.calls.used;
-    g.__ebaeMock.pools.set(e.s.id, []);
-    setSystemTime(start);
-    globalThis.fetch = (() => Promise.resolve(new Response(null, { status: 204 }))) as typeof fetch;
-    await pollOnce(e);
-    expect(u.calls.used).toBe(billed);
-  } finally {
-    globalThis.fetch = realFetch;
-  }
-  const rows = await database.select().from(alerts).orderBy(alerts.id);
-  expect(rows.slice(2).map((row) => [row.itemId, row.kind])).toEqual([
-    ["drop-first", "price_drop"],
-    ["drop-second", "price_drop"],
-    ["fresh-after-drops", "listing"],
-  ]);
-});
+    first.price = 900;
+    second.price = 800;
+    pool.unshift(injected({ itemId: "fresh-after-drops" }));
+    const u = g.__ebaeState.users.get(userId)!;
+    u.channels = [webhook()];
+    const realFetch = globalThis.fetch;
+    const start = Date.now();
+    let calls = 0;
+    globalThis.fetch = (() => {
+      calls++;
+      setSystemTime(start + NOTIFY_DEADLINE_MS + 1000);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }) as typeof fetch;
+    try {
+      await pollOnce(e);
+      expect(calls).toBe(1);
+      expect(await database.select().from(alerts)).toHaveLength(3);
+      const billed = u.calls.used;
+      if (pause) {
+        expect(e.pendingItems).toHaveLength(1);
+        expect(e.pendingDrops).toHaveLength(1);
+        await updateSearch(userId, e.s.id, { enabled: false });
+        expect(e.pendingItems).toHaveLength(0);
+        expect(e.pendingDrops).toHaveLength(0);
+        await updateSearch(userId, e.s.id, { enabled: true });
+      }
+      g.__ebaeMock.pools.set(e.s.id, []);
+      setSystemTime(start);
+      globalThis.fetch = (() => Promise.resolve(new Response(null, { status: 204 }))) as typeof fetch;
+      await pollOnce(e);
+      expect(u.calls.used).toBe(billed + (pause ? 1 : 0));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    const rows = await database.select().from(alerts).orderBy(alerts.id);
+    expect(rows.slice(2).map((row) => [row.itemId, row.kind])).toEqual(
+      pause
+        ? [["drop-first", "price_drop"]]
+        : [
+            ["drop-first", "price_drop"],
+            ["drop-second", "price_drop"],
+            ["fresh-after-drops", "listing"],
+          ],
+    );
+  },
+);
 
 test("checked-price callbacks defer sends after the same tick deadline", async () => {
   const e = await seededEntry({ trackSold: true });
@@ -423,40 +438,43 @@ test.each([false, true])(
   },
 );
 
-test("turning off tracking rejects an in-flight wider Browse response", async () => {
-  const e = await seededEntry({ trackSold: true });
-  const auction = auctionItem({ itemId: "in-flight-auction" });
-  const u = g.__ebaeState.users.get(userId)!;
-  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = (async (request: RequestInfo | URL) => {
-    const url = String(request);
-    if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
-    expect(new URL(url).searchParams.get("filter")).toContain("buyingOptions:{FIXED_PRICE|AUCTION}");
-    await updateSearch(userId, e.s.id, { trackSold: false });
-    return Response.json({
-      itemSummaries: [
-        {
-          itemId: auction.itemId,
-          title: auction.title,
-          price: { value: String(auction.price), currency: auction.currency },
-          buyingOptions: ["AUCTION"],
-          itemWebUrl: auction.itemUrl,
-          itemEndDate: auction.itemEndDate,
-        },
-      ],
-    });
-  }) as typeof fetch;
-  try {
-    await pollOnce(e);
-  } finally {
-    globalThis.fetch = realFetch;
-    u.ebay = null;
-  }
-  expect(await database.select().from(alerts)).toHaveLength(0);
-  expect(e.pendingItems).toHaveLength(0);
-  expect(await database.select().from(seenItems)).toHaveLength(MOCK_POOL_SIZE);
-});
+test.each([{ trackSold: false }, { enabled: false }])(
+  "a poll change rejects an in-flight wider Browse response (%j)",
+  async (patch) => {
+    const e = await seededEntry({ trackSold: true });
+    const auction = auctionItem({ itemId: "in-flight-auction" });
+    const u = g.__ebaeState.users.get(userId)!;
+    u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (request: RequestInfo | URL) => {
+      const url = String(request);
+      if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
+      expect(new URL(url).searchParams.get("filter")).toContain("buyingOptions:{FIXED_PRICE|AUCTION}");
+      await updateSearch(userId, e.s.id, patch);
+      return Response.json({
+        itemSummaries: [
+          {
+            itemId: auction.itemId,
+            title: auction.title,
+            price: { value: String(auction.price), currency: auction.currency },
+            buyingOptions: ["AUCTION"],
+            itemWebUrl: auction.itemUrl,
+            itemEndDate: auction.itemEndDate,
+          },
+        ],
+      });
+    }) as typeof fetch;
+    try {
+      await pollOnce(e);
+    } finally {
+      globalThis.fetch = realFetch;
+      u.ebay = null;
+    }
+    expect(await database.select().from(alerts)).toHaveLength(0);
+    expect(e.pendingItems).toHaveLength(0);
+    expect(await database.select().from(seenItems)).toHaveLength(MOCK_POOL_SIZE);
+  },
+);
 
 test("turning on sold tracking persists without re-seeding", async () => {
   const e = await seededEntry();

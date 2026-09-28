@@ -253,12 +253,12 @@ export async function updateSearch(
       // captioning the edited search's alerts with the old search's going rate long after the
       // baseline it beat was cleared. Drops the outstanding follows with it - they are listings
       // this search no longer matches, still costing checks.
-      if (criteriaChanged || browseChanged) e.pendingItems = [];
-      if (browseChanged && !invalidated) e.trackEpoch++;
+      if (criteriaChanged || browseChanged || patch.enabled === false) e.pendingItems = [];
+      if ((browseChanged || patch.enabled === false) && !invalidated) e.trackEpoch++;
       if (invalidated) {
         e.pendingDrops = [];
         await resetTracked(db(), e);
-      } else if (patch.trackSold === false) {
+      } else if (patch.trackSold === false || patch.enabled === false) {
         e.pendingDrops = [];
       }
     } else {

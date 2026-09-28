@@ -75,7 +75,7 @@ export type Entry = {
   // the gap itself carries across it. In memory only, so a restart costs at most one duplicate
   // check per listing, which is a call, not a wrong answer.
   bonus: { date: string; done: Map<string, number> }; // itemId -> last checked at
-  // Bumped when tracking resets or Browse buying options change. A tick reads it once at the
+  // Bumped when tracking resets, Browse buying options change, or the search is disabled. A tick reads it once at the
   // start and re-checks before each write, because it holds references into the containers the
   // reset replaced: without this, an edit landing while a tick awaits eBay would be undone by
   // that tick writing its now-orphaned results into the fresh generation.

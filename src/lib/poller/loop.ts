@@ -511,11 +511,8 @@ export async function pollOnce(e: Entry) {
     // affordable. Resolving a listing early only ever shrinks the projection (checksDue24h).
     if (!continuing) await runBonusChecks(e, u, database, epoch, projected, onCheckedPrice);
     e.backoffMs = 0;
-    // Governed only here, on the path that actually spent a call. The snooze, no-creds and
-    // owner-not-cached reschedules above cost no quota, so stretching them would delay noticing
-    // that the window ended or the keys arrived while saving nothing. The quota-exhausted retry
-    // and the error backoff are already their own (longer) delays.
-    const delay = continuing ? e.s.intervalMin * 60_000 : governedDelayMs(e.s.intervalMin, governorFor(u, projected));
+    // Once the saved page drains, govern when the next eBay fetch can start.
+    const delay = governedDelayMs(e.s.intervalMin, governorFor(u, projected));
     schedule(e, e.pendingItems.length || e.pendingDrops.length ? 1000 : delay);
   } catch (err) {
     plog.error({ err, searchId: pollSearch.id, q: pollSearch.q }, "poll failed"); // stack goes to stdout; recordError keeps only the message for the UI

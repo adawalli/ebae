@@ -221,6 +221,10 @@ export async function updateSearch(
   // seeded search would alert on all at once. Re-seed so that backlog stays silent -
   // the same guarantee the first poll gives a brand-new search (DESIGN.md §3).
   const criteriaChanged = matchCriteriaChanged(cur, row);
+  // Sold tracking widens BIN-only Browse queries without resetting their learned prices.
+  const browseChanged =
+    (cur.includeAuctions || cur.trackSold) !==
+    ((row.includeAuctions ?? cur.includeAuctions) || (row.trackSold ?? cur.trackSold));
   const invalidated = baselineInvalidated(cur, row);
   const pollingChanged =
     invalidated ||
@@ -249,7 +253,8 @@ export async function updateSearch(
       // captioning the edited search's alerts with the old search's going rate long after the
       // baseline it beat was cleared. Drops the outstanding follows with it - they are listings
       // this search no longer matches, still costing checks.
-      if (criteriaChanged) e.pendingItems = [];
+      if (criteriaChanged || browseChanged) e.pendingItems = [];
+      if (browseChanged && !invalidated) e.trackEpoch++;
       if (invalidated) {
         e.pendingDrops = [];
         await resetTracked(db(), e);

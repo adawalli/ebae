@@ -220,6 +220,7 @@ test("fresh overflow drains its saved page even after replacement and quota exha
   const e = await seededEntry({ intervalMin: 60 });
   const u = g.__ebaeState.users.get(userId)!;
   u.channels = [webhook()];
+  setSystemTime(atLocal(12));
   u.calls.used = QUOTA_CEILING - 1;
   const pool = g.__ebaeMock.pools.get(e.s.id)!;
   const total = 3;
@@ -256,7 +257,7 @@ test("fresh overflow drains its saved page even after replacement and quota exha
   setSystemTime(new Date(tickStart)); // a fresh tick, clock not already past its own deadline
   globalThis.fetch = (() => Promise.resolve(new Response(null, { status: 204 }))) as unknown as typeof fetch;
   try {
-    await pollOnce(e);
+    expect(await delayAfterPoll(e)).toBe(60 * 60_000 * GOV_MAX_FACTOR);
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -386,6 +387,75 @@ test("checked-price callbacks defer sends after the same tick deadline", async (
   }
   const drops = await database.select().from(alerts).where(eq(alerts.kind, "price_drop"));
   expect(drops.map((row) => row.itemId).sort()).toEqual([first.itemId, second.itemId].sort());
+});
+
+test.each([false, true])(
+  "a tracking toggle invalidates the retained page only when Browse changes (auctions=%s)",
+  async (includeAuctions) => {
+    const e = await seededEntry({ trackSold: true, includeAuctions });
+    const before = injected({ itemId: "before-auction" });
+    const auction = auctionItem({ itemId: "pending-auction" });
+    g.__ebaeMock.pools.get(e.s.id)!.unshift(auction, before);
+    g.__ebaeState.users.get(userId)!.channels = [webhook()];
+    const realFetch = globalThis.fetch;
+    const start = Date.now();
+    globalThis.fetch = (() => {
+      setSystemTime(start + NOTIFY_DEADLINE_MS + 1000);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }) as typeof fetch;
+    try {
+      await pollOnce(e);
+      expect(e.pendingItems.map((item) => item.itemId)).toEqual([auction.itemId]);
+      const learned = [...e.soldPrices];
+      expect(learned).toHaveLength(1);
+      await updateSearch(userId, e.s.id, { trackSold: false });
+      expect(e.s.seeded).toBe(true);
+      expect(e.soldPrices).toEqual(learned); // learned prices survive the toggle
+      g.__ebaeMock.pools.set(e.s.id, []);
+      setSystemTime(start);
+      globalThis.fetch = (() => Promise.resolve(new Response(null, { status: 204 }))) as typeof fetch;
+      await pollOnce(e);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    const rows = await database.select().from(alerts).orderBy(alerts.id);
+    expect(rows.map((row) => row.itemId)).toEqual(includeAuctions ? [before.itemId, auction.itemId] : [before.itemId]);
+  },
+);
+
+test("turning off tracking rejects an in-flight wider Browse response", async () => {
+  const e = await seededEntry({ trackSold: true });
+  const auction = auctionItem({ itemId: "in-flight-auction" });
+  const u = g.__ebaeState.users.get(userId)!;
+  u.ebay = { userId, clientId: "x", clientSecret: "y", env: "production", marketplace: "EBAY_US" };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    const url = String(request);
+    if (url.includes("/oauth2/token")) return Response.json({ access_token: "t", expires_in: 7200 });
+    expect(new URL(url).searchParams.get("filter")).toContain("buyingOptions:{FIXED_PRICE|AUCTION}");
+    await updateSearch(userId, e.s.id, { trackSold: false });
+    return Response.json({
+      itemSummaries: [
+        {
+          itemId: auction.itemId,
+          title: auction.title,
+          price: { value: String(auction.price), currency: auction.currency },
+          buyingOptions: ["AUCTION"],
+          itemWebUrl: auction.itemUrl,
+          itemEndDate: auction.itemEndDate,
+        },
+      ],
+    });
+  }) as typeof fetch;
+  try {
+    await pollOnce(e);
+  } finally {
+    globalThis.fetch = realFetch;
+    u.ebay = null;
+  }
+  expect(await database.select().from(alerts)).toHaveLength(0);
+  expect(e.pendingItems).toHaveLength(0);
+  expect(await database.select().from(seenItems)).toHaveLength(MOCK_POOL_SIZE);
 });
 
 test("turning on sold tracking persists without re-seeding", async () => {

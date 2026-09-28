@@ -22,7 +22,7 @@ export {
   type SearchInput,
 } from "./api";
 export { boot } from "./boot";
-export { redeliverPending } from "./delivery";
+export { capturePendingAlertCutoff, redeliverPending, startRedeliveryDrain } from "./delivery";
 export { MAX_BACKOFF_MS, QUOTA_SKIP_MS, pollOnce } from "./loop";
 export { excludeMatch, median } from "./market";
 export {
@@ -40,6 +40,7 @@ export {
 } from "./quota";
 export { activeFracElapsed, counterDayFrac, counterDayFracAt, inWindow, snoozeMinutes } from "./snooze";
 export {
+  NOTIFY_DEADLINE_MS,
   alertsTag,
   bumpAlerts,
   discordWebhooks,

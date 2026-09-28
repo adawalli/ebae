@@ -5,6 +5,12 @@ import { searchLabel, type Item, type PollError, type PriceKind, type PushSub, t
 
 export const plog = log.child({ component: "poller" });
 
+// One budget shared by listing and price-drop notifications in a tick. The health
+// window is at least 35 minutes; ten minutes leaves room for the other poll work.
+// ponytail: checked between items, so one item's serial target fan-out can overrun
+// this budget. Use concurrent target delivery or a target limit if that occurs.
+export const NOTIFY_DEADLINE_MS = 10 * 60_000;
+
 // Overnight snooze (UI-configured, stored on the user's row, cached in UserCtx.snooze):
 // skip that user's eBay polls during a local-time window so we don't burn their quota while
 // nobody's watching. Items listed during the window still alert on the first poll after it
@@ -42,6 +48,11 @@ export type TrackedItem = {
 export type Entry = {
   s: Search;
   seen: Set<string>;
+  // Drain the fetched page before fetching again, so its remainder cannot fall off page one.
+  // ponytail: snapshots are memory-only and lost on restart; persist a queue if crash recovery
+  // for fetched-but-uncommitted listings becomes a requirement.
+  pendingItems: Item[];
+  pendingDrops: { t: TrackedItem; item: Item; previousPrice: number; price: number }[];
   hitTimes: number[]; // alert timestamps within the last 24h
   lastHitAt: number | null;
   lastPolledAt: number | null;
@@ -64,7 +75,7 @@ export type Entry = {
   // the gap itself carries across it. In memory only, so a restart costs at most one duplicate
   // check per listing, which is a call, not a wrong answer.
   bonus: { date: string; done: Map<string, number> }; // itemId -> last checked at
-  // Bumped every time resetTracked wipes the three containers above. A tick reads it once at the
+  // Bumped when tracking resets, Browse buying options change, or the search is disabled. A tick reads it once at the
   // start and re-checks before each write, because it holds references into the containers the
   // reset replaced: without this, an edit landing while a tick awaits eBay would be undone by
   // that tick writing its now-orphaned results into the fresh generation.
@@ -168,6 +179,8 @@ export function newEntry(s: Search): Entry {
   return {
     s,
     seen: new Set(),
+    pendingItems: [],
+    pendingDrops: [],
     hitTimes: [],
     lastHitAt: null,
     lastPolledAt: null,

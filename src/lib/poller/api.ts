@@ -221,6 +221,10 @@ export async function updateSearch(
   // seeded search would alert on all at once. Re-seed so that backlog stays silent -
   // the same guarantee the first poll gives a brand-new search (DESIGN.md §3).
   const criteriaChanged = matchCriteriaChanged(cur, row);
+  // Sold tracking widens BIN-only Browse queries without resetting their learned prices.
+  const browseChanged =
+    (cur.includeAuctions || cur.trackSold) !==
+    ((row.includeAuctions ?? cur.includeAuctions) || (row.trackSold ?? cur.trackSold));
   const invalidated = baselineInvalidated(cur, row);
   const pollingChanged =
     invalidated ||
@@ -249,7 +253,14 @@ export async function updateSearch(
       // captioning the edited search's alerts with the old search's going rate long after the
       // baseline it beat was cleared. Drops the outstanding follows with it - they are listings
       // this search no longer matches, still costing checks.
-      if (invalidated) await resetTracked(db(), e);
+      if (criteriaChanged || browseChanged || patch.enabled === false) e.pendingItems = [];
+      if ((browseChanged || patch.enabled === false) && !invalidated) e.trackEpoch++;
+      if (invalidated) {
+        e.pendingDrops = [];
+        await resetTracked(db(), e);
+      } else if (patch.trackSold === false || patch.enabled === false) {
+        e.pendingDrops = [];
+      }
     } else {
       // dropped from the cache by a concurrent reload: DB was updated, return stub stats. The
       // next list call reads the real figures once reload rebuilds the entry.

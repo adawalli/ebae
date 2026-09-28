@@ -1,23 +1,61 @@
-import { and, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, inArray, isNull, lte, lt, max, sql } from "drizzle-orm";
 import type { db } from "@/lib/db";
 import { notify } from "@/lib/discord";
 import { notifyPush } from "@/lib/push";
 import { alerts, pushSubs } from "@/lib/schema";
 import type { Item, PriceContext } from "@/lib/types";
-import { type UserCtx, discordWebhooks, markStalePush, plog, recordError, state } from "./state";
+import {
+  NOTIFY_DEADLINE_MS,
+  type UserCtx,
+  discordWebhooks,
+  markStalePush,
+  message,
+  plog,
+  recordError,
+  state,
+} from "./state";
 
 // An alert that couldn't be delivered is retried at the next boot, but deals are time-sensitive:
 // past this age, retire it unsent rather than spam stale listings when the process comes back.
 const REDELIVER_MAX_AGE_MS = 60 * 60_000;
 
-// Redeliver alerts committed but never confirmed delivered - a crash between the alerts insert
-// and the notify, or a webhook outage that spanned the last shutdown. Called once at boot, before
-// any tick fires, so it never races the main-path delivery loop (disjoint row sets, no shared
-// mutable flag). A row counts as delivered once ANY channel accepts it (notify.anyDelivered), so a
-// retry never re-posts to a channel that already has it. Rows older than REDELIVER_MAX_AGE_MS are
-// retired unsent (a deal that stale isn't worth sending); anything still null is retried next boot.
-// Stand-ins for a sender with nothing to send, so the two delivery paths can always be
-// awaited as a pair without branching the result handling.
+// A page is bounded by both rows and elapsed time. The cursor moves past failed sends so one
+// dead destination cannot starve later alerts; failed rows remain pending for the next boot.
+const REDELIVER_FETCH_LIMIT = 1000;
+const REDELIVER_PAGE_DELAY_MS = 15_000;
+
+type RedeliveryCursor = { createdAt: string; id: number };
+type RedeliveryProgress = { cursor: RedeliveryCursor | null; complete: boolean };
+
+// Capture before the poll timers start. Later pages stay below this ID, so a live alert that is
+// still being delivered can never enter the recovery sweep.
+export async function capturePendingAlertCutoff(database: ReturnType<typeof db>): Promise<number> {
+  if (process.env.NODE_ENV === "development") return 0;
+  const [row] = await database.select({ id: max(alerts.id) }).from(alerts);
+  return row?.id ?? 0;
+}
+
+// Schedule each page only after the previous one finishes. This keeps pages from overlapping and
+// stops after the boot-time backlog has had one attempt.
+export function startRedeliveryDrain(database: ReturnType<typeof db>, cutoffId: number) {
+  if (cutoffId <= 0) return;
+  let cursor: RedeliveryCursor | null = null;
+  const run = async () => {
+    try {
+      const progress = await redeliverPending(database, cutoffId, cursor);
+      cursor = progress.cursor;
+      if (progress.complete) return;
+    } catch (err) {
+      recordError(null, null, `redeliver on boot: ${message(err)}`);
+      // Keep the previous cursor until the page and its delivery flush succeed.
+    }
+    const timer = setTimeout(run, REDELIVER_PAGE_DELAY_MS);
+    timer.unref?.();
+  };
+  const timer = setTimeout(run, REDELIVER_PAGE_DELAY_MS);
+  timer.unref?.();
+}
+
 export const NOTHING_SENT = { error: null, anyDelivered: false } as const;
 export const NOTHING_PUSHED = { error: null, anyDelivered: false, dead: [] as readonly string[] } as const;
 
@@ -39,25 +77,36 @@ export async function reapPush(database: ReturnType<typeof db>, u: UserCtx, dead
   }
 }
 
-export async function redeliverPending(database: ReturnType<typeof db>) {
-  // Deliberately separate from pollingEnabled(): even `dev:poller` must not replay a shared
-  // database's real pending alerts. It is a scratch-DB pipeline tool, not a delivery recovery tool.
-  if (process.env.NODE_ENV === "development") return;
+export async function redeliverPending(
+  database: ReturnType<typeof db>,
+  cutoffId: number,
+  cursor: RedeliveryCursor | null = null,
+): Promise<RedeliveryProgress> {
+  if (process.env.NODE_ENV === "development" || cutoffId <= 0) return { cursor: null, complete: true };
   const st = state();
-  const now = new Date(); // one stamp for the whole sweep, so the DB shows they came from one boot
+  const sweepStart = Date.now();
+  const now = new Date(); // one stamp for this page's delivered rows
+
+  // Retire alerts that aged out while earlier pages were running, fenced to the startup backlog.
   await database
     .update(alerts)
     .set({ deliveredAt: now })
     .where(
       and(
         isNull(alerts.deliveredAt),
+        lte(alerts.id, cutoffId),
         lt(alerts.createdAt, sql`now() - (${REDELIVER_MAX_AGE_MS / 60_000} * interval '1 minute')`),
       ),
     );
 
+  // Select timestamp text to keep PostgreSQL's microseconds in the keyset cursor.
+  const afterCursor = cursor
+    ? sql`(${alerts.createdAt}, ${alerts.id}) > (${cursor.createdAt}::timestamptz, ${cursor.id})`
+    : undefined;
   const rows = await database
     .select({
       id: alerts.id,
+      createdAt: sql<string>`${alerts.createdAt}::text`.as("createdAt"),
       searchId: alerts.searchId,
       searchQ: alerts.searchQ,
       searchName: alerts.searchName,
@@ -74,16 +123,25 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
       previousPrice: alerts.previousPrice,
     })
     .from(alerts)
-    .where(isNull(alerts.deliveredAt));
+    .where(and(isNull(alerts.deliveredAt), lte(alerts.id, cutoffId), afterCursor))
+    .orderBy(asc(alerts.createdAt), asc(alerts.id))
+    .limit(REDELIVER_FETCH_LIMIT);
 
-  if (!rows.length) return;
+  if (!rows.length) return { cursor: null, complete: true };
 
   // Confirm every retired/delivered row in one UPDATE after the loop instead of one round-trip
   // per row (a boot backlog shouldn't fan out N queries against a serverless DB). A crash mid-loop
   // just re-posts the confirmed-but-unflushed rows next boot, which is the same at-least-once
   // window the main path already accepts.
   const done: number[] = [];
+  let nextCursor = cursor;
+  let processed = 0;
   for (const row of rows) {
+    // Always attempt the first row so a slow SELECT still makes progress; after that the page
+    // stops at the same deadline used for fresh notifications, with one row's fan-out as residual.
+    if (processed && Date.now() - sweepStart >= NOTIFY_DEADLINE_MS) break;
+    processed++;
+    nextCursor = { createdAt: row.createdAt, id: row.id };
     const s = row.searchId != null ? st.entries.get(row.searchId)?.s : undefined;
     if (!s) {
       // search deleted (search_id null) or gone from cache: no criteria to attach, retire it.
@@ -143,4 +201,6 @@ export async function redeliverPending(database: ReturnType<typeof db>) {
     if (d.anyDelivered || p.anyDelivered) done.push(row.id);
   }
   if (done.length) await database.update(alerts).set({ deliveredAt: now }).where(inArray(alerts.id, done));
+  const complete = processed === rows.length && rows.length < REDELIVER_FETCH_LIMIT;
+  return { cursor: complete ? null : nextCursor, complete };
 }

@@ -6,7 +6,7 @@ import { db, migrateToLatest } from "@/lib/db";
 import type { EbayCreds } from "@/lib/ebay";
 import { alerts, channels, pushSubs, searches, seenItems, trackedItems, users } from "@/lib/schema";
 import type { PushSub } from "@/lib/types";
-import { redeliverPending } from "./delivery";
+import { capturePendingAlertCutoff, startRedeliveryDrain } from "./delivery";
 import { pollingEnabled, schedule } from "./loop";
 import { flushCalls, mergeCalls } from "./quota";
 import { flushTracked, hydrateTracked } from "./track";
@@ -73,6 +73,8 @@ async function tryBoot() {
     // Adopt pre-multi-user rows before the first reload, which skips null-owner searches.
     await claimLegacyRows(db());
     await reload();
+    // Fence the recovery sweep before any live poll can insert an alert.
+    const redeliveryCutoff = await capturePendingAlertCutoff(db());
     // Config audit, once per boot (a retry only reaches here on success): single mode's lack
     // of auth has to be loud, and the multi-user modes must not look like they still honour
     // the global eBay/webhook vars.
@@ -87,19 +89,11 @@ async function tryBoot() {
     st.bootError = null;
     if (pollingEnabled()) plog.info({ searches: st.entries.size, users: st.users.size }, "poller ready");
     else plog.warn("development poller disabled - use bun run dev:poller with a scratch database");
-    // Flush any alert left undelivered by a crash between its insert and its notify, or by a
-    // webhook outage that spanned the restart. Must finish BEFORE the first tick is scheduled:
-    // a tick firing mid-sweep could insert a fresh deliveredAt=null row that the sweep's SELECT
-    // then picks up and double-notifies. Awaiting it here keeps the sweep and live polling on
-    // disjoint rows. Common case is one UPDATE + an empty SELECT (fast). Best-effort: on failure
-    // the rows stay null and the next boot retries them.
-    try {
-      await redeliverPending(db());
-    } catch (err) {
-      recordError(null, null, `redeliver on boot: ${message(err)}`);
-    }
-    // jitter the first ticks so N searches don't hit eBay in the same second
+    // Jitter the first ticks so N searches don't hit eBay in the same second.
     for (const e of st.entries.values()) schedule(e, 1000 + Math.random() * 5000);
+    // Drain only the rows captured before the first tick. Pages run after scheduling and never
+    // overlap, so a slow startup or backlog cannot hold the boot heartbeat stale.
+    startRedeliveryDrain(db(), redeliveryCutoff);
     setInterval(
       () =>
         reload()

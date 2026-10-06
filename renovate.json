@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:best-practices"],
+  "extends": ["config:best-practices", "helpers:disableTypesNodeMajor"],
   "timezone": "America/New_York",
   "schedule": ["* 0-5 * * 1"],
   "prConcurrentLimit": 5,

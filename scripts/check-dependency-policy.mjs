@@ -11,7 +11,26 @@ const exec = promisify(execFile);
 await (async () => {
   for (const path of process.argv.slice(2).length ? process.argv.slice(2) : ["package.json"]) {
     const { scripts } = JSON.parse(await readFile(path, "utf8"));
-    const script = scripts.preinstall;
+    const script = scripts["check:bun"];
+    const installDirectory = await mkdtemp(join(tmpdir(), "unsupported-installer-"));
+    try {
+      await writeFile(
+        join(installDirectory, "package.json"),
+        JSON.stringify({
+          scripts: {
+            "check:bun": script.replace("Bun.version", JSON.stringify("1.2.14")),
+            "install:deps": scripts["install:deps"],
+            preinstall: "touch installer-started",
+          },
+        }),
+      );
+      await assert.rejects(exec("bun", ["run", "install:deps"], { cwd: installDirectory }), /dependency cooldown/);
+      for (const filename of ["installer-started", "bun.lock"]) {
+        await assert.rejects(readFile(join(installDirectory, filename)), { code: "ENOENT" });
+      }
+    } finally {
+      await rm(installDirectory, { recursive: true, force: true });
+    }
     // Run the actual hook with a controlled runtime version, without changing this process.
     for (const version of ["1.2.14", "1.3.0", "1.4.2"]) {
       const command = script.replace("Bun.version", JSON.stringify(version));

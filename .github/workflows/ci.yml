@@ -31,7 +31,7 @@ jobs:
       - run: bun scripts/check-dependency-policy.mjs
       - run: bun x --package renovate@44.133.0 renovate-config-validator --strict --no-global renovate.json
       # frozen: a lockfile that disagrees with package.json should fail here, not resolve silently
-      - run: bun install --frozen-lockfile
+      - run: bun run install:deps --frozen-lockfile
       - run: bun run lint
       - run: bun test
       - run: bun run build

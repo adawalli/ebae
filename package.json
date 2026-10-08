@@ -12,7 +12,9 @@
     "db:migrate": "drizzle-kit migrate",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "preinstall": "bun -e 'if (!Bun.semver.satisfies(Bun.version, \">=1.3.0\")) throw new Error(\"Bun >=1.3.0 is required for the dependency cooldown\")'"
+    "preinstall": "bun run check:bun",
+    "check:bun": "bun -e 'if (!Bun.semver.satisfies(Bun.version, \">=1.3.0\")) throw new Error(\"Bun >=1.3.0 is required for the dependency cooldown\")'",
+    "install:deps": "bun run check:bun && bun install"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

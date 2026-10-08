@@ -19,7 +19,7 @@ for ESLint and Next.js; Next.js retains its own TypeScript 6 check. The
 
 ```sh
 cp .env.example .env.local   # set DATABASE_URL (Neon works great)
-bun install
+bun run install:deps
 bun run dev                 # UI/API only; no polling or notification delivery
 ```
 
@@ -233,10 +233,18 @@ release automatically.
 
 ## Dependency update policy
 
-Use Bun 1.3.0 or newer; CI and the Docker installer use 1.4.2. The install hook
-rejects older Bun versions, which ignore the release-age setting. Keep lifecycle
-scripts enabled. `bunfig.toml` requires new direct and transitive npm resolutions
+Use Bun 1.3.0 or newer; CI and the Docker installer use 1.4.2. The checked install command
+runs `check:bun` before starting the installer. Older Bun versions ignore the
+release-age setting. The `preinstall` hook is a secondary check: Bun can run
+trusted dependency scripts before that hook. Use the checked command; raw
+`bun install` with unsupported Bun cannot be made safe by a project hook.
+
+`bunfig.toml` requires new direct and transitive npm resolutions
 to be at least three days old. Existing locked versions remain unchanged.
+
+Before adding or updating dependencies, run the check before the resolver:
+`bun run check:bun && bun add <package>` or
+`bun run check:bun && bun update`.
 
 Renovate uses the maintained best-practices and recommended grouping presets,
 opens at most three ordinary PRs, and requires dashboard approval for majors.

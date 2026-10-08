@@ -6,7 +6,7 @@ This is a Bun-managed Next.js application for self-hosted eBay alerts. App route
 
 ## Build, Test, and Development Commands
 
-- `bun install`: install dependencies from `bun.lock`.
+- `bun run install:deps`: install dependencies from `bun.lock`.
 - `bun run dev`: start the local Next.js dev server at `http://localhost:3000`.
 - `bun run lint`: run ESLint with the Next.js core-web-vitals and TypeScript rules.
 - `bun run build`: create a production Next.js build.

@@ -1,0 +1,3 @@
+[install]
+# Three days for new direct and transitive npm resolutions.
+minimumReleaseAge = 259200

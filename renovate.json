@@ -1,19 +1,13 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:best-practices", "helpers:disableTypesNodeMajor"],
+  "extends": ["config:best-practices", "helpers:disableTypesNodeMajor", ":approveMajorUpdates"],
   "timezone": "America/New_York",
   "schedule": ["* 0-5 * * 1"],
-  "prConcurrentLimit": 5,
+  "prConcurrentLimit": 3,
   "kubernetes": {
     "managerFilePatterns": ["/^deploy\\/k8s\\.yaml$/"]
   },
   "packageRules": [
-    {
-      "description": "Group non-major Bun dependency updates",
-      "matchManagers": ["bun"],
-      "matchUpdateTypes": ["pin", "minor", "patch"],
-      "groupName": "Bun non-major dependencies"
-    },
     {
       "description": "Group non-major GitHub Actions updates",
       "matchManagers": ["github-actions"],
@@ -27,5 +21,6 @@
       "matchPackageNames": ["/^(?:docker\\.io\\/)?adawalli\\/ebae$/"],
       "pinDigests": false
     }
-  ]
+  ],
+  "automerge": false
 }

@@ -230,3 +230,35 @@ Add one line per highlight. GoReleaser prepends that block above the generated c
 the `## Highlights` heading, it publishes the usual changelog and container-image footer only.
 The annotated tag is the canonical source: PR-template highlight candidates are never copied into a
 release automatically.
+
+## Dependency update policy
+
+Use Bun 1.3.0 or newer; CI and the Docker installer use 1.4.2. The install hook
+rejects older Bun versions, which ignore the release-age setting. Keep lifecycle
+scripts enabled. `bunfig.toml` requires new direct and transitive npm resolutions
+to be at least three days old. Existing locked versions remain unchanged.
+
+Renovate uses the maintained best-practices and recommended grouping presets,
+opens at most three ordinary PRs, and requires dashboard approval for majors.
+Automerge is disabled. Coordinate Node runtime majors with Docker, CI, and
+`@types/node`; the existing standalone Node-types major hold remains.
+
+Security-alert PRs retain Renovate's immediate, ungrouped, unlimited-priority
+path without major approval or bot age delay. GitHub dependency graph and
+Dependabot alerts must be enabled and readable by Renovate for that path to work.
+The Bun age gate still applies. For a reviewed urgent fix only, temporarily add
+the affected package name to `install.minimumReleaseAgeExcludes`, resolve the
+exact reviewed fixed version, and remove the exception before committing the
+manifest and lockfile. Review every changed transitive version. Never disable
+the cooldown to clear an ordinary backlog. This npm policy does not add age
+rules for container images or other datasources.
+
+Run `bun scripts/check-dependency-policy.mjs` to check the Bun version gate and fresh direct/transitive resolution.
+The preset excludes pin, replacement, bump, lockfile update/maintenance, and
+rollback updates from Renovate age checks. Review these changes; Bun still
+gates new npm resolutions.
+
+Validate policy edits with
+`bun x --package renovate@44.133.0 renovate-config-validator --strict --no-global renovate.json`.
+See the [Bun release-age documentation](https://bun.sh/docs/pm/cli/install#minimum-release-age)
+and [Renovate best practices](https://docs.renovatebot.com/upgrade-best-practices/).

@@ -22,9 +22,14 @@ jobs:
     timeout-minutes: 15 # the whole job runs in well under a minute; this is a hang guard, not a budget
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: "1.x" # mirrors the Dockerfile's oven/bun:1
+          bun-version: "1.4.2" # matches the Docker installer
+      - run: bun scripts/check-dependency-policy.mjs
+      - run: bun x --package renovate@44.133.0 renovate-config-validator --strict --no-global renovate.json
       # frozen: a lockfile that disagrees with package.json should fail here, not resolve silently
       - run: bun install --frozen-lockfile
       - run: bun run lint

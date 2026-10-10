@@ -266,7 +266,14 @@ The preset excludes pin, replacement, bump, lockfile update/maintenance, and
 rollback updates from Renovate age checks. Review these changes; Bun still
 gates new npm resolutions.
 
-Validate policy edits with
-`bun x --package renovate@44.133.0 renovate-config-validator --strict --no-global renovate.json`.
+CI validates policy edits with the pinned Renovate container. To run the same check
+locally, use:
+
+```sh
+docker run --rm -v "$PWD:/work" -w /work \
+  renovate/renovate:44.133.0@sha256:05c512c35c764ef6a179e69c3b30567eca254d67f13a0143479fe3c84852c67a \
+  renovate-config-validator --strict --no-global renovate.json
+```
+
 See the [Bun release-age documentation](https://bun.sh/docs/pm/cli/install#minimum-release-age)
 and [Renovate best practices](https://docs.renovatebot.com/upgrade-best-practices/).

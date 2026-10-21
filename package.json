@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "NODE_ENV=development NEXT_MANUAL_SIG_HANDLE=true ENABLE_DEV_POLLER=0 next dev",
     "dev:poller": "NODE_ENV=development NEXT_MANUAL_SIG_HANDLE=true ENABLE_DEV_POLLER=1 next dev",
-    "build": "next typegen && tsc --noEmit && next build",
+    "build": "next typegen && tsc --noEmit && next build --webpack",
     "start": "NEXT_MANUAL_SIG_HANDLE=true next start",
     "lint": "eslint",
     "db:generate": "drizzle-kit generate",

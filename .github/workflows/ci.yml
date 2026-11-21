@@ -30,7 +30,7 @@ jobs:
           bun-version: "1.4.4" # matches the Docker installer
       - run: bun scripts/check-dependency-policy.mjs
       - name: Validate Renovate configuration
-        uses: docker://renovate/renovate:44.184.0@sha256:525ee9e2d41f353551ec55d61e523562c0604ffdb75b64f1490aacc4a5374050
+        uses: docker://renovate/renovate:44.257.8@sha256:68f58fa3b0e92875fa2f44c4ae02936186818b0170c2d39fe7261a2af5260f36
         with:
           args: renovate-config-validator --strict --no-global renovate.json
       # frozen: a lockfile that disagrees with package.json should fail here, not resolve silently

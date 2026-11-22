@@ -27,7 +27,7 @@ jobs:
           node-version: 24
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: "1.4.5" # matches the Docker installer
+          bun-version: "1.4.5"
       - run: bun scripts/check-dependency-policy.mjs
       - name: Validate Renovate configuration
         uses: docker://renovate/renovate:44.257.9@sha256:d6b65ff3562dd499240b23d34ef806ec7e5fd2675e4236a027dfb36774f2aa75
